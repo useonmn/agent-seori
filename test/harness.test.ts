@@ -214,7 +214,7 @@ describe("pane messaging", () => {
 });
 
 describe("duty loop", () => {
-  test("nudges an idle lane at 10 and 20 minutes, escalates at 40, and ignores WAITING lanes", async () => {
+  test("nudges a silent lane at 10 and 20 minutes, escalates at 40, and ignores WAITING lanes", async () => {
     const { w, d, lead, brief } = setup();
     const lane = await startLane(d, "quiet", brief, { workspace: "w1" });
     const pane = w.panes.get(lane.paneId)!;
@@ -222,11 +222,11 @@ describe("duty loop", () => {
     const at = async (min: number) => { w.clock = lane.createdAt + min * 60_000; return dutyTick(d); };
     expect(await at(5)).toEqual([]);
     expect(await at(10)).toContainEqual({ lane: "quiet", action: "nudge-1" });
-    expect(pane.received.at(-1)).toContain("idle for 10 minutes");
+    expect(pane.received.at(-1)).toContain("No report from you for 10 minutes");
     expect(await at(15)).toEqual([]);
     expect(await at(20)).toContainEqual({ lane: "quiet", action: "nudge-2" });
     expect(await at(40)).toContainEqual({ lane: "quiet", action: "escalated" });
-    expect(lead.received.at(-1)).toContain("[ESCALATE quiet]");
+    expect(lead.received.at(-1)).toContain("[ESCALATE quiet] no report for 40 min after 2 nudges");
     expect(await at(90)).toEqual([]);
 
     const waiting = await startLane(d, "blocked-on-ci", brief, { workspace: "w1" });
@@ -266,7 +266,7 @@ describe("duty loop", () => {
     expect(events).toContainEqual({ lane: "lost-lane", action: "lane-failed", detail: expect.stringContaining("lead exploded") });
     expect(events).toContainEqual({ lane: "stuck-lane", action: "lane-failed", detail: expect.stringContaining("stuck exploded") });
     expect(events).toContainEqual({ lane: "fine-lane", action: "nudge-1" });
-    expect(w.panes.get(fine.paneId)!.received.at(-1)).toContain("idle for 10 minutes");
+    expect(w.panes.get(fine.paneId)!.received.at(-1)).toContain("No report from you for 10 minutes");
   });
 
   test("a LOST notice whose Enter failed once still reaches the lead on the next tick, exactly once", async () => {
@@ -343,13 +343,52 @@ describe("duty loop", () => {
     expect(lead.received).toEqual(["held note"]);
   });
 
-  test("a working lane counts as activity; a vanished pane is reported LOST", async () => {
+  test("a lane herdr reports working is still nudged when silent, through agent prompt; a report resets the ladder", async () => {
     const { w, d, lead, brief } = setup();
     const lane = await startLane(d, "busy", brief, { workspace: "w1" });
-    w.panes.get(lane.paneId)!.status = "working";
-    w.clock += 30 * 60_000;
+    const pane = w.panes.get(lane.paneId)!;
+    pane.status = "working";
+    w.calls.length = 0;
+    w.clock = lane.createdAt + 5 * 60_000;
     expect(await dutyTick(d)).toEqual([]);
-    expect(d.store.lane("busy")!.lastActivityAt).toBe(w.clock);
+    expect(d.store.lane("busy")!.lastActivityAt).toBe(lane.createdAt);
+    w.clock = lane.createdAt + 10 * 60_000;
+    expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "nudge-1" });
+    expect(pane.received.at(-1)).toContain("No report from you for 10 minutes");
+    expect(w.calls.some((c) => c.cmd === "herdr" && c.argv[0] === "agent" && c.argv[1] === "prompt" && c.argv[2] === lane.paneId)).toBe(true);
+
+    await report(d, "busy", "tests green locally");
+    expect(d.store.lane("busy")!.nudges).toBe(0);
+    const reportedAt = w.clock;
+    w.clock = reportedAt + 9 * 60_000;
+    expect(await dutyTick(d)).toEqual([]);
+    w.clock = reportedAt + 10 * 60_000;
+    expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "nudge-1" });
+    w.clock = reportedAt + 20 * 60_000;
+    expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "nudge-2" });
+    w.clock = reportedAt + 40 * 60_000;
+    expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "escalated" });
+    expect(lead.received.at(-1)).toContain("[ESCALATE busy] no report for 40 min after 2 nudges");
+  });
+
+  test("a lane whose pane is blocked, or that reported WAITING while working, is not nudged", async () => {
+    const { w, d, brief } = setup();
+    const blocked = await startLane(d, "dialog", brief, { workspace: "w1" });
+    const waiting = await startLane(d, "on-ci", brief, { workspace: "w1" });
+    w.panes.get(blocked.paneId)!.status = "blocked";
+    w.panes.get(waiting.paneId)!.status = "working";
+    await report(d, "on-ci", "WAITING: CI", "waiting");
+    w.calls.length = 0;
+    w.clock += 60 * 60_000;
+    expect(await dutyTick(d)).toEqual([]);
+    expect(d.store.lane("dialog")!.nudges).toBe(0);
+    expect(d.store.lane("on-ci")!.nudges).toBe(0);
+    expect(w.calls.filter((c) => c.argv[1] === "prompt" && (c.argv[2] === blocked.paneId || c.argv[2] === waiting.paneId))).toEqual([]);
+  });
+
+  test("a vanished pane is reported LOST", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
     w.panes.delete(lane.paneId);
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
     expect(lead.received.at(-1)).toContain("[LOST busy]");

@@ -81,7 +81,7 @@ seori send <lead|duty|key|pane> --text T     지금 전하거나, 상대가 쉴 
 seori inbox list <pane|role|key>             모아 둔 메시지 목록: 번호, 상태(queued|typed|held), 보낸 쪽, 시각, 앞 60자
 seori inbox ack <pane|role|key> <index>      보류(held) 메시지를 지웁니다: 실제로 전해졌을 때
 seori inbox resend <pane|role|key> <index>   보류 메시지를 풀어 줍니다: 다음에 다시 전합니다
-seori duty [--once] [--interval SECONDS]     메시지 전달, 쉬는 레인 깨우기, 리드에게 알리기, 사라진 레인 찾기
+seori duty [--once] [--interval SECONDS]     메시지 전달, 보고 없는 레인 깨우기, 리드에게 알리기, 사라진 레인 찾기
 seori duty stop [--text WHY] | resume | status   비상 정지
 seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                             시간 단위: 백로그 정리, 놓친 일 점검, 다음 일 시작, 질문하기
@@ -111,7 +111,7 @@ seori status
 - 말하는 쪽은 하나: 사람과 이야기하는 건 리드뿐입니다. 레인은 사람에게 할 말을 모두 리드에게 보냅니다. 듀티는 머지하지 않고 사람과 이야기하지 않습니다.
 - READY에는 증거가 필요: `seori ready`는 `--evidence` 링크가 하나도 없거나 최종 답이 비어 있으면 거절합니다. `seori done`은 READY가 아닌 레인을 닫지 않습니다.
 - 리드와 듀티 창은 방해하지 않고, 레인은 일하는 중에도 메시지를 받음: `seori send`는 먼저 herdr에게 상대 상태를 묻습니다. 쉬는 중이면 바로 전합니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 `working`으로 보이므로, 열려 있는 레인 창에는 일하는 중이어도 바로 전합니다. omp는 이를 작업 중 끼어든 지시(steer)로 받아 처리하고 하던 일을 이어 갑니다. 바쁜 리드나 듀티 창, 그리고 막혀 있는(blocked, 대화 상자가 열린) 창에 온 메시지는 `~/.seori/inbox/`에 모아 두고, 듀티 루프가 창이 받을 수 있을 때 한 번에 전합니다. 창 앞에 omp 대신 셸이 나와 있으면(omp가 꺼졌거나 Ctrl+Z로 멈춘 경우) 절대 입력하지 않습니다. 셸에 입력한 글자는 명령으로 실행되기 때문입니다.
-- 10분, 20분, 40분 알림: 10분 동안 보고가 없고 일하는 중도 아닌 레인에는 `prompts/nudge.md`를 보냅니다. 20분에 한 번 더 보내고, 40분이 되면 리드에게 `[ESCALATE <key>]`를 보냅니다. 기다림(waiting)을 보고한 레인이나 막혀 있는(blocked) 레인은 건드리지 않습니다. READY 전에 창이 사라지면 `[LOST <key>]`로 알립니다.
+- 10분, 20분, 40분 알림: 10분 동안 보고가 없는 레인에는 `prompts/nudge.md`를 보냅니다. 창이 일하는 중(working)이어도 보냅니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 working으로 보이므로, working만으로는 진행으로 치지 않습니다. 알림은 작업 중 끼어든 지시(steer)로 들어갑니다. 20분에 한 번 더 보내고, 40분이 되면 리드에게 `[ESCALATE <key>]`를 보냅니다. 그래서 레인은 적어도 10분마다 진행 상황을 보고합니다. 새 보고가 들어오면 알림 횟수는 처음부터 다시 셉니다. 기다림(waiting)을 보고한 레인이나 막혀 있는(blocked) 레인은 건드리지 않습니다. READY 전에 창이 사라지면 `[LOST <key>]`로 알립니다.
 - 머지 조건: `seori merge`는 PR의 지금 헤드 커밋에 대한 CLEAR 리뷰 기록(`~/.seori/receipts/`)을 요구합니다. 기록은 `seori review`만 남깁니다. 리뷰어는 새로 띄운 비대화형 omp이고, 저장소의 AGENTS.md, 스킬, 규칙, 확장을 읽지 않는 격리된 상태로 돕니다. `gh`로 PR을 읽고, 마지막 줄에 `VERDICT: CLEAR` 또는 `VERDICT: BLOCK`을 딱 한 번 씁니다. 이 줄이 없으면 기록도 없습니다. 그다음 `gh pr checks`에 체크가 하나 이상 있어야 하고, 모두 통과하거나 건너뛰어야 하며, 적어도 하나는 통과해야 합니다. 체크가 하나도 없으면 통과로 보지 않습니다. 리뷰 뒤에 푸시가 있으면 헤드가 바뀌므로 예전 기록은 쓸 수 없습니다.
 
 ## 상태 저장 위치

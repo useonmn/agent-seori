@@ -415,7 +415,7 @@ function failureDetail(e: unknown): string {
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 }
 
-/** One proactive pass: flush inboxes of panes that became idle, nudge silent lanes, escalate, detect lost panes. */
+/** One proactive pass: flush inboxes of panes that became idle, nudge lanes with no recent report, escalate, detect lost panes. */
 export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   // Kill switch: a stopped duty loop delivers, nudges and escalates nothing. Queued messages wait for the resume.
   const stop = d.store.stop("duty");
@@ -451,23 +451,20 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
         events.push({ lane: lane.key, action: "lost" });
         continue;
       }
-      if (st === "working") {
-        lane.lastActivityAt = now;
-        d.store.saveLane(lane);
-        continue;
-      }
+      // A goal-mode lane reads `working` until its goal ends, so `working` is not progress: staleness counts from the
+      // last lane activity seori records (start, report, ready). Delivery to a working lane pane is a steer.
       if (lane.status === "waiting" || st === "blocked") continue;
-      const idleMin = (now - lane.lastActivityAt) / 60_000;
+      const silentMin = (now - lane.lastActivityAt) / 60_000;
       const due = NUDGE_MINUTES[lane.nudges];
-      if (due === undefined || idleMin < due) continue;
+      if (due === undefined || silentMin < due) continue;
       lane.nudges += 1;
-      lane.log.push({ at: now, kind: "nudge", text: `idle ${Math.floor(idleMin)} min` });
+      lane.log.push({ at: now, kind: "nudge", text: `no report ${Math.floor(silentMin)} min` });
       d.store.saveLane(lane);
       if (lane.nudges < NUDGE_MINUTES.length) {
-        await sendOrThrow(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(idleMin)), seori: d.seoriCmd }), "duty");
+        await sendOrThrow(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(silentMin)), seori: d.seoriCmd }), "duty");
         events.push({ lane: lane.key, action: `nudge-${lane.nudges}` });
       } else {
-        await tellLead(d, `[ESCALATE ${lane.key}] idle ${Math.floor(idleMin)} min with no READY after ${lane.nudges - 1} nudges`, "duty");
+        await tellLead(d, `[ESCALATE ${lane.key}] no report for ${Math.floor(silentMin)} min after ${lane.nudges - 1} nudges`, "duty");
         events.push({ lane: lane.key, action: "escalated" });
       }
     } catch (e) {

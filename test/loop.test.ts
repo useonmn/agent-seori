@@ -214,7 +214,7 @@ describe("hourly loop", () => {
     expect((await tick({ maxStarts: 0 })).findings).toEqual(["vanished pane " + gone.paneId + " is gone"]);
     w.clock += 4 * HOUR;
     await dutyTick(d);
-    expect(d.store.lane("busy")!.lastActivityAt).toBe(w.clock);
+    expect(d.store.lane("busy")!.lastActivityAt).toBe(busy.createdAt);
     const lanesBefore = readdirSync(join(d.store.root, "lanes")).map((f) => readFileSync(join(d.store.root, "lanes", f), "utf8"));
     const run = await tick({ maxStarts: 0 });
     expect(run.findings.sort()).toEqual([
