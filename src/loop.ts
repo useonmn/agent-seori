@@ -98,7 +98,7 @@ export function importId(repo: string, n: number): string {
   return `${slug.slice(0, 41 - tag.length).replace(/-+$/, "")}${tag}`;
 }
 
-export async function backlogImport(d: Deps, repo: string, label = "dori", cwd?: string): Promise<{ added: string[]; capped: boolean }> {
+export async function backlogImport(d: Deps, repo: string, label = "seori", cwd?: string): Promise<{ added: string[]; capped: boolean }> {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Refusal(`repo must look like owner/repo, got ${repo}`);
   const r = await d.exec("gh", ["issue", "list", "--repo", repo, "--label", label, "--state", "open", "--limit", String(IMPORT_LIMIT), "--json", "number,title,body,labels"]);
   if (r.code !== 0) throw new Error(`gh issue list failed: ${(r.stderr || r.stdout).trim()}`);
@@ -261,7 +261,7 @@ async function sync(d: Deps, run: LoopRun): Promise<void> {
             item.status = "done";
             log(d, item, "done", "PR merged");
             run.synced.push(`${item.id} done (PR merged)`);
-            run.findings.push(`${item.id} READY and its PR merged: dori done ${item.id}`);
+            run.findings.push(`${item.id} READY and its PR merged: seori done ${item.id}`);
           }
         }
       } else if (item.status === "open" && item.source) {
@@ -297,7 +297,7 @@ async function audit(d: Deps, run: LoopRun): Promise<void> {
       run.findings.push(`${lane.key} pane ${lane.paneId} is gone`);
     } else if (lane.status === "ready") {
       const age = now - (lane.final?.at ?? lane.lastActivityAt);
-      if (age >= READY_HOURS * HOUR) run.findings.push(`${lane.key} READY ${hours(age)}h ago, not closed: dori done ${lane.key}`);
+      if (age >= READY_HOURS * HOUR) run.findings.push(`${lane.key} READY ${hours(age)}h ago, not closed: seori done ${lane.key}`);
     } else if (now - lastReport(lane) >= STALE_HOURS * HOUR) {
       const age = hours(now - lastReport(lane));
       run.findings.push(lane.status === "waiting"
@@ -361,7 +361,7 @@ function ask(d: Deps, run: LoopRun): void {
   const now = d.now();
   for (const item of d.store.items()) {
     if (item.status !== "open" || !item.decision) continue;
-    const line = `[DECIDE ${item.id}] ${item.decision} -> dori backlog decide ${item.id} --text '...' | dori backlog drop ${item.id}`;
+    const line = `[DECIDE ${item.id}] ${item.decision} -> seori backlog decide ${item.id} --text '...' | seori backlog drop ${item.id}`;
     if (item.askedAt === undefined) {
       item.askedAt = now;
       log(d, item, "ask", item.decision);

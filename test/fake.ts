@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
 import { Herdr, type AgentStatus, type Exec } from "../src/herdr.ts";
 import { Store, type HostLoad } from "../src/store.ts";
-import type { DutyCounts, TelemetryEvent, Usage } from "../src/telemetry.ts";
 
 /**
  * `screen` is what `pane read` returns; undefined makes the read fail. `agent` is the agent name `pane get` reports
@@ -31,15 +30,6 @@ export class World {
   /** number of upcoming `pane send-keys` calls that fail (exit 1) */
   keyFails = 0;
   gh: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 1, stdout: "" });
-  usage: TelemetryEvent[] = [];
-  dutyCounts: DutyCounts[] = [];
-  touches = 0;
-  recorder: Usage = {
-    touch: () => { this.touches++; },
-    record: (e) => { this.usage.push(e); },
-    duty: (c) => { this.dutyCounts.push(c); },
-    flush: async () => {},
-  };
   reviewer: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
 
   addPane(id: string, status: AgentStatus = "idle"): Pane {
@@ -57,7 +47,7 @@ export class World {
     if (group === "pane" && verb === "process-info") {
       const target = this.panes.get(String(argv[3]));
       if (!target || this.processInfoFails) return { code: 1, stdout: "", stderr: "process-info failed" };
-      const fg = target.foreground ?? (target.status === "shell" ? "-bash" : "omo");
+      const fg = target.foreground ?? (target.status === "shell" ? "-bash" : "omp");
       const procs = typeof fg === "string" ? [{ name: fg, argv: [fg] }] : fg;
       return ok({ process_info: { pane_id: argv[3], shell_pid: 100, foreground_process_group_id: target.pgid ?? 101, foreground_processes: procs.map((x, i) => ({ ...x, pid: 101 + i })) } });
     }
@@ -100,14 +90,13 @@ export class World {
 
   deps(): Deps {
     return {
-      store: new Store(mkdtempSync(join(tmpdir(), "dori-test-"))),
+      store: new Store(mkdtempSync(join(tmpdir(), "seori-test-"))),
       herdr: new Herdr(this.exec, ""),
       exec: this.exec,
       now: () => this.clock,
-      agentCmd: "omo",
-      doriCmd: "dori",
+      agentCmd: "omp",
+      seoriCmd: "seori",
       host: () => this.host,
-      usage: this.recorder,
     };
   }
 }

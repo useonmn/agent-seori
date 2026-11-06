@@ -66,7 +66,7 @@ describe("a typed entry whose pane's agent changed is held, never Entered (#108 
     expect(s.count("w1:p2", "pane", "send-text")).toBe(1);
     expect(s.notices()).toHaveLength(1);
     expect(s.notices()[0]).not.toContain("SECRET");
-    expect(s.notices()[0]).toContain("dori inbox resend w1:p2");
+    expect(s.notices()[0]).toContain("seori inbox resend w1:p2");
   });
 
   test("another agent process in front (foreground process group changed between ticks): held, no Enter, one notice", async () => {
@@ -100,7 +100,7 @@ describe("a typed entry whose pane's agent changed is held, never Entered (#108 
   });
 });
 
-describe("releasing held entries: dori inbox list | ack | resend (#108 2)", () => {
+describe("releasing held entries: seori inbox list | ack | resend (#108 2)", () => {
   function heldInbox(s: ReturnType<typeof setup>) {
     const long = `SECRET "quoted"\n${"x".repeat(100)}`;
     s.d.store.saveInbox("w1:p2", [

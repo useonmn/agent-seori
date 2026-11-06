@@ -54,16 +54,16 @@ describe("backlog", () => {
     const { w, d } = setup();
     w.gh = (argv) => argv[1] === "list"
       ? { code: 0, stdout: JSON.stringify([
-          { number: 12, title: "Fix login", body: "steps", labels: [{ name: "dori" }, { name: "p1" }] },
-          { number: 13, title: "New billing", body: "", labels: [{ name: "dori" }, { name: "needs-decision" }] },
+          { number: 12, title: "Fix login", body: "steps", labels: [{ name: "seori" }, { name: "p1" }] },
+          { number: 13, title: "New billing", body: "", labels: [{ name: "seori" }, { name: "needs-decision" }] },
         ]) }
       : { code: 0, stdout: JSON.stringify({ state: argv[2] === "12" ? "CLOSED" : "OPEN" }) };
-    expect(await backlogImport(d, "acme/web-app", "dori", d.store.root)).toEqual({ added: ["web-app-12", "web-app-13"], capped: false });
+    expect(await backlogImport(d, "acme/web-app", "seori", d.store.root)).toEqual({ added: ["web-app-12", "web-app-13"], capped: false });
     expect(d.store.item("web-app-12")).toMatchObject({ priority: 1, source: "acme/web-app#12" });
     expect(readFileSync(d.store.item("web-app-12")!.brief, "utf8")).toContain("issues/12");
     expect(d.store.item("web-app-13")!.decision).toContain("needs-decision");
-    expect(await backlogImport(d, "acme/web-app", "dori", d.store.root)).toEqual({ added: [], capped: false });
-    await expect(backlogImport(d, "other/web-app", "dori", d.store.root)).rejects.toThrow("already used by acme/web-app#12");
+    expect(await backlogImport(d, "acme/web-app", "seori", d.store.root)).toEqual({ added: [], capped: false });
+    await expect(backlogImport(d, "other/web-app", "seori", d.store.root)).rejects.toThrow("already used by acme/web-app#12");
     const run = await loopTick(d);
     expect(run.synced).toEqual(["web-app-12 dropped (acme/web-app#12 closed)"]);
     expect(run.started).toEqual([]);
@@ -86,7 +86,7 @@ describe("hourly loop", () => {
     expect(run.started).toEqual(["urgent (p1)", "old-five (p5)"]);
     expect(run.held).toEqual(["2 item(s) waiting: 1 free of 3 lanes, max 2/run"]);
     expect(d.store.item("urgent")!.status).toBe("running");
-    expect(w.panes.get(d.store.lane("urgent")!.paneId)!.ran[0]).toStartWith("omo 'Read your brief at ");
+    expect(w.panes.get(d.store.lane("urgent")!.paneId)!.ran[0]).toStartWith("omp 'Read your brief at ");
     expect(lead.received.filter((m) => m.startsWith("[START"))).toHaveLength(2);
     const loopMsg = lead.received.find((m) => m.startsWith("[LOOP"))!;
     expect(loopMsg).toContain("lanes 2/3");
@@ -157,7 +157,7 @@ describe("hourly loop", () => {
       "item-b reopened (lane lost, attempt 1)",
       "item-c done (PR merged)",
     ]);
-    expect(run.findings).toContain("item-c READY and its PR merged: dori done item-c");
+    expect(run.findings).toContain("item-c READY and its PR merged: seori done item-c");
     expect(d.store.item("item-b")).toMatchObject({ status: "open", attempts: 1 });
     expect(d.store.item("item-b")!.decision).toBeUndefined();
 
@@ -201,7 +201,7 @@ describe("hourly loop", () => {
     const run = await tick({ maxStarts: 0 });
     expect(run.findings.sort()).toEqual([
       "busy working, no report for 4h",
-      "finished READY 4h ago, not closed: dori done finished",
+      "finished READY 4h ago, not closed: seori done finished",
       "fresh working, no report for 4h",
       "quiet working, no report for 4h",
       "wait-ci waiting 4h on: WAITING: CI on acme/app#3",
@@ -215,7 +215,7 @@ describe("hourly loop", () => {
     const { w, d, lead, add } = setup();
     add("pick-db", { decision: "postgres or sqlite?" });
     const at = async (h: number) => { w.clock += h * HOUR; return loopTick(d); };
-    expect((await at(0)).asked).toEqual(["[DECIDE pick-db] postgres or sqlite? -> dori backlog decide pick-db --text '...' | dori backlog drop pick-db"]);
+    expect((await at(0)).asked).toEqual(["[DECIDE pick-db] postgres or sqlite? -> seori backlog decide pick-db --text '...' | seori backlog drop pick-db"]);
     expect((await at(1)).asked).toEqual([]);
     expect((await at(5)).asked[0]).toStartWith("(reminder) [DECIDE pick-db]");
     expect((await at(6)).asked).toEqual([]);

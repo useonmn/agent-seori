@@ -16,12 +16,12 @@ function setup() {
 }
 
 describe("lanes", () => {
-  test("start opens a tab, launches omo with the brief, and tells the lead", async () => {
+  test("start opens a tab, launches omp with the brief, and tells the lead", async () => {
     const { w, d, lead, brief } = setup();
     const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
     const pane = w.panes.get(lane.paneId)!;
-    expect(pane.ran[0]).toStartWith("omo 'Read your brief at ");
-    expect(await Bun.file(lane.brief).text()).toContain("dori ready fix-login --text");
+    expect(pane.ran[0]).toStartWith("omp 'Read your brief at ");
+    expect(await Bun.file(lane.brief).text()).toContain("seori ready fix-login --text");
     expect(lead.received).toEqual([`[START fix-login] lane opened in ${lane.paneId}`]);
     await expect(startLane(d, "fix-login", brief, { workspace: "w1" })).rejects.toThrow(Refusal);
   });
@@ -45,8 +45,6 @@ describe("lanes", () => {
     await expect(ready(d, "fix-login", "fixed", [])).rejects.toThrow("evidence");
     await ready(d, "fix-login", "fixed", ["https://github.com/o/r/pull/1"]);
     expect(lead.received.at(-1)).toBe("[READY fix-login] fixed\nevidence: https://github.com/o/r/pull/1");
-    expect(w.usage.map((e) => e.name)).toEqual(["dori.lane_started", "dori.lane_ready"]);
-    expect(JSON.stringify(w.usage)).not.toContain("fix-login");
     await done(d, "fix-login");
     expect(w.panes.has(lane.paneId)).toBe(false);
     expect(d.store.lane("fix-login")!.status).toBe("done");
@@ -153,8 +151,9 @@ describe("duty loop", () => {
     const events = await dutyTick(d);
     expect(events).toContainEqual({ pane: "w1:p9", action: "delivery-ambiguous", detail: expect.stringContaining("herdr exploded") });
     expect(events).toContainEqual({ pane: "w1:p1", action: "flushed" });
-    expect(lead.received).toHaveLength(1);
-    expect(lead.received[0]).toContain("to lead");
+    expect(lead.received).toHaveLength(2);
+    expect(lead.received).toContain("to lead");
+    expect(lead.received.filter((t) => t.startsWith("[DELIVERY-AMBIGUOUS w1:p9]"))).toHaveLength(1);
     expect(broken.received).toEqual([]);
   });
 
@@ -242,7 +241,6 @@ describe("duty loop", () => {
     expect(lead.received).toEqual([]);
     expect(d.store.lane("quiet")!.nudges).toBe(0);
     expect(d.store.stop()).toBeUndefined();
-    expect(w.dutyCounts).toEqual([]);
 
     await main(["duty", "resume"], d);
     const events = await dutyTick(d);
@@ -258,7 +256,6 @@ describe("duty loop", () => {
     w.clock += 30 * 60_000;
     expect(await dutyTick(d)).toEqual([]);
     expect(d.store.lane("busy")!.lastActivityAt).toBe(w.clock);
-    expect(w.touches).toBeGreaterThan(0);
     w.panes.delete(lane.paneId);
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
     expect(lead.received.at(-1)).toContain("[LOST busy]");
@@ -294,9 +291,6 @@ describe("review + merge gate", () => {
     gh(w, [{ name: "test", bucket: "pass" }, { name: "docs", bucket: "skipping" }]);
     expect(await mergeGate(d, "o/r#7")).toBe(`MERGED o/r#7 head=${head}`);
     expect(w.calls.at(-1)!.argv).toContain("--match-head-commit");
-    expect(w.usage.filter((e) => e.name === "dori.merge_decided").map((e) => (e as { outcome: string }).outcome))
-      .toEqual(["no_receipt", "review_block", "no_checks", "checks_red", "checks_all_skipped", "merged"]);
-    expect(w.usage.filter((e) => e.name === "dori.review_completed")).toHaveLength(2);
   });
 
   test("a reviewer without a VERDICT line writes no receipt", async () => {

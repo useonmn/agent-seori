@@ -4,7 +4,6 @@ import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { DeliveryUncertain, Herdr, HerdrError, omoScreenIdle, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
 import { KEY_RE, reservedKey, Store, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
-import { Telemetry, type MergeOutcome, type Usage } from "./telemetry.ts";
 
 export { KEY_RE, reservedKey };
 
@@ -18,9 +17,8 @@ export type Deps = {
   readonly exec: Exec;
   readonly now: () => number;
   readonly agentCmd: string;
-  readonly doriCmd: string;
+  readonly seoriCmd: string;
   readonly host: () => HostLoad;
-  readonly usage: Usage;
 };
 
 export const defaultDeps = (): Deps => {
@@ -30,10 +28,9 @@ export const defaultDeps = (): Deps => {
     herdr: new Herdr(),
     exec: spawnExec,
     now: Date.now,
-    agentCmd: process.env["DORI_AGENT_CMD"] ?? "omo",
-    doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(store.root)} bun ${shq(CLI)}`,
+    agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
+    seoriCmd: process.env["SEORI_CMD"] ?? `SEORI_HOME=${shq(store.root)} bun ${shq(CLI)}`,
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
-    usage: new Telemetry(store.root),
   };
 };
 
@@ -72,7 +69,7 @@ export function resolveTarget(d: Deps, target: string): string {
   const roles = d.store.roles();
   if (target === "lead" || target === "duty") {
     const pane = roles[target];
-    if (!pane) throw new Refusal(`no ${target} pane registered (dori role ${target} <pane>)`);
+    if (!pane) throw new Refusal(`no ${target} pane registered (seori role ${target} <pane>)`);
     return pane;
   }
   const lane = d.store.lane(target);
@@ -115,7 +112,7 @@ async function settled<T extends SendResult | undefined>(delivery: Promise<T>): 
 }
 
 /**
- * `dori send --to-shell`: the operator's per-message opt-in to type this one message into a pane with no agent.
+ * `seori send --to-shell`: the operator's per-message opt-in to type this one message into a pane with no agent.
  * Only the CLI flag reaches here, never relayed content, and queued messages are never typed with it. If an agent
  * is in the pane, or appears before typing, the message takes the queued agent path instead.
  */
@@ -201,7 +198,7 @@ function settleInbox(d: Deps, paneId: string, batch: readonly QueuedMessage[], a
   d.store.saveInbox(paneId, rest);
 }
 
-const NOTICE_FROM = "dori-delivery";
+const NOTICE_FROM = "seori-delivery";
 
 /**
  * Records an uncertain delivery on the queued messages. Typed text only waits for its Enter. An ambiguous batch is
@@ -225,11 +222,11 @@ async function noticeHeld(d: Deps, paneId: string, batch: readonly QueuedMessage
   const which = batch.map((m) => `from ${m.from} queued ${new Date(m.at).toISOString()}`).join(", ");
   const text =
     `[DELIVERY-AMBIGUOUS ${paneId}] ${batch.length} message(s) (${which}) may or may not have reached the pane; ${why}. ` +
-    `Held and not resent. Check the pane and see dori inbox list ${paneId}: if it did not arrive, dori inbox resend ${paneId} <index>; if it did, dori inbox ack ${paneId} <index>.`;
+    `Held and not resent. Check the pane and see seori inbox list ${paneId}: if it did not arrive, seori inbox resend ${paneId} <index>; if it did, seori inbox ack ${paneId} <index>.`;
   try {
     await tellLead(d, text, NOTICE_FROM);
   } catch (err) {
-    process.stderr.write(`dori: telling the lead about the ambiguous delivery to ${paneId} failed too (${failureDetail(err)}); the notice is kept in the lead's inbox\n`);
+    process.stderr.write(`seori: telling the lead about the ambiguous delivery to ${paneId} failed too (${failureDetail(err)}); the notice is kept in the lead's inbox\n`);
   }
 }
 
@@ -264,7 +261,7 @@ export function releaseHeld(d: Deps, target: string, index: number, how: "ack" |
   try {
     const msgs = d.store.queued(paneId);
     const m = Number.isInteger(index) ? msgs[index - 1] : undefined;
-    if (!m) throw new Refusal(`no entry ${index} in the inbox of ${paneId} (${msgs.length} entries; see dori inbox list ${target})`);
+    if (!m) throw new Refusal(`no entry ${index} in the inbox of ${paneId} (${msgs.length} entries; see seori inbox list ${target})`);
     if (m.attempt?.state !== "ambiguous") throw new Refusal(`entry ${index} of ${paneId} is not held; only held entries can be acked or resent`);
     const { attempt: _, ...fresh } = m;
     d.store.saveInbox(paneId, how === "ack" ? msgs.filter((_, i) => i !== index - 1) : msgs.map((x, i) => (i === index - 1 ? fresh : x)));
@@ -289,7 +286,7 @@ async function screenShowsIdle(d: Deps, paneId: string): Promise<boolean> {
 /** The lead delivery's result, or undefined when no lead is registered. Throws DeliveryUncertain like sendOrThrow. */
 export async function tellLead(d: Deps, text: string, from: string): Promise<"DELIVERED" | "QUEUED" | undefined> {
   if (!d.store.roles().lead) {
-    process.stderr.write(`dori: no lead pane registered; message kept only in the lane log\n`);
+    process.stderr.write(`seori: no lead pane registered; message kept only in the lane log\n`);
     return undefined;
   }
   return sendOrThrow(d, "lead", text, from);
@@ -310,14 +307,14 @@ export async function startLane(
   if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.paneId}`);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
-  const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
+  const footer = prompt("lane-footer.md", { key, seori: d.seoriCmd });
   await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
 
   const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
-  const env = { DORI_LANE: key, DORI_HOME: d.store.root };
+  const env = { SEORI_LANE: key, SEORI_HOME: d.store.root };
   const pane = workspace
     ? await d.herdr.createTab(key, cwd, workspace, env)
-    : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace("dori", cwd)).workspaceId, env);
+    : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace("seori", cwd)).workspaceId, env);
   const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
   await d.herdr.run(pane.paneId, `${d.agentCmd} ${shq(kickoff)}`);
 
@@ -329,8 +326,6 @@ export async function startLane(
   };
   d.store.saveLane(lane);
   await tellLead(d, `[START ${key}] lane opened in ${pane.paneId}`, key);
-  const open = d.store.lanes().filter((l) => l.status === "working" || l.status === "waiting").length;
-  d.usage.record({ name: "dori.lane_started", open_lanes: Math.min(open, 1000) });
   return lane;
 }
 
@@ -362,13 +357,7 @@ export async function ready(d: Deps, key: string, text: string, evidence: readon
   lane.lastActivityAt = now;
   lane.log.push({ at: now, kind: "ready", text });
   d.store.saveLane(lane);
-  const sent = await settled(tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}`, key));
-  d.usage.record({
-    name: "dori.lane_ready",
-    evidence_count: Math.min(evidence.length, 100),
-    lane_minutes: Math.min(Math.floor((now - lane.createdAt) / 60_000), 10_080),
-  });
-  return sent;
+  return settled(tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}`, key));
 }
 
 export async function done(d: Deps, key: string): Promise<void> {
@@ -444,7 +433,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       lane.log.push({ at: now, kind: "nudge", text: `idle ${Math.floor(idleMin)} min` });
       d.store.saveLane(lane);
       if (lane.nudges < NUDGE_MINUTES.length) {
-        await sendOrThrow(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(idleMin)), dori: d.doriCmd }), "duty");
+        await sendOrThrow(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(idleMin)), seori: d.seoriCmd }), "duty");
         events.push({ lane: lane.key, action: `nudge-${lane.nudges}` });
       } else {
         await tellLead(d, `[ESCALATE ${lane.key}] idle ${Math.floor(idleMin)} min with no READY after ${lane.nudges - 1} nudges`, "duty");
@@ -455,15 +444,6 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       events.push({ lane: lane.key, action: "lane-failed", detail: failureDetail(e) });
     }
   }
-  const count = (pred: (a: string) => boolean) => events.filter((e) => pred(e.action)).length;
-  d.usage.touch();
-  d.usage.duty({
-    ticks: 1,
-    flushed: count((a) => a === "flushed"),
-    nudges: count((a) => a.startsWith("nudge-")),
-    escalations: count((a) => a === "escalated"),
-    lost: count((a) => a === "lost"),
-  });
   return events;
 }
 
@@ -501,7 +481,6 @@ export async function review(d: Deps, prId: string, model?: string): Promise<{ v
   if (!last) throw new Error("reviewer printed no VERDICT line; no receipt written");
   const verdict = last[1] as "CLEAR" | "BLOCK";
   d.store.saveReceipt({ pr: pr.id, sha, verdict, model: model ?? "default", at: d.now(), summary: res.stdout.trim().slice(-4000) });
-  d.usage.record({ name: "dori.review_completed", verdict });
   return { verdict, sha };
 }
 
@@ -512,26 +491,22 @@ export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean 
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
   const refused = await gateRefusal(d, pr, sha);
-  if (refused) {
-    if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: refused[0] });
-    throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
-  }
+  if (refused) throw new Refusal(`MERGE_REFUSED ${refused}`);
   if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
   await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, "--squash", "--match-head-commit", sha]);
-  d.usage.record({ name: "dori.merge_decided", outcome: "merged" });
   return `MERGED ${pr.id} head=${sha}`;
 }
 
-async function gateRefusal(d: Deps, pr: PrRef, sha: string): Promise<[MergeOutcome, string] | undefined> {
+async function gateRefusal(d: Deps, pr: PrRef, sha: string): Promise<string | undefined> {
   const receipt = d.store.receipt(pr.id, sha);
-  if (!receipt) return ["no_receipt", `no review receipt at head ${sha.slice(0, 12)} (run: dori review ${pr.id})`];
-  if (receipt.verdict !== "CLEAR") return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
+  if (!receipt) return `no review receipt at head ${sha.slice(0, 12)} (run: seori review ${pr.id})`;
+  if (receipt.verdict !== "CLEAR") return `review at ${sha.slice(0, 12)} is ${receipt.verdict}`;
   const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
   const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
-  if (checks.length === 0) return ["no_checks", "no checks reported: an empty check list is never green"];
+  if (checks.length === 0) return "no checks reported: an empty check list is never green";
   const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
-  if (bad.length > 0) return ["checks_red", `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`];
-  if (!checks.some((c) => c.bucket === "pass")) return ["checks_all_skipped", "every check was skipped"];
+  if (bad.length > 0) return `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`;
+  if (!checks.some((c) => c.bucket === "pass")) return "every check was skipped";
   return undefined;
 }
 

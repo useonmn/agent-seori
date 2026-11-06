@@ -127,7 +127,7 @@ function lockStale(path: string, content: string, now: number): boolean {
 }
 
 export class Store {
-  constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori")) {
+  constructor(readonly root: string = process.env["SEORI_HOME"] ?? join(homedir(), ".seori")) {
     for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "duty"]) mkdirSync(join(root, d), { recursive: true });
   }
 

@@ -9,37 +9,35 @@ import { shq } from "./herdr.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import type { Role } from "./store.ts";
 
-const USAGE = `dori - a proactive multi-session harness on herdr + omo
+const USAGE = `seori - a proactive multi-session harness on herdr + omp
 
-  dori up [--cwd DIR]                         open lead, duty, duty loop and hourly loop panes
-  dori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
-  dori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omo session, brief + lane rules
-  dori report <key> --text T [--status working|waiting]
-  dori ready <key> --text T --evidence LINK [--evidence LINK ...]
-  dori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane's agent is idle
+  seori up [--cwd DIR]                         open lead, duty, duty loop and hourly loop panes
+  seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
+  seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, brief + lane rules
+  seori report <key> --text T [--status working|waiting]
+  seori ready <key> --text T --evidence LINK [--evidence LINK ...]
+  seori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane's agent is idle
                   [--to-shell]                operator only: type this one message into a pane with no agent
-  dori inbox list <pane|role|key>             queued entries: index, state (queued|typed|held), sender, time, first 60 chars
-  dori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
-  dori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
-  dori duty [--once] [--interval SECONDS]     flush inboxes, nudge idle lanes, escalate, detect lost lanes
-  dori duty stop [--text WHY] | resume | status   kill switch
-  dori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
+  seori inbox list <pane|role|key>             queued entries: index, state (queued|typed|held), sender, time, first 60 chars
+  seori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
+  seori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
+  seori duty [--once] [--interval SECONDS]     flush inboxes, nudge idle lanes, escalate, detect lost lanes
+  seori duty stop [--text WHY] | resume | status   kill switch
+  seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                               hourly: sync backlog, audit missed work, start the next item, ask decisions
-  dori loop stop [--text WHY] | resume | status   kill switch and last run
-  dori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
-  dori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
-  dori backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
-  dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
-  dori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
-  dori done <key>                             lead closes a READY lane
-  dori status
+  seori loop stop [--text WHY] | resume | status   kill switch and last run
+  seori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
+  seori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
+  seori backlog import <owner/repo> [--label seori] [--cwd DIR]   open labelled issues -> items
+  seori review <owner/repo#N> [--model M]      fresh omp reviewer at the exact head -> receipt
+  seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
+  seori done <key>                             lead closes a READY lane
+  seori status
 
 --text may be omitted to read the message from stdin.
 send, report and ready exit 3 and print HELD <target> when the delivery may or may not have reached the pane:
-it is held and never resent, so do not send it again: check the pane, then dori inbox ack or dori inbox resend it.
+it is held and never resent, so do not send it again: check the pane, then seori inbox ack or seori inbox resend it.
 QUEUED (exit 0) means it waits in the pane's inbox.`;
-
-const COMMANDS = new Set(["up", "role", "start", "report", "ready", "send", "inbox", "duty", "review", "merge", "done", "status", "loop", "backlog"]);
 
 type Args = { pos: string[]; flags: Map<string, string[]> };
 
@@ -87,24 +85,24 @@ function deliveryOutcome(result: SendResult | undefined, target: string): number
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
   mkdirSync(dir, { recursive: true });
-  const src = readFileSync(join(import.meta.dir, "..", "prompts", name), "utf8").replaceAll("{{dori}}", d.doriCmd);
+  const src = readFileSync(join(import.meta.dir, "..", "prompts", name), "utf8").replaceAll("{{seori}}", d.seoriCmd);
   const out = join(dir, name);
   writeFileSync(out, src);
   return out;
 }
 
 async function up(d: Deps, cwd: string): Promise<void> {
-  const env = { DORI_HOME: d.store.root };
-  const lead = await d.herdr.createWorkspace("dori", cwd);
+  const env = { SEORI_HOME: d.store.root };
+  const lead = await d.herdr.createWorkspace("seori", cwd);
   await d.herdr.run(lead.paneId, `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, "lead.md"))}`);
   d.store.setRole("lead", lead.paneId);
   const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, env);
   await d.herdr.run(duty.paneId, `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, "duty.md"))}`);
   d.store.setRole("duty", duty.paneId);
   const loop = await d.herdr.split(duty.paneId, cwd, env);
-  await d.herdr.run(loop.paneId, `${d.doriCmd} duty --interval 60`);
+  await d.herdr.run(loop.paneId, `${d.seoriCmd} duty --interval 60`);
   const hourly = await d.herdr.split(loop.paneId, cwd, { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
-  await d.herdr.run(hourly.paneId, `${d.doriCmd} loop`);
+  await d.herdr.run(hourly.paneId, `${d.seoriCmd} loop`);
   console.log(`UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} home=${d.store.root}`);
 }
 
@@ -121,7 +119,6 @@ function status(d: Deps): void {
 export async function main(argv: readonly string[], d: Deps = defaultDeps()): Promise<number> {
   const a = parse(argv);
   const [cmd, x] = a.pos;
-  if (cmd !== undefined && COMMANDS.has(cmd)) d.usage.touch();
   switch (cmd) {
     case "up":
       await up(d, resolve(one(a, "cwd") ?? process.cwd()));
@@ -156,7 +153,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "send": {
       const target = need(x, "target");
       const deliver = one(a, "to-shell") === "true" ? sendToShell : send;
-      const sent = await deliver(d, target, await textOf(a), one(a, "from") ?? process.env["DORI_LANE"] ?? "cli");
+      const sent = await deliver(d, target, await textOf(a), one(a, "from") ?? process.env["SEORI_LANE"] ?? "cli");
       if (sent === "DELIVERED") console.log(`DELIVERED ${target}`);
       return deliveryOutcome(sent, target);
     }
@@ -169,7 +166,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         return 0;
       }
       if (x === "ack" || x === "resend") {
-        const index = Number(need(a.pos[3], "entry index (see dori inbox list)"));
+        const index = Number(need(a.pos[3], "entry index (see seori inbox list)"));
         const paneId = releaseHeld(d, target, index, x);
         console.log(x === "ack" ? `ACKED ${paneId} ${index}` : `RELEASED ${paneId} ${index}: the next flush delivers it`);
         return 0;
@@ -228,10 +225,10 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const interval = Number(one(a, "interval") ?? String(HOUR / 1000)) * 1000;
       const opts = {
         interval,
-        maxLanes: Number(one(a, "max-lanes") ?? process.env["DORI_MAX_LANES"] ?? "3"),
-        maxStarts: Number(one(a, "max-starts") ?? process.env["DORI_MAX_STARTS"] ?? "2"),
+        maxLanes: Number(one(a, "max-lanes") ?? process.env["SEORI_MAX_LANES"] ?? "3"),
+        maxStarts: Number(one(a, "max-starts") ?? process.env["SEORI_MAX_STARTS"] ?? "2"),
         force: one(a, "force") === "true",
-        ...(one(a, "max-load") ?? process.env["DORI_MAX_LOAD"] ? { maxLoad: Number(one(a, "max-load") ?? process.env["DORI_MAX_LOAD"]) } : {}),
+        ...(one(a, "max-load") ?? process.env["SEORI_MAX_LOAD"] ? { maxLoad: Number(one(a, "max-load") ?? process.env["SEORI_MAX_LOAD"]) } : {}),
       };
       const count = (n: number): boolean => Number.isInteger(n) && n >= 0;
       if (!(Number.isFinite(interval) && interval > 0) || !count(opts.maxLanes) || !count(opts.maxStarts) ||
@@ -274,7 +271,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         backlogDrop(d, id, one(a, "text"));
         console.log(`DROPPED ${id}`);
       } else if (x === "import") {
-        const { added, capped } = await backlogImport(d, need(a.pos[2], "owner/repo"), one(a, "label") ?? "dori", one(a, "cwd"));
+        const { added, capped } = await backlogImport(d, need(a.pos[2], "owner/repo"), one(a, "label") ?? "seori", one(a, "cwd"));
         console.log(`IMPORTED ${added.length}${added.length ? `: ${added.join(", ")}` : ""}`);
         if (capped) console.error(`WARNING: gh returned ${IMPORT_LIMIT} issues, the import limit; some labelled issues may be missing`);
       } else {
@@ -304,16 +301,13 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
 }
 
 if (import.meta.main) {
-  const deps = defaultDeps();
   let code = 0;
   try {
-    code = await main(process.argv.slice(2), deps);
+    code = await main(process.argv.slice(2));
   } catch (e) {
     if (!(e instanceof Refusal)) throw e;
     console.error(e.message);
     code = 2;
-  } finally {
-    await deps.usage.flush(2000);
   }
   process.exit(code);
 }

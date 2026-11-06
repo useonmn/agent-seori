@@ -1,11 +1,11 @@
 {
-  "name": "dori-superagent",
+  "name": "seori",
   "version": "0.1.0",
-  "description": "A proactive multi-session coding-agent harness in ~1,600 lines, running on herdr + omo.",
+  "description": "A proactive multi-session coding-agent harness in ~1,600 lines, running on herdr + omp.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "dori": "src/cli.ts"
+    "seori": "src/cli.ts"
   },
   "scripts": {
     "test": "bun test ./test/",

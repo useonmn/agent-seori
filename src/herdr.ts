@@ -108,7 +108,7 @@ export type PaneRef = { readonly paneId: string; readonly tabId: string; readonl
 export class Herdr {
   constructor(
     private readonly exec: Exec = spawnExec,
-    private readonly session: string | undefined = process.env["DORI_HERDR_SESSION"],
+    private readonly session: string | undefined = process.env["SEORI_HERDR_SESSION"],
   ) {}
 
   private async call(argv: readonly string[]): Promise<Record<string, unknown>> {
@@ -243,13 +243,13 @@ export class Herdr {
       return { shell: interactiveShellInFront(info), ...(typeof pgid === "number" ? { pgid } : {}) };
     } catch (e) {
       const reason = e instanceof HerdrError ? (e.result.stderr || e.result.stdout).trim() : String(e);
-      process.stderr.write(`dori: herdr pane process-info failed for ${paneId} (${reason}); holding delivery\n`);
+      process.stderr.write(`seori: herdr pane process-info failed for ${paneId} (${reason}); holding delivery\n`);
       return { shell: true };
     }
   }
 
   /**
-   * The operator's explicit `dori send --to-shell`: types text + Enter into a pane that has no agent. The status is
+   * The operator's explicit `seori send --to-shell`: types text + Enter into a pane that has no agent. The status is
    * re-read right before typing; if an agent is there now, nothing is typed and false is returned.
    */
   async typeIntoShell(paneId: string, text: string): Promise<boolean> {
