@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { defaultSeoriCmd, done, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
@@ -60,6 +60,27 @@ describe("lanes", () => {
     expect(d.store.lane("no-kickoff")).toBeUndefined();
     expect(w.calls.filter((c) => c.argv[1] === "close")).toHaveLength(2);
     expect(lead.received).toEqual([]);
+  });
+
+  test("a brief passed as its own briefs/<key>.md copy keeps exactly one lane footer, even after a failed start and retry", async () => {
+    const { w, d } = setup();
+    const copy = d.store.briefPath("fix-login");
+    writeFileSync(copy, "Fix the flaky login test.\n");
+    w.startFails = '{"error":{"code":"agent_start_timeout"}}';
+    await expect(startLane(d, "fix-login", copy, { workspace: "w1" })).rejects.toThrow(Refusal);
+    w.startFails = undefined;
+    const lane = await startLane(d, "fix-login", copy, { workspace: "w1" });
+    expect(lane.brief).toBe(copy);
+    const text = readFileSync(copy, "utf8");
+    expect(text.split("## Lane rules (added by seori for lane ")).toHaveLength(2);
+    expect(text).toStartWith("Fix the flaky login test.\n\n## Lane rules (added by seori for lane `fix-login`)");
+  });
+
+  test("a brief elsewhere stays unchanged at its source path", async () => {
+    const { d, brief } = setup();
+    const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
+    expect(readFileSync(brief, "utf8")).toBe("Fix the flaky login test.");
+    expect(readFileSync(lane.brief, "utf8")).toStartWith("Fix the flaky login test.\n\n## Lane rules");
   });
 
   test("start and up refuse without herdr's omp integration, before opening anything", async () => {

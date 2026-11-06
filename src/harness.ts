@@ -10,6 +10,7 @@ export { KEY_RE, reservedKey };
 export const NUDGE_MINUTES = [10, 20, 40] as const;
 const PROMPTS = join(import.meta.dir, "..", "prompts");
 const CLI = resolve(import.meta.dir, "cli.ts");
+const FOOTER_RE = /(^|\n)## Lane rules \(added by seori for lane [\s\S]*$/;
 
 export type Deps = {
   readonly store: Store;
@@ -331,7 +332,10 @@ export async function startLane(
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
   const footer = prompt("lane-footer.md", { key, seori: d.seoriCmd });
-  await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
+  // The lead may pass briefs/<key>.md itself (e.g. on a retry): drop any footer seori already added,
+  // whatever the path, so the brief always carries exactly one.
+  const source = readFileSync(briefFile, "utf8").replace(FOOTER_RE, "").trimEnd();
+  await Bun.write(briefPath, `${source}\n\n${footer}`);
 
   const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
   const env = { SEORI_LANE: key, SEORI_HOME: d.store.root };
