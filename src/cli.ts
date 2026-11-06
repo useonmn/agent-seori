@@ -2,10 +2,9 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  defaultDeps, done, dutyTick, inboxList, mergeGate, ready, Refusal, releaseHeld, report, review, send, sendToShell, startLane, ROLES,
-  type Deps, type SendResult,
+  defaultDeps, done, dutyTick, inboxList, mergeGate, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
+  startAgent, startLane, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
-import { shq } from "./herdr.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import type { Role } from "./store.ts";
 
@@ -37,7 +36,9 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
 --text may be omitted to read the message from stdin.
 send, report and ready exit 3 and print HELD <target> when the delivery may or may not have reached the pane:
 it is held and never resent, so do not send it again: check the pane, then seori inbox ack or seori inbox resend it.
-QUEUED (exit 0) means it waits in the pane's inbox.`;
+QUEUED (exit 0) means it waits in the pane's inbox.
+SEORI_MODEL=M passes --model M to every omp seori starts (lead, duty, lanes) and is the reviewer's default model.
+up and start need herdr's omp integration (herdr integration install omp).`;
 
 type Args = { pos: string[]; flags: Map<string, string[]> };
 
@@ -92,12 +93,13 @@ function renderPrompt(d: Deps, name: string): string {
 }
 
 async function up(d: Deps, cwd: string): Promise<void> {
+  await requireOmpIntegration(d);
   const env = { SEORI_HOME: d.store.root };
   const lead = await d.herdr.createWorkspace("seori", cwd);
-  await d.herdr.run(lead.paneId, `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, "lead.md"))}`);
+  await startAgent(d, "lead", lead.paneId, ["--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", lead.paneId);
   const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, env);
-  await d.herdr.run(duty.paneId, `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, "duty.md"))}`);
+  await startAgent(d, "duty", duty.paneId, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
   d.store.setRole("duty", duty.paneId);
   const loop = await d.herdr.split(duty.paneId, cwd, env);
   await d.herdr.run(loop.paneId, `${d.seoriCmd} duty --interval 60`);

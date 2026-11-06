@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
-import { done, dutyTick, mergeGate, ready, Refusal, report, review, send, startLane } from "../src/harness.ts";
-import { World } from "./fake.ts";
+import { defaultSeoriCmd, done, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { ompJson, World } from "./fake.ts";
 
 function setup() {
   const w = new World();
@@ -15,15 +15,71 @@ function setup() {
   return { w, d, lead, brief };
 }
 
+describe("seori command for agents and loop panes", () => {
+  test("carries the herdr session and model when set, so loops and lanes drive the same herdr and omp model", () => {
+    const cmd = defaultSeoriCmd("/h o", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "anthropic/claude-haiku-5-5" });
+    expect(cmd).toStartWith("SEORI_HOME='/h o' SEORI_HERDR_SESSION='iso' SEORI_MODEL='anthropic/claude-haiku-5-5' bun ");
+    expect(defaultSeoriCmd("/h", {})).toStartWith("SEORI_HOME='/h' bun ");
+  });
+});
+
 describe("lanes", () => {
-  test("start opens a tab, launches omp with the brief, and tells the lead", async () => {
+  test("start opens a tab, starts omp with herdr agent start, then sends the /goal kickoff, and tells the lead", async () => {
     const { w, d, lead, brief } = setup();
     const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
     const pane = w.panes.get(lane.paneId)!;
-    expect(pane.ran[0]).toStartWith("omp 'Read your brief at ");
+    const herdrCalls = w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "agent").map((c) => c.argv.slice(0, 3));
+    expect(herdrCalls.slice(0, 2)).toEqual([["agent", "start", `fix-login-${lane.paneId.replace(":", "")}`], ["agent", "prompt", lane.paneId]]);
+    expect(w.calls.find((c) => c.argv[1] === "start")!.argv).toEqual(["agent", "start", pane.started!.name, "--kind", "omp", "--pane", lane.paneId, "--timeout", "60000", "--"]);
+    expect(pane.ran).toEqual([]);
+    expect(pane.received).toEqual([
+      `/goal Read your brief at ${lane.brief} and execute it. Your lane key is fix-login. ` +
+        `The work is finished only when the brief's exit condition holds and you have sent seori ready.`,
+    ]);
     expect(await Bun.file(lane.brief).text()).toContain("seori ready fix-login --text");
     expect(lead.received).toEqual([`[START fix-login] lane opened in ${lane.paneId}`]);
     await expect(startLane(d, "fix-login", brief, { workspace: "w1" })).rejects.toThrow(Refusal);
+  });
+
+  test("SEORI_MODEL goes to the lane's omp as --model", async () => {
+    const { w, d, brief } = setup();
+    const lane = await startLane({ ...d, model: "anthropic/claude-x" }, "fix-login", brief, { workspace: "w1" });
+    expect(w.panes.get(lane.paneId)!.started!.args).toEqual(["--model", "anthropic/claude-x"]);
+  });
+
+  test("a failed agent start or kickoff closes the pane and saves no lane", async () => {
+    const { w, d, lead, brief } = setup();
+    w.startFails = '{"error":{"code":"agent_start_timeout"}}';
+    await expect(startLane(d, "no-start", brief, { workspace: "w1" })).rejects.toThrow(/lane no-start did not start, pane w1:p\d+ closed: .*agent_start_timeout/);
+    w.startFails = undefined;
+    const before = new Set(w.panes.keys());
+    w.promptFails.set(`w1:p${w.next + 1}`, '{"error":{"code":"agent_blocked"}}');
+    await expect(startLane(d, "no-kickoff", brief, { workspace: "w1" })).rejects.toThrow(/lane no-kickoff did not start, .*agent_blocked/);
+    expect([...w.panes.keys()]).toEqual([...before]);
+    expect(d.store.lane("no-start")).toBeUndefined();
+    expect(d.store.lane("no-kickoff")).toBeUndefined();
+    expect(w.calls.filter((c) => c.argv[1] === "close")).toHaveLength(2);
+    expect(lead.received).toEqual([]);
+  });
+
+  test("start and up refuse without herdr's omp integration, before opening anything", async () => {
+    const { w, d, brief } = setup();
+    w.ompIntegration = false;
+    await expect(main(["start", "fix-login", "--brief", brief, "--workspace", "w1"], d)).rejects.toThrow(INTEGRATION_MISSING);
+    await expect(main(["up", "--cwd", d.store.root], d)).rejects.toThrow(INTEGRATION_MISSING);
+    expect(w.calls.map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["integration status", "integration status"]);
+    expect(d.store.lane("fix-login")).toBeUndefined();
+  });
+
+  test("up starts the lead and duty omp with herdr agent start and their prompts; the loops keep pane run", async () => {
+    const w = new World();
+    const d = { ...w.deps(), model: "m1" };
+    await main(["up", "--cwd", d.store.root], d);
+    const { lead, duty } = d.store.roles();
+    const prompts = join(d.store.root, "prompts");
+    expect(w.panes.get(lead!)!.started).toEqual({ name: `lead-${lead!.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "lead.md"), "--model", "m1"] });
+    expect(w.panes.get(duty!)!.started).toEqual({ name: `duty-${duty!.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "duty.md"), "--model", "m1"] });
+    expect([...w.panes.values()].flatMap((p) => p.ran)).toEqual(["seori duty --interval 60", "seori loop"]);
   });
 
   test("start refuses the role names lead and duty as lane keys before it writes or opens anything", async () => {
@@ -69,7 +125,45 @@ describe("pane messaging", () => {
     expect(lead.received[0]).toContain("second note");
   });
 
-  test("an omo pane that herdr refuses `agent prompt` for (agent_not_ready) still gets the text typed in", async () => {
+  test("a blocked lead gets nothing typed: the message queues without agent prompt or send-text", async () => {
+    const { w, d, lead } = setup();
+    lead.status = "blocked";
+    expect(await send(d, "lead", "note", "cli")).toBe("QUEUED");
+    expect(lead.received).toEqual([]);
+    expect(w.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "prompt")).toEqual([]);
+    expect(w.calls.filter((c) => c.argv[1] === "send-text")).toEqual([]);
+  });
+
+  test("an open lane in goal mode takes messages while working, through agent prompt", async () => {
+    const { w, d, brief } = setup();
+    const lane = await startLane(d, "a-lane", brief, { workspace: "w1" });
+    const pane = w.panes.get(lane.paneId)!;
+    pane.status = "working";
+    pane.received.length = 0;
+    w.calls.length = 0;
+    expect(await send(d, "a-lane", "rebase on main first", "lead")).toBe("DELIVERED");
+    expect(pane.received).toEqual(["rebase on main first"]);
+    expect(w.calls).toContainEqual({ cmd: "herdr", argv: ["agent", "prompt", lane.paneId, "rebase on main first"] });
+    expect(d.store.queued(lane.paneId)).toEqual([]);
+  });
+
+  test("a working lead still queues, and a blocked lane gets nothing typed", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "a-lane", brief, { workspace: "w1" });
+    lead.status = "working";
+    lead.received.length = 0;
+    expect(await send(d, "lead", "note", "a-lane")).toBe("QUEUED");
+    expect(lead.received).toEqual([]);
+    const pane = w.panes.get(lane.paneId)!;
+    pane.status = "blocked";
+    pane.received.length = 0;
+    w.calls.length = 0;
+    expect(await send(d, "a-lane", "note", "lead")).toBe("QUEUED");
+    expect(pane.received).toEqual([]);
+    expect(w.calls.filter((c) => c.argv[1] === "prompt" || c.argv[1] === "send-text")).toEqual([]);
+  });
+
+  test("an omp pane that herdr refuses `agent prompt` for (agent_not_ready) still gets the text typed in", async () => {
     const { w, d, lead } = setup();
     w.promptFails.set("w1:p1", '{"error":{"code":"agent_not_ready"}}');
     expect(await send(d, "lead", "hello\n\nlead", "cli")).toBe("DELIVERED");
@@ -277,12 +371,12 @@ describe("review + merge gate", () => {
     const { w, d } = setup();
     gh(w, []);
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("no review receipt");
-    w.reviewer = () => ({ code: 0, stdout: "HIGH src/a.ts:3 ...\nVERDICT: BLOCK" });
+    w.reviewer = () => ({ code: 0, stdout: ompJson("HIGH src/a.ts:3 ...\nVERDICT: BLOCK") });
     expect((await review(d, "o/r#7")).verdict).toBe("BLOCK");
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("is BLOCK");
-    w.reviewer = () => ({ code: 0, stdout: "no findings\nVERDICT: CLEAR" });
-    await review(d, "o/r#7", "some/model");
-    expect(d.store.receipt("o/r#7", head)!.model).toBe("some/model");
+    w.reviewer = () => ({ code: 0, stdout: ompJson("no findings\nVERDICT: CLEAR", { provider: "openai", model: "gpt-x" }) });
+    await review(d, "o/r#7", "gpt");
+    expect(d.store.receipt("o/r#7", head)).toMatchObject({ verdict: "CLEAR", model: "openai/gpt-x", summary: "no findings\nVERDICT: CLEAR" });
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("never green");
     gh(w, [{ name: "test", bucket: "fail" }, { name: "lint", bucket: "pass" }]);
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("test=fail");
@@ -293,11 +387,45 @@ describe("review + merge gate", () => {
     expect(w.calls.at(-1)!.argv).toContain("--match-head-commit");
   });
 
-  test("a reviewer without a VERDICT line writes no receipt", async () => {
+  test("the reviewer runs isolated in JSON mode; the model flag defaults to SEORI_MODEL", async () => {
     const { w, d } = setup();
     gh(w, []);
-    w.reviewer = () => ({ code: 0, stdout: "looks fine I guess" });
+    await review({ ...d, model: "anthropic/claude-x" }, "o/r#7");
+    const argv = w.calls.find((c) => c.cmd === "omp")!.argv;
+    expect(argv.slice(0, -1)).toEqual([
+      "-p", "--no-session", "--mode", "json", "--no-extensions", "--no-skills", "--no-rules", "--no-context-files",
+      "--approval-mode", "yolo", "--model", "anthropic/claude-x",
+    ]);
+    expect(argv.at(-1)).toContain("o/r#7");
+  });
+
+  test("a VERDICT outside the final answer does not count; no VERDICT writes no receipt", async () => {
+    const { w, d } = setup();
+    gh(w, []);
+    w.reviewer = () => ({ code: 0, stdout: ompJson("looks fine I guess") });
+    await expect(review(d, "o/r#8")).rejects.toThrow("no VERDICT");
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR\n" });
     await expect(review(d, "o/r#8")).rejects.toThrow("no VERDICT");
     expect(d.store.receipt("o/r#8", head)).toBeUndefined();
+  });
+
+  test("a reviewer cut off by its deadline or the cost cap writes no receipt", async () => {
+    const { w, d } = setup();
+    gh(w, []);
+    w.reviewer = () => ({ code: 1, stdout: ompJson("VERDICT: CLEAR", { stopReason: "aborted" }) });
+    await expect(review(d, "o/r#8")).rejects.toThrow("reviewer stopped before finishing (deadline)");
+    w.reviewer = () => ({ code: 3, stdout: "", stderr: "Cost cap reached: $0.50\n" });
+    await expect(review(d, "o/r#8")).rejects.toThrow("reviewer hit the cost cap: Cost cap reached: $0.50");
+    w.reviewer = () => ({ code: 1, stdout: "", stderr: 'Model "x" not found' });
+    await expect(review(d, "o/r#8")).rejects.toThrow('reviewer exited 1: Model "x" not found');
+    expect(d.store.receipt("o/r#8", head)).toBeUndefined();
+  });
+
+  test("reviewerAnswer: last agent_end's last assistant text, else the last assistant message_end", () => {
+    const end = (text: string) => JSON.stringify({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }] });
+    const msg = (text: string) => JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "x" }, { type: "text", text }], model: "m" } });
+    expect(reviewerAnswer([end("first"), "Working...", end("second")].join("\n"))).toEqual({ text: "second", stopReason: "stop" });
+    expect(reviewerAnswer([msg("partial"), msg("later")].join("\n"))).toEqual({ text: "later", model: "m" });
+    expect(reviewerAnswer("plain text\n")).toBeUndefined();
   });
 });

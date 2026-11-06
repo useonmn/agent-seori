@@ -60,7 +60,11 @@ describe("backlog", () => {
       : { code: 0, stdout: JSON.stringify({ state: argv[2] === "12" ? "CLOSED" : "OPEN" }) };
     expect(await backlogImport(d, "acme/web-app", "seori", d.store.root)).toEqual({ added: ["web-app-12", "web-app-13"], capped: false });
     expect(d.store.item("web-app-12")).toMatchObject({ priority: 1, source: "acme/web-app#12" });
-    expect(readFileSync(d.store.item("web-app-12")!.brief, "utf8")).toContain("issues/12");
+    const imported = readFileSync(d.store.item("web-app-12")!.brief, "utf8");
+    expect(imported).toContain("issues/12");
+    expect(imported.trimEnd().split("\n").at(-1)).toBe(
+      "Exit condition: a pull request that resolves https://github.com/acme/web-app/issues/12 is open, `gh pr checks` passes, and `seori ready web-app-12` has succeeded with the PR link as evidence.",
+    );
     expect(d.store.item("web-app-13")!.decision).toContain("needs-decision");
     expect(await backlogImport(d, "acme/web-app", "seori", d.store.root)).toEqual({ added: [], capped: false });
     await expect(backlogImport(d, "other/web-app", "seori", d.store.root)).rejects.toThrow("already used by acme/web-app#12");
@@ -86,7 +90,7 @@ describe("hourly loop", () => {
     expect(run.started).toEqual(["urgent (p1)", "old-five (p5)"]);
     expect(run.held).toEqual(["2 item(s) waiting: 1 free of 3 lanes, max 2/run"]);
     expect(d.store.item("urgent")!.status).toBe("running");
-    expect(w.panes.get(d.store.lane("urgent")!.paneId)!.ran[0]).toStartWith("omp 'Read your brief at ");
+    expect(w.panes.get(d.store.lane("urgent")!.paneId)!.received[0]).toStartWith("/goal Read your brief at ");
     expect(lead.received.filter((m) => m.startsWith("[START"))).toHaveLength(2);
     const loopMsg = lead.received.find((m) => m.startsWith("[LOOP"))!;
     expect(loopMsg).toContain("lanes 2/3");
@@ -129,6 +133,20 @@ describe("hourly loop", () => {
     w.host = { load1: 1, cores: 8, memFreePct: 50 };
     expect((await tick({ maxLanes: 5 })).started).toEqual(["next (p5)"]);
     expect(d.store.item("blocked")!.status).toBe("open");
+  });
+
+  test("without herdr's omp integration a loop start opens no tab and records the failure", async () => {
+    const { w, d, add, tick } = setup();
+    add("next");
+    w.ompIntegration = false;
+    const panes = new Set(w.panes.keys());
+    const run = await tick({ maxLanes: 3 });
+    expect(run.started).toEqual([]);
+    expect(run.findings[0]).toContain("start next failed");
+    expect([...w.panes.keys()]).toEqual([...panes]);
+    expect(w.calls.filter((c) => c.argv[0] === "tab" || c.argv[0] === "workspace")).toEqual([]);
+    expect(d.store.lane("next")).toBeUndefined();
+    expect(d.store.item("next")!.status).toBe("open");
   });
 
   test("sync: done lane closes the item, a lost lane reopens it and asks after two losses, a merged PR closes it", async () => {

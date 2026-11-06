@@ -44,10 +44,10 @@ async function captureIo(run: () => Promise<number>): Promise<{ code: number; ou
 describe("a typed entry whose pane's agent changed is held, never Entered (#108 1)", () => {
   test("the typed attempt records the agent name and foreground process group herdr reported", async () => {
     const s = setup();
-    s.pane.agent = "omo";
+    s.pane.agent = "omp";
     s.pane.pgid = 4242;
     await typedEntry(s);
-    expect(s.d.store.queued("w1:p2")[0]!.attempt).toMatchObject({ state: "typed", agent: "omo", pgid: 4242 });
+    expect(s.d.store.queued("w1:p2")[0]!.attempt).toMatchObject({ state: "typed", agent: "omp", pgid: 4242 });
   });
 
   test("the agent exits (no agent in the pane): held, the lead is told once, and no Enter when an agent comes back", async () => {

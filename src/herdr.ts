@@ -33,7 +33,7 @@ export class DeliveryUncertain extends Error {
 /**
  * Which agent typed text went into (#108), as herdr reports it: `agent` is the agent name from `pane get`, `pgid` the
  * foreground process group id from `pane process-info`. `pane get`'s `revision` is not used: in herdr 0.9.5 it stayed
- * the same across an omo exit and restart in the same pane, so it cannot tell two agents apart.
+ * the same across an agent exit and restart in the same pane, so it cannot tell two agents apart.
  */
 export type AgentIdentity = { readonly agent?: string; readonly pgid?: number };
 
@@ -48,26 +48,6 @@ const PASTE_SETTLE_MS = 400;
 
 /** How often the Enter that submits typed fallback text is tried before the delivery is reported as failed. */
 const ENTER_ATTEMPTS = 3;
-
-const INPUT_RULE = /^─{10,}$/;
-/** Lines omo prints below its input box (cwd/model line, status line); more than this and the box is not at the bottom. */
-const FOOTER_MAX_LINES = 3;
-
-/**
- * True only when an omo screen positively shows its idle input at the bottom: a bare rule, an empty `❯`
- * line, a bare rule, and no `esc to interrupt` anywhere. Anything else (a turn, a dialog, a draft in the
- * input, an unknown layout) is false, so the caller keeps queueing. Stopgap for #62: herdr reports an omo
- * whose live monitors or background cells are running as `working` even between turns.
- */
-export function omoScreenIdle(screen: string): boolean {
-  if (screen.includes("esc to interrupt")) return false;
-  const lines = screen.split("\n").map((l) => l.trimEnd());
-  while (lines.length > 0 && lines.at(-1) === "") lines.pop();
-  const input = lines.lastIndexOf("❯");
-  if (input < 1 || input + 1 >= lines.length) return false;
-  if (!INPUT_RULE.test(lines[input - 1]!) || !INPUT_RULE.test(lines[input + 1]!)) return false;
-  return lines.length - 1 - (input + 1) <= FOOTER_MAX_LINES;
-}
 
 const SHELLS: ReadonlySet<string> = new Set([
   "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox",
@@ -145,6 +125,25 @@ export class Herdr {
     await this.call(["pane", "run", paneId, commandLine]);
   }
 
+  /**
+   * `herdr agent start`: starts omp in a pane at its interactive shell prompt and returns once omp is ready for input.
+   * herdr refuses a name another live agent already uses (agent_name_taken) and a pane that already runs an agent
+   * (agent_pane_busy). No prompt goes in here: with the omp integration, start would wait for that first turn to end.
+   */
+  async agentStart(name: string, paneId: string, args: readonly string[], timeoutMs = 60_000): Promise<void> {
+    await this.call(["agent", "start", name, "--kind", "omp", "--pane", paneId, "--timeout", String(timeoutMs), "--", ...args]);
+  }
+
+  /**
+   * Whether herdr's omp integration is installed (`herdr integration status`). Without it herdr reports omp as idle
+   * at all times, so nothing could tell a busy agent from an idle one.
+   */
+  async ompIntegration(): Promise<boolean> {
+    const res = await this.exec("herdr", ["integration", "status"]);
+    if (res.code !== 0) throw new HerdrError(["integration", "status"], res);
+    return res.stdout.split("\n").some((line) => line.startsWith("omp:") && !line.includes("not installed"));
+  }
+
   async status(paneId: string): Promise<AgentStatus> {
     return (await this.paneAgent(paneId)).status;
   }
@@ -176,8 +175,8 @@ export class Herdr {
       await this.call(["agent", "prompt", paneId, text]);
       return true;
     } catch (e) {
-      // herdr only accepts `agent prompt` for agents it started itself (`herdr agent start`); an omo launched
-      // with `pane run` is detected but refused. Fall back to typing the text and pressing Enter.
+      // herdr refuses `agent prompt` with agent_not_ready when the agent is not the pane's foreground process (an omp
+      // suspended with Ctrl+Z) or was launched without `herdr agent start`. Fall back to typing the text and pressing Enter.
       // Match herdr's own output, never e.message: that carries argv, which includes the delivered text.
       // Any other failure (a timeout, say) may come after herdr handed the prompt over: it is ambiguous.
       if (!(e instanceof HerdrError) || !/agent_not_ready/.test(e.result.stderr || e.result.stdout)) throw new DeliveryUncertain(e, false);
@@ -257,13 +256,6 @@ export class Herdr {
     await this.call(["pane", "send-text", paneId, text]);
     await this.call(["pane", "send-keys", paneId, "enter"]);
     return true;
-  }
-
-  async read(paneId: string, lines = 80): Promise<string> {
-    const full = this.session ? ["--session", this.session] : [];
-    const res = await this.exec("herdr", [...full, "pane", "read", paneId, "--lines", String(lines), "--source", "recent"]);
-    if (res.code !== 0) throw new HerdrError(["pane", "read", paneId], res);
-    return res.stdout;
   }
 
   async close(paneId: string): Promise<void> {

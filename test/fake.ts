@@ -6,13 +6,27 @@ import { Herdr, type AgentStatus, type Exec } from "../src/herdr.ts";
 import { Store, type HostLoad } from "../src/store.ts";
 
 /**
- * `screen` is what `pane read` returns; undefined makes the read fail. `agent` is the agent name `pane get` reports
- * (default "pi"), `pgid` the foreground process group `pane process-info` reports (default 101).
+ * `agent` is the agent name `pane get` reports (default "pi"), `pgid` the foreground process group `pane process-info`
+ * reports (default 101). `started` records the name and omp args of a `herdr agent start` into this pane.
  */
 type Pane = {
-  status: AgentStatus; received: string[]; ran: string[]; screen?: string | undefined;
+  status: AgentStatus; received: string[]; ran: string[];
   foreground?: string | { name: string; argv: string[] }[] | undefined; agent?: string; pgid?: number;
+  started?: { name: string; args: string[] };
 };
+
+/** omp's `--mode json` output for a run whose final assistant message is `text`. */
+export function ompJson(text: string, opts: { stopReason?: string; provider?: string; model?: string } = {}): string {
+  const message = {
+    role: "assistant", content: [{ type: "text", text }], stopReason: opts.stopReason ?? "stop",
+    provider: opts.provider ?? "anthropic", model: opts.model ?? "claude-test",
+  };
+  return [
+    { type: "message_end", message: { role: "user", content: [{ type: "text", text: "review" }] } },
+    { type: "message_end", message },
+    { type: "agent_end", messages: [{ role: "user", content: [{ type: "text", text: "review" }] }, message] },
+  ].map((e) => JSON.stringify(e)).join("\n") + "\n";
+}
 
 export class World {
   panes = new Map<string, Pane>();
@@ -22,6 +36,10 @@ export class World {
   next = 1;
   /** pane id -> herdr error text returned by `agent prompt` (exit 1) */
   promptFails = new Map<string, string>();
+  /** herdr error text returned by every `agent start` (exit 1); undefined: start succeeds */
+  startFails: string | undefined;
+  /** what `herdr integration status` reports for omp */
+  ompIntegration = true;
   /** pane id -> called with the 1-based count of `pane get` calls for that pane, before it answers */
   getHook = new Map<string, (n: number) => void>();
   private gets = new Map<string, number>();
@@ -30,7 +48,7 @@ export class World {
   /** number of upcoming `pane send-keys` calls that fail (exit 1) */
   keyFails = 0;
   gh: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 1, stdout: "" });
-  reviewer: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+  reviewer: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({ code: 0, stdout: ompJson("VERDICT: CLEAR") });
 
   addPane(id: string, status: AgentStatus = "idle"): Pane {
     const p = { status, received: [], ran: [] };
@@ -41,9 +59,25 @@ export class World {
   exec: Exec = async (cmd, argv) => {
     this.calls.push({ cmd, argv });
     if (cmd === "gh") return { ...this.gh(argv), stderr: "" };
-    if (cmd !== "herdr") return { ...this.reviewer(argv), stderr: "" };
+    if (cmd !== "herdr") return { stderr: "", ...this.reviewer(argv) };
     const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify({ result }), stderr: "" });
     const [group, verb, id] = argv;
+    if (group === "integration" && verb === "status") {
+      const omp = this.ompIntegration ? "current (v10)" : "not installed";
+      return { code: 0, stdout: `pi: not installed (/h/.pi/x.ts)\nomp: ${omp} (/h/.omp/agent/extensions/herdr-omp-agent-state.ts)\n`, stderr: "" };
+    }
+    if (group === "agent" && verb === "start") {
+      const paneId = String(argv[argv.indexOf("--pane") + 1]);
+      const target = this.panes.get(paneId);
+      if (!target) return { code: 1, stdout: "", stderr: `pane_not_found ${paneId}` };
+      if (target.status !== "shell") return { code: 1, stdout: "", stderr: '{"error":{"code":"agent_pane_busy"}}' };
+      if (this.startFails) return { code: 1, stdout: "", stderr: this.startFails };
+      const dash = argv.indexOf("--");
+      target.started = { name: String(id), args: dash < 0 ? [] : argv.slice(dash + 1).map(String) };
+      target.agent = "omp";
+      target.status = "idle";
+      return ok({ agent: { name: id, agent: "omp", agent_status: "idle", pane_id: paneId }, type: "agent_started" });
+    }
     if (group === "pane" && verb === "process-info") {
       const target = this.panes.get(String(argv[3]));
       if (!target || this.processInfoFails) return { code: 1, stdout: "", stderr: "process-info failed" };
@@ -68,9 +102,6 @@ export class World {
       this.gets.set(id!, n);
       this.getHook.get(id!)?.(n);
       return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: pane.status } });
-    }
-    if (group === "pane" && verb === "read") {
-      return pane.screen === undefined ? { code: 1, stdout: "", stderr: "read failed" } : { code: 0, stdout: pane.screen, stderr: "" };
     }
     if (group === "pane" && verb === "run") { pane.ran.push(String(argv[3])); return ok({}); }
     if (group === "pane" && verb === "send-text") { pane.received.push(String(argv[3])); return ok({}); }

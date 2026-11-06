@@ -114,7 +114,12 @@ export async function backlogImport(d: Deps, repo: string, label = "seori", cwd?
     const clash = d.store.item(id);
     if (clash && clash.source !== source) throw new Refusal(`import id ${id} for ${source} is already used by ${clash.source ?? "a hand-added item"}`);
     const brief = d.store.loopPath(`import-${id}.md`);
-    writeFileSync(brief, `# ${issue.title}\n\nSource: https://github.com/${repo}/issues/${issue.number}\n\n${issue.body}\n`);
+    const url = `https://github.com/${repo}/issues/${issue.number}`;
+    writeFileSync(
+      brief,
+      `# ${issue.title}\n\nSource: ${url}\n\n${issue.body}\n\n` +
+        `Exit condition: a pull request that resolves ${url} is open, \`gh pr checks\` passes, and \`seori ready ${id}\` has succeeded with the PR link as evidence.\n`,
+    );
     backlogAdd(d, id, brief, {
       title: issue.title, cwd, source,
       ...(p ? { priority: Number(p) } : {}),

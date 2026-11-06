@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
-import { DeliveryUncertain, Herdr, HerdrError, omoScreenIdle, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
+import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
 import { KEY_RE, reservedKey, Store, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
 
 export { KEY_RE, reservedKey };
@@ -19,6 +19,8 @@ export type Deps = {
   readonly agentCmd: string;
   readonly seoriCmd: string;
   readonly host: () => HostLoad;
+  /** SEORI_MODEL: passed as `--model` to every omp seori starts (lead, duty, lanes) and the reviewer's default. */
+  readonly model?: string;
 };
 
 export const defaultDeps = (): Deps => {
@@ -29,12 +31,35 @@ export const defaultDeps = (): Deps => {
     exec: spawnExec,
     now: Date.now,
     agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
-    seoriCmd: process.env["SEORI_CMD"] ?? `SEORI_HOME=${shq(store.root)} bun ${shq(CLI)}`,
+    seoriCmd: process.env["SEORI_CMD"] ?? defaultSeoriCmd(store.root, process.env),
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
+    model: process.env["SEORI_MODEL"] || undefined,
   };
 };
 
+/**
+ * How agents and loop panes call seori. Panes do not inherit this process's env, so the command carries what selects
+ * this seori: its home, the herdr session it drives and the model it starts omp with (the hourly loop starts lanes).
+ */
+export function defaultSeoriCmd(home: string, env: Record<string, string | undefined>): string {
+  const vars: [string, string | undefined][] = [["SEORI_HOME", home], ["SEORI_HERDR_SESSION", env["SEORI_HERDR_SESSION"]], ["SEORI_MODEL", env["SEORI_MODEL"]]];
+  const prefix = vars.filter(([, v]) => v).map(([k, v]) => `${k}=${shq(v!)}`).join(" ");
+  return `${prefix} bun ${shq(CLI)}`;
+}
+
 export class Refusal extends Error {}
+
+export const INTEGRATION_MISSING = "herdr's omp integration is not installed; run: herdr integration install omp";
+
+/** seori reads agent status from herdr, which reports omp as always idle without its omp integration: refuse to start. */
+export async function requireOmpIntegration(d: Deps): Promise<void> {
+  if (!(await d.herdr.ompIntegration())) throw new Refusal(INTEGRATION_MISSING);
+}
+
+/** Starts omp in a pane via `herdr agent start`, named `<label>-<pane id>` so names stay unique across live agents. */
+export async function startAgent(d: Deps, label: string, paneId: string, args: readonly string[] = []): Promise<void> {
+  await d.herdr.agentStart(`${label}-${paneId.replaceAll(":", "")}`, paneId, [...args, ...(d.model ? ["--model", d.model] : [])]);
+}
 
 const sysctlMemoryLevel = (): string => execFileSync("sysctl", ["-n", "kern.memorystatus_level"], { encoding: "utf8", timeout: 2000 });
 
@@ -80,10 +105,20 @@ export function resolveTarget(d: Deps, target: string): string {
 // A pane with no running agent (`shell`) is never ready: text typed into a bare shell runs as a command (#66).
 const READY_TO_READ: readonly AgentStatus[] = ["idle", "done"];
 
+/**
+ * A lane in omp goal mode stays `working` until its goal ends (omp continues the goal right after every turn), so it
+ * also reads while working: omp takes a prompt into a working agent as a steer and loses nothing. Never while
+ * `blocked` (a dialog is open). Lead and duty panes wait for idle, so their messages arrive batched.
+ */
+function readyToRead(d: Deps, paneId: string, status: AgentStatus): boolean {
+  if (READY_TO_READ.includes(status)) return true;
+  return status === "working" && d.store.lanes().some((l) => l.paneId === paneId && l.status !== "done" && l.status !== "lost");
+}
+
 export type SendResult = "DELIVERED" | "QUEUED" | "HELD";
 
 /**
- * Delivers now when the pane can read; otherwise queues it for the duty loop (busy agents are never interrupted).
+ * Delivers now when the pane can read (see readyToRead); otherwise queues it for the duty loop.
  * The command-line path: an uncertain delivery is a result, never an error (see settled).
  */
 export async function send(d: Deps, target: string, text: string, from: string): Promise<SendResult> {
@@ -146,18 +181,17 @@ async function flushLocked(d: Deps, paneId: string): Promise<"delivered" | "queu
   const all = d.store.queued(paneId);
   if (all.length === 0) return "delivered";
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
-  let status = await d.herdr.status(paneId);
+  const status = await d.herdr.status(paneId);
   // Before the held check, so a gone pane with only held messages says so instead of delivery-ambiguous forever (#108).
   if (status === "gone") throw new Refusal(`pane ${paneId} is gone; ${all.length} message(s) kept in its inbox`);
   if (queued.length === 0) return "held";
-  if (status === "working" && (await screenShowsIdle(d, paneId))) status = "idle";
   const typed = queued.filter((m) => m.attempt?.state === "typed");
   if (status === "shell") {
     // The agent the text was typed into is gone from the pane: an Enter later would go to another agent's empty input.
     if (typed.length > 0) await holdTyped(d, paneId, typed, "the agent left the pane before its Enter");
     return "no-agent";
   }
-  if (!READY_TO_READ.includes(status)) return "queued";
+  if (!readyToRead(d, paneId, status)) return "queued";
   if (typed.length > 0) {
     // An earlier pass typed these and only the Enter failed: press Enter, never type them again (#89), and only into
     // the agent they were typed into (#108).
@@ -271,18 +305,6 @@ export function releaseHeld(d: Deps, target: string, index: number, how: "ack" |
   }
 }
 
-/**
- * herdr reports an omo with live monitors as `working` between turns (#62). Believe the screen only when it
- * positively shows the idle input; a failed read is doubt, so the message stays queued for the next duty pass.
- */
-async function screenShowsIdle(d: Deps, paneId: string): Promise<boolean> {
-  try {
-    return omoScreenIdle(await d.herdr.read(paneId, 30));
-  } catch {
-    return false;
-  }
-}
-
 /** The lead delivery's result, or undefined when no lead is registered. Throws DeliveryUncertain like sendOrThrow. */
 export async function tellLead(d: Deps, text: string, from: string): Promise<"DELIVERED" | "QUEUED" | undefined> {
   if (!d.store.roles().lead) {
@@ -305,6 +327,7 @@ export async function startLane(
   if (reserved) throw new Refusal(reserved);
   const existing = d.store.lane(key);
   if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.paneId}`);
+  await requireOmpIntegration(d);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
   const footer = prompt("lane-footer.md", { key, seori: d.seoriCmd });
@@ -315,8 +338,16 @@ export async function startLane(
   const pane = workspace
     ? await d.herdr.createTab(key, cwd, workspace, env)
     : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace("seori", cwd)).workspaceId, env);
-  const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
-  await d.herdr.run(pane.paneId, `${d.agentCmd} ${shq(kickoff)}`);
+  try {
+    await startAgent(d, key, pane.paneId);
+    const kickoff =
+      `/goal Read your brief at ${briefPath} and execute it. Your lane key is ${key}. ` +
+      `The work is finished only when the brief's exit condition holds and you have sent seori ready.`;
+    if (!(await d.herdr.deliver(pane.paneId, kickoff))) throw new Error("omp was not in front of the pane to take the kickoff");
+  } catch (e) {
+    await d.herdr.close(pane.paneId).catch(() => undefined);
+    throw new Refusal(`lane ${key} did not start, pane ${pane.paneId} closed: ${failureDetail(e)}`);
+  }
 
   const now = d.now();
   const lane: Lane = {
@@ -468,19 +499,58 @@ export async function headSha(d: Deps, pr: PrRef): Promise<string> {
   return String(out.headRefOid);
 }
 
-/** Runs a fresh, non-interactive reviewer session pinned to the PR head and records its verdict as a receipt. */
-export async function review(d: Deps, prId: string, model?: string): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
+type AssistantMessage = { role?: string; content?: unknown; stopReason?: string; provider?: string; model?: string };
+
+/**
+ * The reviewer's final answer from omp's `--mode json` event stream: the last assistant message of the last
+ * `agent_end`, or the last assistant `message_end` when the run ended without one. Lines that are not JSON are skipped.
+ */
+export function reviewerAnswer(stdout: string): { text: string; stopReason?: string; model?: string } | undefined {
+  let fromEnd: AssistantMessage | undefined;
+  let fromMessage: AssistantMessage | undefined;
+  for (const line of stdout.split("\n")) {
+    if (!line.trim().startsWith("{")) continue;
+    let event: { type?: string; messages?: AssistantMessage[]; message?: AssistantMessage };
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event.type === "agent_end" && Array.isArray(event.messages)) fromEnd = event.messages.findLast((m) => m?.role === "assistant");
+    if (event.type === "message_end" && event.message?.role === "assistant") fromMessage = event.message;
+  }
+  const m = fromEnd ?? fromMessage;
+  if (!m) return undefined;
+  const parts = Array.isArray(m.content) ? (m.content as { type?: string; text?: unknown }[]) : [];
+  const text = parts.filter((c) => c?.type === "text" && typeof c.text === "string").map((c) => c.text as string).join("\n");
+  const model = m.model ? (m.provider ? `${m.provider}/${m.model}` : m.model) : undefined;
+  return { text, ...(m.stopReason ? { stopReason: m.stopReason } : {}), ...(model ? { model } : {}) };
+}
+
+/**
+ * Runs a fresh, non-interactive reviewer session pinned to the PR head and records its verdict as a receipt. The
+ * reviewer loads none of the cwd's extensions, skills, rules or context files, and no approval prompt can silently
+ * deny its tools.
+ */
+export async function review(d: Deps, prId: string, model: string | undefined = d.model): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
   const text = prompt("review.md", { pr: pr.id, repo: pr.repo, number: String(pr.number), sha });
-  const argv = ["-p", "--no-session", ...(model ? ["--model", model] : []), text];
+  const argv = [
+    "-p", "--no-session", "--mode", "json", "--no-extensions", "--no-skills", "--no-rules", "--no-context-files",
+    "--approval-mode", "yolo", ...(model ? ["--model", model] : []), text,
+  ];
   const res = await d.exec(d.agentCmd, argv);
+  if (res.code === 3) throw new Error(`reviewer hit the cost cap: ${res.stderr.trim()}`);
+  const answer = reviewerAnswer(res.stdout);
+  if (answer?.stopReason === "aborted") throw new Error("reviewer stopped before finishing (deadline)");
   if (res.code !== 0) throw new Error(`reviewer exited ${res.code}: ${res.stderr.trim()}`);
-  const verdicts = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
+  const verdicts = [...(answer?.text ?? "").matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
   const last = verdicts.at(-1);
   if (!last) throw new Error("reviewer printed no VERDICT line; no receipt written");
   const verdict = last[1] as "CLEAR" | "BLOCK";
-  d.store.saveReceipt({ pr: pr.id, sha, verdict, model: model ?? "default", at: d.now(), summary: res.stdout.trim().slice(-4000) });
+  const summary = answer!.text.trim().slice(-4000);
+  d.store.saveReceipt({ pr: pr.id, sha, verdict, model: answer!.model ?? model ?? "default", at: d.now(), summary });
   return { verdict, sha };
 }
 
