@@ -1,9 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { cpus, freemem, loadavg, totalmem } from "node:os";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { cpus, freemem, hostname, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
+import { Channel, type IdState } from "./channel.ts";
 import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
-import { KEY_RE, reservedKey, Store, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
+import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
+import { adapterFor } from "./messenger/index.ts";
+import { KEY_RE, pidAlive, reservedKey, Store, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
 
 export { KEY_RE, reservedKey };
 
@@ -22,6 +25,8 @@ export type Deps = {
   readonly host: () => HostLoad;
   /** SEORI_MODEL: passed as `--model` to every omp seori starts (lead, duty, lanes) and the reviewer's default. */
   readonly model?: string;
+  /** Sends one duty alert to the human through a configured messenger. Throws like MessengerAdapter.send. */
+  readonly notify: (config: MessengerConfig, target: SendTarget, text: string) => Promise<void>;
 };
 
 export const defaultDeps = (): Deps => {
@@ -35,6 +40,9 @@ export const defaultDeps = (): Deps => {
     seoriCmd: process.env["SEORI_CMD"] ?? defaultSeoriCmd(store.root, process.env),
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
     model: process.env["SEORI_MODEL"] || undefined,
+    notify: async (config, target, text) => {
+      await adapterFor(config, store.root).send(target, text);
+    },
   };
 };
 
@@ -476,7 +484,136 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       events.push({ lane: lane.key, action: "lane-failed", detail: failureDetail(e) });
     }
   }
+  try {
+    await channelAlerts(d, events);
+  } catch (e) {
+    // A broken messengers.json or ledger must not stop lane and inbox duty.
+    events.push({ action: "channel-failed", detail: failureDetail(e) });
+  }
   return events;
+}
+
+// ---------- lead channel alerts ----------
+
+/** The daemon rewrites its heartbeat at least every 10 s; 90 s without one is an outage, not a slow write. */
+export const HEARTBEAT_STALE_MS = 90_000;
+/** How long a message may wait (offline lead) or sit delivered (blocked lead) before the human is told. */
+export const ALERT_AFTER_MS = 2 * 60_000;
+
+export const ALERT_TEXT = {
+  "lead-offline": "seori: the lead is offline; your message is kept and will be answered when it is back.",
+  "lead-blocked": "seori: the lead is waiting on a question in its terminal; your message is queued.",
+  "gave-up": "seori: the lead could not answer this after 3 tries; please check the terminal.",
+} as const;
+type AlertWhy = keyof typeof ALERT_TEXT;
+
+/** `lead/duty-alerts.json`: alert state that is not per message id, so an outage is told once, not every tick. */
+type DutyAlerts = { daemonDownSince?: number };
+
+const readJsonFile = <T>(path: string): T | undefined => {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * No lead extension is consuming: its lock is missing or held by a dead pid on this host. A lock from another host,
+ * or one that cannot be read, cannot be judged here, so it counts as consuming rather than raising a false alarm.
+ */
+function consumerOffline(lockPath: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(lockPath, "utf8");
+  } catch {
+    return true;
+  }
+  const lock = (() => { try { return JSON.parse(raw) as { pid?: unknown; host?: unknown }; } catch { return {}; } })();
+  return lock.host === hostname() && typeof lock.pid === "number" && !pidAlive(lock.pid);
+}
+
+/** Messenger alerts, only when a messenger is configured: daemon outage (to the lead), then per-id alerts (to the human). */
+async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
+  const messengers = loadMessengers(d.store.root);
+  if (messengers.length === 0) return;
+  const channel = new Channel(d.store.root);
+  const now = d.now();
+  await daemonAlert(d, channel, now, events);
+
+  const open = channel.open();
+  const waited = (at: number | undefined): boolean => at !== undefined && now - at > ALERT_AFTER_MS;
+  const due: [IdState, AlertWhy][] = [];
+  const offline = open.filter((s) => !s.alerted.includes("lead-offline") && waited(s.row.at));
+  if (offline.length && consumerOffline(channel.consumerLockPath)) due.push(...offline.map((s): [IdState, AlertWhy] => [s, "lead-offline"]));
+  const stuck = open.filter((s) => !s.alerted.includes("lead-blocked") && waited(s.lastDeliveredAt));
+  const lead = d.store.roles().lead;
+  if (stuck.length && lead) {
+    try {
+      if ((await d.herdr.status(lead)) === "blocked") due.push(...stuck.map((s): [IdState, AlertWhy] => [s, "lead-blocked"]));
+    } catch (e) {
+      events.push({ pane: lead, action: "lead-status-failed", detail: failureDetail(e) });
+    }
+  }
+  for (const s of open) if (s.gaveUp && !s.alerted.includes("gave-up")) due.push([s, "gave-up"]);
+
+  for (const [s, why] of due) {
+    const { id, source, chat, thread } = s.row;
+    const config = messengers.find((m) => m.source === source);
+    if (!config) {
+      events.push({ action: "alert-failed", detail: `${id} ${why}: no messenger configured for source ${source}` });
+      continue;
+    }
+    // Ids are `<source>:<chat>:<message id>`; the messenger replies to its own message id.
+    const prefix = `${source}:${chat}:`;
+    const target: SendTarget = { chat, ...(thread !== undefined ? { thread } : {}), replyTo: id.startsWith(prefix) ? id.slice(prefix.length) : id };
+    try {
+      await d.notify(config, target, ALERT_TEXT[why]);
+    } catch (e) {
+      // An uncertain send may have reached the human and is never retried (the adapter contract); a definite failure
+      // stays unrecorded so the next tick tries again.
+      if (!(e instanceof SendUncertain)) {
+        events.push({ action: "alert-failed", detail: `${id} ${why}: ${failureDetail(e)}` });
+        continue;
+      }
+      events.push({ action: "alert-uncertain", detail: `${id} ${why}: ${failureDetail(e)}` });
+    }
+    channel.appendLedger({ id, ev: "alerted", at: now, why });
+    events.push({ action: "alerted", detail: `${id} ${why}` });
+  }
+}
+
+/** Tells the lead once per outage that the daemon is down (nothing is received meanwhile); a fresh heartbeat ends it. */
+async function daemonAlert(d: Deps, channel: Channel, now: number, events: DutyEvent[]): Promise<void> {
+  const statePath = join(channel.dir, "duty-alerts.json");
+  const state = readJsonFile<DutyAlerts>(statePath) ?? {};
+  const save = (next: DutyAlerts): void => {
+    const tmp = `${statePath}.${process.pid}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+    renameSync(tmp, statePath);
+  };
+  const beat = readJsonFile<{ at?: unknown }>(join(d.store.root, "messenger", "daemon.heartbeat"));
+  const age = typeof beat?.at === "number" ? now - beat.at : undefined;
+  if (age !== undefined && age <= HEARTBEAT_STALE_MS) {
+    if (state.daemonDownSince === undefined) return;
+    const { daemonDownSince, ...rest } = state;
+    save(rest);
+    events.push({ action: "daemon-up", detail: `down ${Math.floor((now - daemonDownSince) / 1000)} s` });
+    return;
+  }
+  if (state.daemonDownSince !== undefined) return;
+  const detail = age === undefined ? "no heartbeat" : `last heartbeat ${Math.floor(age / 1000)} s ago`;
+  try {
+    await tellLead(d, `[MESSENGER] seori daemon is down (${detail}); messenger messages are not received until it runs again`, "duty");
+  } catch (e) {
+    // DeliveryUncertain is recorded and held with the lead told (see recordUncertain): the outage counts as told.
+    if (!(e instanceof DeliveryUncertain)) {
+      events.push({ action: "daemon-alert-failed", detail: failureDetail(e) });
+      return;
+    }
+  }
+  save({ ...state, daemonDownSince: now });
+  events.push({ action: "daemon-down", detail });
 }
 
 // ---------- review + merge gate ----------

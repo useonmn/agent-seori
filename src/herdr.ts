@@ -101,8 +101,14 @@ export class Herdr {
     return parsed.result ?? {};
   }
 
-  async createWorkspace(label: string, cwd: string): Promise<PaneRef> {
-    const r = await this.call(["workspace", "create", "--label", label, "--cwd", cwd, "--no-focus"]);
+  /**
+   * `env` is set in the root pane's shell. `herdr agent start` has no --env flag (herdr 0.9.5), so an agent that needs
+   * its own environment (the lead's channel extension) gets it from the shell it is started in.
+   */
+  async createWorkspace(label: string, cwd: string, env: Record<string, string> = {}): Promise<PaneRef> {
+    const argv = ["workspace", "create", "--label", label, "--cwd", cwd, "--no-focus"];
+    for (const [k, v] of Object.entries(env)) argv.push("--env", `${k}=${v}`);
+    const r = await this.call(argv);
     return toPaneRef(r["root_pane"]);
   }
 

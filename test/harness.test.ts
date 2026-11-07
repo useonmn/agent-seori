@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { main } from "../src/cli.ts";
+import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { defaultSeoriCmd, done, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { ompJson, World } from "./fake.ts";
 
@@ -13,6 +13,18 @@ function setup() {
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix the flaky login test.");
   return { w, d, lead, brief };
+}
+
+async function captureLog(fn: () => Promise<unknown>): Promise<string> {
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (...args: unknown[]) => void lines.push(args.join(" "));
+  try {
+    await fn();
+  } finally {
+    console.log = log;
+  }
+  return lines.join("\n");
 }
 
 describe("seori command for agents and loop panes", () => {
@@ -92,15 +104,38 @@ describe("lanes", () => {
     expect(d.store.lane("fix-login")).toBeUndefined();
   });
 
-  test("up starts the lead and duty omp with herdr agent start and their prompts; the loops keep pane run", async () => {
+  test("up starts the lead (with the channel extension) and duty omp with herdr agent start; loops and daemon use pane run", async () => {
     const w = new World();
     const d = { ...w.deps(), model: "m1" };
-    await main(["up", "--cwd", d.store.root], d);
+    w.heartbeat(d.store.root, 0); // the daemon's first heartbeat, which up waits for before it starts the duty loop
+    const prev = process.env["SEORI_HERDR_SESSION"];
+    process.env["SEORI_HERDR_SESSION"] = "iso";
+    let out: string;
+    try {
+      out = await captureLog(() => main(["up", "--cwd", d.store.root], d));
+    } finally {
+      if (prev === undefined) delete process.env["SEORI_HERDR_SESSION"];
+      else process.env["SEORI_HERDR_SESSION"] = prev;
+    }
     const { lead, duty } = d.store.roles();
     const prompts = join(d.store.root, "prompts");
-    expect(w.panes.get(lead!)!.started).toEqual({ name: `lead-${lead!.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "lead.md"), "--model", "m1"] });
+    expect(w.panes.get(lead!)!.started).toEqual({
+      name: `lead-${lead!.replace(":", "")}`,
+      args: ["-e", LEAD_EXTENSION, "--append-system-prompt", join(prompts, "lead.md"), "--model", "m1"],
+    });
+    expect(existsSync(LEAD_EXTENSION)).toBe(true);
+    // Only the lead loads the extension: duty here, lanes and the reviewer elsewhere never pass -e.
     expect(w.panes.get(duty!)!.started).toEqual({ name: `duty-${duty!.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "duty.md"), "--model", "m1"] });
-    expect([...w.panes.values()].flatMap((p) => p.ran)).toEqual(["seori duty --interval 60", "seori loop"]);
+    // herdr agent start has no --env: the extension's environment is set on the lead's workspace shell.
+    const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
+    expect(create.slice(-6)).toEqual(["--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso"]);
+    // The daemon starts first, so the duty loop's first tick finds its heartbeat instead of reporting an outage.
+    expect(w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "run").map((c) => [c.argv[2], c.argv[3]])).toEqual([
+      ["w1:p6", "sh -c 'while :; do seori daemon; sleep 1; done'"],
+      ["w1:p4", "seori duty --interval 60"],
+      ["w1:p5", "seori loop"],
+    ]);
+    expect(out).toBe(`UP lead=${lead} duty=${duty} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root}`);
   });
 
   test("start refuses the role names lead and duty as lane keys before it writes or opens anything", async () => {

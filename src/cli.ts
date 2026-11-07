@@ -5,12 +5,17 @@ import {
   defaultDeps, done, dutyTick, inboxList, mergeGate, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
   startAgent, startLane, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
+import { heartbeatPath, runDaemon } from "./daemon.ts";
+import { shq } from "./herdr.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
+import { loadMessengers } from "./messenger/adapter.ts";
+import { adapterFor } from "./messenger/index.ts";
+import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "./msg.ts";
 import type { Role } from "./store.ts";
 
 const USAGE = `seori - a proactive multi-session harness on herdr + omp
 
-  seori up [--cwd DIR]                         open lead, duty, duty loop and hourly loop panes
+  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and messenger daemon panes
   seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, brief + lane rules
   seori report <key> --text T [--status working|waiting]
@@ -32,11 +37,18 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
   seori done <key>                             lead closes a READY lane
   seori status
+  seori daemon                                 receive the messengers in messengers.json into the lead channel (seori up runs it)
+  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
+                                              answer messenger messages (one reply per id) or send a notice
+  seori msg close <id> --why T                 close a messenger message that needs no reply
+  seori msg list [--all]                       open messenger messages (--all: every one, with its state)
 
 --text may be omitted to read the message from stdin.
 send, report and ready exit 3 and print HELD <target> when the delivery may or may not have reached the pane:
 it is held and never resent, so do not send it again: check the pane, then seori inbox ack or seori inbox resend it.
 QUEUED (exit 0) means it waits in the pane's inbox.
+msg send exits 3 with HELD when the messenger may or may not have the reply: check the chat, then pass --again.
+A second reply to an id is refused (exit 2) unless --again is given.
 SEORI_MODEL=M passes --model M to every omp seori starts (lead, duty, lanes) and is the reviewer's default model.
 up and start need herdr's omp integration (herdr integration install omp).`;
 
@@ -44,7 +56,7 @@ type Args = { pos: string[]; flags: Map<string, string[]> };
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -92,20 +104,115 @@ function renderPrompt(d: Deps, name: string): string {
   return out;
 }
 
+/** The lead channel extension (extensions/lead-channel.ts): only the lead loads it, so only the lead gets messenger messages. */
+export const LEAD_EXTENSION = join(import.meta.dir, "..", "extensions", "lead-channel.ts");
+
 async function up(d: Deps, cwd: string): Promise<void> {
   await requireOmpIntegration(d);
   const env = { SEORI_HOME: d.store.root };
-  const lead = await d.herdr.createWorkspace("seori", cwd);
-  await startAgent(d, "lead", lead.paneId, ["--append-system-prompt", renderPrompt(d, "lead.md")]);
+  const session = process.env["SEORI_HERDR_SESSION"];
+  // The extension reads its home and how to run seori from the environment of the shell omp starts in.
+  const leadEnv = { ...env, SEORI_CMD: d.seoriCmd, ...(session ? { SEORI_HERDR_SESSION: session } : {}) };
+  const lead = await d.herdr.createWorkspace("seori", cwd, leadEnv);
+  await startAgent(d, "lead", lead.paneId, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", lead.paneId);
   const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, env);
   await startAgent(d, "duty", duty.paneId, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
   d.store.setRole("duty", duty.paneId);
   const loop = await d.herdr.split(duty.paneId, cwd, env);
-  await d.herdr.run(loop.paneId, `${d.seoriCmd} duty --interval 60`);
   const hourly = await d.herdr.split(loop.paneId, cwd, { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
+  const daemon = await d.herdr.split(hourly.paneId, cwd, env);
+  // A crashed daemon is back within about a second; sh -c so the loop works whatever the pane's login shell is.
+  const daemonStarted = d.now();
+  await d.herdr.run(daemon.paneId, `sh -c ${shq(`while :; do ${d.seoriCmd} daemon; sleep 1; done`)}`);
+  // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
+  // daemon is up; a daemon that does not come up is reported here and left to duty's outage alert.
+  if (!(await heartbeatSince(d.store.root, daemonStarted))) {
+    console.error(`WARNING: the messenger daemon in ${daemon.paneId} wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check that pane`);
+  }
+  await d.herdr.run(loop.paneId, `${d.seoriCmd} duty --interval 60`);
   await d.herdr.run(hourly.paneId, `${d.seoriCmd} loop`);
-  console.log(`UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} home=${d.store.root}`);
+  console.log(
+    `UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} daemon=${daemon.paneId} home=${d.store.root}`,
+  );
+}
+
+const DAEMON_START_MS = 15_000;
+
+/** Polls the daemon heartbeat until one written at or after `since` appears, for at most DAEMON_START_MS of real time. */
+async function heartbeatSince(root: string, since: number): Promise<boolean> {
+  for (let waited = 0; ; waited += 200) {
+    let beat: unknown;
+    try {
+      beat = JSON.parse(readFileSync(heartbeatPath(root), "utf8"));
+    } catch {
+      // not written yet
+    }
+    if (beat && typeof beat === "object" && "at" in beat && typeof beat.at === "number" && beat.at >= since) return true;
+    if (waited >= DAEMON_START_MS) return false;
+    await Bun.sleep(200);
+  }
+}
+
+/**
+ * Runs the daemon until SIGINT or SIGTERM, then stops it cleanly (lock released, heartbeat stopped) and re-raises the
+ * signal: the shell running `seori up`'s restart loop sees the daemon die of that signal and stops the loop too, so
+ * Ctrl-C in the daemon pane stops it instead of restarting it.
+ */
+async function daemon(root: string): Promise<void> {
+  const stop = new AbortController();
+  let caught: NodeJS.Signals | undefined;
+  const onSignal = (sig: NodeJS.Signals) => {
+    caught = sig;
+    stop.abort();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    await runDaemon(root, { signal: stop.signal });
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+  if (caught) process.kill(process.pid, caught);
+}
+
+function msgDeps(d: Deps): MsgDeps {
+  const root = d.store.root;
+  return { adapterFor: (c) => adapterFor(c, root), configs: loadMessengers(root), now: d.now };
+}
+
+async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
+  const root = d.store.root;
+  if (sub === "send") {
+    const replyTo = a.flags.get("reply-to")?.flatMap((v) => v.split(",")).map((id) => id.trim()).filter(Boolean);
+    const to = one(a, "to");
+    const r = await msgSend(root, {
+      ...(replyTo ? { replyTo } : {}),
+      ...(to !== undefined ? { to: parseTo(to) } : {}),
+      text: await textOf(a),
+      again: one(a, "again") === "true",
+    }, msgDeps(d));
+    const what = r.ids.length ? r.ids.join(",") : to!;
+    if (r.status === "SENT") {
+      console.log(`SENT ${what} message=${r.messageId}`);
+      return 0;
+    }
+    console.log(`HELD ${what}: the messenger may or may not have the reply; check the chat, then resend with --again`);
+    return 3;
+  }
+  if (sub === "close") {
+    const id = need(a.pos[2], "message id");
+    msgClose(root, id, need(one(a, "why"), "--why"), d.now());
+    console.log(`CLOSED ${id}`);
+    return 0;
+  }
+  if (sub === "list") {
+    const lines = msgList(root, { all: one(a, "all") === "true" }, d.now());
+    console.log(lines.length ? lines.join("\n") : "EMPTY");
+    return 0;
+  }
+  throw new Refusal(`unknown msg command ${sub}\n\n${USAGE}`);
 }
 
 function status(d: Deps): void {
@@ -296,6 +403,11 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "status":
       status(d);
       return 0;
+    case "daemon":
+      await daemon(d.store.root);
+      return 0;
+    case "msg":
+      return msg(d, a, x);
     default:
       console.log(USAGE);
       return cmd === undefined || cmd === "help" || cmd === "--help" ? 0 : 64;

@@ -14,6 +14,7 @@ seori의 설계는 [dori-superagent](https://github.com/sisyphuslabs/dori-supera
 - 레인: 일 하나당 하나씩 여는 omp 세션입니다. herdr 탭 하나를 혼자 씁니다. 브리프를 받아 omp 목표 모드(goal mode)로 일하고, 끝나면 증거 링크를 붙여 READY를 보냅니다.
 - 듀티(duty): 레인들을 지켜보는 세션과 프로세스(`seori duty`)입니다. 바쁜 리드와 듀티 창에 온 메시지는 모아 뒀다가 한가해지면 전해 줍니다. 조용한 레인은 깨우고, 그래도 안 되면 리드에게 알립니다.
 - 시간 단위 루프(hourly loop): `seori loop`입니다. 한 시간에 한 번 백로그(할 일 목록)를 보고, 레인 자리가 비어 있으면 다음 일을 시작합니다. 사람이 정해야 할 질문은 리드를 통해 묻습니다. 자세한 설계: [docs/hourly-loop.md](docs/hourly-loop.md)
+- 메신저 데몬: `seori daemon`입니다. 메신저로 온 메시지를 받아 리드에게 전할 수 있게 저장합니다. 자세한 내용은 [메신저 채널](#메신저-채널)에 있습니다.
 - 리뷰와 머지 관문: PR은 정확히 지금 헤드(head) 커밋에 대한 CLEAR 리뷰 기록이 있고, 체크가 모두 통과해야만 머지됩니다.
 
 herdr는 워크스페이스, 탭, 창(pane)을 만들어 주고, 각 omp 세션이 지금 쉬는 중(idle)인지, 일하는 중(working)인지, 막혀 있는지(blocked) 알려 줍니다. seori는 창에 무언가를 하기 전에 항상 이 상태부터 확인합니다.
@@ -36,10 +37,10 @@ herdr를 켜고, 셸에서:
 
 ```sh
 seori up
-# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 hourly=w1:p4 home=~/.seori
+# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 hourly=w1:p4 daemon=w1:p5 home=~/.seori
 ```
 
-리드 창, 듀티 창, 듀티 루프, 시간 단위 루프가 열립니다. 이제 리드 창에 말을 걸면 됩니다. 리드가 브리프를 쓰고 레인을 엽니다. 셸에서 직접 열어도 됩니다:
+리드 창, 듀티 창, 듀티 루프, 시간 단위 루프, 메신저 데몬이 열립니다. 이제 리드 창에 말을 걸면 됩니다. 리드가 브리프를 쓰고 레인을 엽니다. 셸에서 직접 열어도 됩니다:
 
 ```sh
 seori start fix-flaky-login --brief examples/brief.md
@@ -71,7 +72,7 @@ seori done fix-flaky-login            # 레인 창을 닫습니다. READY인 레
 ## 명령 목록
 
 ```
-seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시간 단위 루프 창을 엽니다
+seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시간 단위 루프, 메신저 데몬 창을 엽니다
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 탭, omp 세션, 브리프 + 레인 규칙
 seori report <key> --text T [--status working|waiting]
@@ -93,9 +94,14 @@ seori review <owner/repo#N> [--model M]      헤드 커밋을 새 omp 리뷰어�
 seori merge <owner/repo#N> [--dry-run]       헤드에 CLEAR 기록 + 체크 통과 -> squash 머지
 seori done <key>                             리드가 READY 레인을 닫습니다
 seori status
+seori daemon                                 messengers.json의 메신저에서 메시지를 받아 리드 채널에 저장합니다 (seori up이 켭니다)
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
+                                            메신저 메시지에 답합니다 (id 하나에 답 하나). --to는 알림을 보냅니다
+seori msg close <id> --why T                 답할 필요가 없는 메신저 메시지를 닫습니다
+seori msg list [--all]                       아직 열린 메신저 메시지 (--all: 전부, 상태 포함)
 ```
 
-`--text`를 빼면 메시지를 표준 입력(stdin)에서 읽습니다. `send`, `report`, `ready`는 메시지가 전해졌는지 확실하지 않으면 `HELD <대상>`을 출력하고 종료 코드 3으로 끝납니다. 보류된 메시지는 다시 보내지 않습니다. 창을 직접 보고 `seori inbox ack`나 `seori inbox resend`로 처리하세요. `QUEUED`(종료 코드 0)는 상대 창의 받은 편지함에서 기다린다는 뜻입니다.
+`--text`를 빼면 메시지를 표준 입력(stdin)에서 읽습니다. `send`, `report`, `ready`는 메시지가 전해졌는지 확실하지 않으면 `HELD <대상>`을 출력하고 종료 코드 3으로 끝납니다. 보류된 메시지는 다시 보내지 않습니다. 창을 직접 보고 `seori inbox ack`나 `seori inbox resend`로 처리하세요. `QUEUED`(종료 코드 0)는 상대 창의 받은 편지함에서 기다린다는 뜻입니다. `msg send`는 보냈으면 `SENT`(종료 코드 0), 메신저에 갔는지 확실하지 않으면 `HELD`(종료 코드 3), 거절하면 종료 코드 2로 끝납니다. 이미 답한 id에 또 답하려 하면 거절합니다. `HELD`일 때는 채팅을 직접 확인하고, 그래도 보내야 하면 `--again`을 붙입니다.
 
 ## 레인이 시작되는 방법
 
@@ -114,9 +120,28 @@ seori status
 - 10분, 20분, 40분 알림: 10분 동안 보고가 없는 레인에는 `prompts/nudge.md`를 보냅니다. 창이 일하는 중(working)이어도 보냅니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 working으로 보이므로, working만으로는 진행으로 치지 않습니다. 알림은 작업 중 끼어든 지시(steer)로 들어갑니다. 20분에 한 번 더 보내고, 40분이 되면 리드에게 `[ESCALATE <key>]`를 보냅니다. 그래서 레인은 적어도 10분마다 진행 상황을 보고합니다. 새 보고가 들어오면 알림 횟수는 처음부터 다시 셉니다. 기다림(waiting)을 보고한 레인이나 막혀 있는(blocked) 레인은 건드리지 않습니다. READY 전에 창이 사라지면 `[LOST <key>]`로 알립니다.
 - 머지 조건: `seori merge`는 PR의 지금 헤드 커밋에 대한 CLEAR 리뷰 기록(`~/.seori/receipts/`)을 요구합니다. 기록은 `seori review`만 남깁니다. 리뷰어는 새로 띄운 비대화형 omp이고, 저장소의 AGENTS.md, 스킬, 규칙, 확장을 읽지 않는 격리된 상태로 돕니다. `gh`로 PR을 읽고, 마지막 줄에 `VERDICT: CLEAR` 또는 `VERDICT: BLOCK`을 딱 한 번 씁니다. 이 줄이 없으면 기록도 없습니다. 그다음 `gh pr checks`에 체크가 하나 이상 있어야 하고, 모두 통과하거나 건너뛰어야 하며, 적어도 하나는 통과해야 합니다. 체크가 하나도 없으면 통과로 보지 않습니다. 리뷰 뒤에 푸시가 있으면 헤드가 바뀌므로 예전 기록은 쓸 수 없습니다.
 
+## 메신저 채널
+
+리드는 자기 창뿐 아니라 메신저로도 요청을 받을 수 있습니다. 메신저 설정은 `$SEORI_HOME/messengers.json`에 씁니다:
+
+```json
+{ "messengers": [ { "source": "fake", "owner": "u1" } ] }
+```
+
+`source`는 어떤 메신저인지, `owner`는 리드에게 말할 수 있는 단 한 명의 보낸 사람 id입니다. 다른 사람이 보낸 메시지는 버립니다. 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. 지금은 `fake` 메신저만 있습니다. 텔레그램, 슬랙, 디스코드는 다음 단계에서 붙습니다. `fake`는 `$SEORI_HOME/messenger/fake/` 아래 파일로 움직입니다. `in.jsonl`에 `{"msgId":"1","chat":"c1","from":"u1","text":"..."}` 한 줄을 덧붙이면 리드에게 메시지를 보낸 것이 되고, 답은 `out.jsonl`에 쌓입니다. `send-mode`에 `ok`, `timeout`, `error`를 쓰면 보내기가 성공, 불확실, 실패로 끝납니다.
+
+메시지가 가는 길:
+
+1. 데몬(`seori up`의 다섯 번째 창)이 메시지를 받습니다. 주인이 보낸 것이면 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. 창에서 다시 켜기 루프로 돌기 때문에, 데몬이 죽어도 1초쯤 뒤에 다시 켜집니다. 그 창에서 Ctrl-C를 누르면 데몬과 루프가 함께 멈춥니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
+2. 리드의 omp는 `extensions/lead-channel.ts`를 불러옵니다. 리드만 불러오고, 듀티, 레인, 리뷰어는 불러오지 않습니다. 이 확장이 저장된 메시지를 id와 함께 리드의 대화에 넣고, 넣을 때마다 기록(ledger)을 남깁니다. omp를 다시 켜거나 `/new`, `/resume`, `/fork`를 해도 답하지 않은 메시지는 남아 있습니다.
+3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
+4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다.
+
+메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. 데몬의 heartbeat가 90초보다 오래되면 리드에게 한 번 알립니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 omp가 없음) 질문에 막혀 2분 넘게 답하지 못하면, 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다.
+
 ## 상태 저장 위치
 
-모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일용 `duty/`. omp 세션 말고 계속 도는 프로세스는 듀티 루프와 시간 단위 루프뿐입니다. 실행에 필요한 건 Bun 하나입니다.
+모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일용 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지와 그 기록), 데몬의 잠금 파일과 heartbeat, `fake` 메신저용 `messenger/`, 그리고 `messengers.json`. omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 메신저 데몬뿐입니다. 실행에 필요한 건 Bun 하나입니다.
 
 ## 환경 변수
 

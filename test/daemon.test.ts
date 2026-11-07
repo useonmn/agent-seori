@@ -1,0 +1,139 @@
+import { describe, expect, test } from "bun:test";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
+import { Channel } from "../src/channel.ts";
+import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, runDaemon } from "../src/daemon.ts";
+import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
+import { FakeAdapter } from "../src/messenger/fake.ts";
+import { adapterFor } from "../src/messenger/index.ts";
+
+function home(messengers: MessengerConfig[] = []) {
+  const root = mkdtempSync(join(tmpdir(), "seori-daemon-"));
+  writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers }));
+  return root;
+}
+
+/** Polls a condition the daemon reaches asynchronously; fails with `what` rather than hanging. */
+async function until(what: string, cond: () => boolean, ms = 3_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(5);
+  }
+}
+
+function start(root: string, opts: Parameters<typeof runDaemon>[1] = {}) {
+  const ac = new AbortController();
+  const events: DaemonEvent[] = [];
+  const done = runDaemon(root, { restartDelayMs: 5, heartbeatMs: 10, onEvent: (e) => events.push(e), ...opts, signal: ac.signal });
+  const stop = async () => {
+    ac.abort();
+    await done;
+  };
+  return { events, done, stop, lines: () => events.map(daemonLine) };
+}
+
+const fakePoll = (config: MessengerConfig, root: string): MessengerAdapter =>
+  config.source === "fake" ? new FakeAdapter(root, { pollMs: 5 }) : adapterFor(config, root);
+const fakeIn = (root: string, r: Record<string, unknown>) => {
+  mkdirSync(join(root, "messenger", "fake"), { recursive: true });
+  appendFileSync(join(root, "messenger", "fake", "in.jsonl"), `${JSON.stringify(r)}\n`);
+};
+const msg = (id: string, from = "u1"): InboundMessage => ({ id, source: "x", chat: "c", from, at: 1, text: `text ${id}` });
+
+describe("runDaemon", () => {
+  test("stores an owner message from the fake messenger and drops other senders", async () => {
+    const root = home([{ source: "fake", owner: "u1" }]);
+    fakeIn(root, { msgId: "1", chat: "c", thread: "t", from: "stranger", text: "let me in", at: 3 });
+    fakeIn(root, { msgId: "2", chat: "c", thread: "t", from: "u1", text: "hello lead", at: 4 });
+    const d = start(root, { adapterFor: fakePoll });
+    await until("stored", () => d.events.some((e) => e.ev === "stored"));
+    await d.stop();
+    expect(new Channel(root).inbound()).toEqual([{ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", thread: "t", from: "u1", at: 4, text: "hello lead" }]);
+    expect(d.lines()).toEqual(["DAEMON dropped fake:c:1 from stranger", "DAEMON stored fake:c:2"]);
+    expect(new FakeAdapter(root).offset()).toBe(2);
+  });
+
+  test("a message replayed after a crash between append and offset commit is stored once", async () => {
+    const root = home([{ source: "x", owner: "u1" }]);
+    let attempts = 0;
+    // First run: stores the message, then dies before committing. The restart replays the same upstream message.
+    const replaying: MessengerAdapter = {
+      source: "x",
+      async receive(signal, onMessage) {
+        attempts++;
+        await onMessage(msg("x:c:1"));
+        if (attempts === 1) throw new Error("crashed before offset commit");
+        await onMessage(msg("x:c:2"));
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      send: async () => ({ messageId: "1" }),
+    };
+    const d = start(root, { adapterFor: () => replaying });
+    await until("second message", () => d.events.some((e) => e.ev === "stored" && e.id === "x:c:2"));
+    await d.stop();
+    expect(new Channel(root).inbound().map((r) => r.id)).toEqual(["x:c:1", "x:c:2"]);
+    expect(d.lines()).toEqual([
+      "DAEMON stored x:c:1",
+      "DAEMON x error: crashed before offset commit; restarting in 5 ms",
+      "DAEMON duplicate x:c:1",
+      "DAEMON stored x:c:2",
+    ]);
+  });
+
+  test("a crashing messenger is restarted and does not stop the others", async () => {
+    const root = home([{ source: "telegram", owner: "u1" }, { source: "flaky", owner: "u1" }, { source: "fake", owner: "u1" }]);
+    let flakyRuns = 0;
+    const flaky: MessengerAdapter = {
+      source: "flaky",
+      async receive(signal, onMessage) {
+        if (++flakyRuns < 3) throw new Error(`boom ${flakyRuns}`);
+        await onMessage(msg("flaky:c:1"));
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      send: async () => ({ messageId: "1" }),
+    };
+    fakeIn(root, { msgId: "1", chat: "c", from: "u1", text: "still here" });
+    const d = start(root, { adapterFor: (c, r) => (c.source === "flaky" ? flaky : fakePoll(c, r)) });
+    await until("both stored", () => ["flaky:c:1", "fake:c:1"].every((id) => d.events.some((e) => e.ev === "stored" && e.id === id)));
+    await d.stop();
+    expect(flakyRuns).toBe(3);
+    expect(d.lines()).toContain("DAEMON flaky error: boom 1; restarting in 5 ms");
+    expect(d.lines()).toContain("DAEMON telegram error: messenger telegram is not supported yet (real adapters come in a later stage); restarting in 5 ms");
+    expect(new Channel(root).inbound().map((r) => r.id).sort()).toEqual(["fake:c:1", "flaky:c:1"]);
+  });
+
+  test("a second daemon is refused while the first holds the lock and starts once it is gone", async () => {
+    const root = home();
+    const first = start(root);
+    await until("lock", () => existsSync(daemonLockPath(root)));
+    await expect(runDaemon(root, { onEvent: () => {} })).rejects.toThrow(`another seori daemon is running for ${root} (pid ${process.pid})`);
+    await first.stop();
+    expect(existsSync(daemonLockPath(root))).toBe(false);
+
+    // A lock left by a dead process on this host is taken over.
+    const dead = Bun.spawnSync(["true"]).pid;
+    writeFileSync(daemonLockPath(root), JSON.stringify({ pid: dead, host: hostname(), at: 1 }));
+    const second = start(root);
+    await until("lock taken over", () => JSON.parse(readFileSync(daemonLockPath(root), "utf8")).pid === process.pid);
+    await second.stop();
+    expect(existsSync(daemonLockPath(root))).toBe(false);
+  });
+
+  test("rewrites the heartbeat while running and keeps running with no messengers", async () => {
+    const root = home();
+    let clock = 1_000;
+    const d = start(root, { now: () => clock++ });
+    const beat = () => JSON.parse(readFileSync(heartbeatPath(root), "utf8")) as { at: number; pid: number };
+    await until("heartbeat", () => existsSync(heartbeatPath(root)));
+    const firstAt = beat().at;
+    await until("heartbeat advances", () => beat().at > firstAt + 2);
+    expect(beat().pid).toBe(process.pid);
+    expect(d.lines()).toEqual([`DAEMON no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat only)`]);
+    await d.stop();
+    const stoppedAt = beat().at;
+    await Bun.sleep(30); // proving the absence of further beats needs real time to pass
+    expect(beat().at).toBe(stoppedAt);
+  });
+});

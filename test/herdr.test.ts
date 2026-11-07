@@ -57,11 +57,13 @@ describe("herdr argv", () => {
     const r = recorder((argv) => ok(argv[1] === "split" ? { pane } : { root_pane: pane }));
     const h = new Herdr(r.exec, "");
     expect(await h.createWorkspace("seori", "/w")).toEqual({ paneId: "w1:p2", tabId: "w1:t2", workspaceId: "w1" });
+    await h.createWorkspace("lead", "/w", { SEORI_HOME: "/h", SEORI_CMD: "bun '/s/cli.ts'" });
     await h.createTab("fix-login", "/w", "w3", { SEORI_LANE: "fix-login", NOTE: "a b" });
     await h.createTab("other", "/w");
     await h.split("w1:p1", "/w", { SEORI_ROLE: "duty" });
     expect(r.calls).toEqual([
       ["workspace", "create", "--label", "seori", "--cwd", "/w", "--no-focus"],
+      ["workspace", "create", "--label", "lead", "--cwd", "/w", "--no-focus", "--env", "SEORI_HOME=/h", "--env", "SEORI_CMD=bun '/s/cli.ts'"],
       ["tab", "create", "--label", "fix-login", "--cwd", "/w", "--no-focus", "--workspace", "w3", "--env", "SEORI_LANE=fix-login", "--env", "NOTE=a b"],
       ["tab", "create", "--label", "other", "--cwd", "/w", "--no-focus"],
       ["pane", "split", "w1:p1", "--direction", "down", "--ratio", "0.3", "--cwd", "/w", "--no-focus", "--env", "SEORI_ROLE=duty"],

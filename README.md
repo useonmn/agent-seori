@@ -16,6 +16,7 @@ Roles:
 - Lane: an omp session in its own herdr tab, one per task, with the brief and the lane rules (`prompts/lane-footer.md`).
 - Duty: an omp session with `prompts/duty.md`, next to the duty loop process (`seori duty`), which flushes inboxes, nudges lanes that stop reporting, escalates and detects lost lanes.
 - Hourly loop: `seori loop`, a process that syncs the backlog, audits missed work, starts the next item and asks open questions through the lead. Design: [docs/hourly-loop.md](docs/hourly-loop.md).
+- Messenger daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead. See [Messenger channel](#messenger-channel).
 
 herdr provides the workspaces, tabs and panes, and reports each omp session's state (idle, working, blocked) over its CLI. seori reads that state before it does anything to a pane.
 
@@ -37,10 +38,10 @@ Start herdr, then from a shell:
 
 ```sh
 seori up
-# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 hourly=w1:p4 home=~/.seori
+# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 hourly=w1:p4 daemon=w1:p5 home=~/.seori
 ```
 
-That opens a herdr workspace with a lead pane, a duty pane, the duty loop and the hourly loop. Talk to the lead pane. It writes a brief and opens lanes itself, and you can do the same from the shell:
+That opens a herdr workspace with a lead pane, a duty pane, the duty loop, the hourly loop and the messenger daemon. Talk to the lead pane. It writes a brief and opens lanes itself, and you can do the same from the shell:
 
 ```sh
 seori start fix-flaky-login --brief examples/brief.md
@@ -70,7 +71,7 @@ seori done fix-flaky-login            # closes the lane's pane; only a READY lan
 ## Commands
 
 ```
-seori up [--cwd DIR]                         open lead, duty, duty loop and hourly loop panes
+seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and messenger daemon panes
 seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
 seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, brief + lane rules
 seori report <key> --text T [--status working|waiting]
@@ -92,9 +93,14 @@ seori review <owner/repo#N> [--model M]      fresh omp reviewer at the exact hea
 seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
 seori done <key>                             lead closes a READY lane
 seori status
+seori daemon                                 receive the messengers in messengers.json into the lead channel (seori up runs it)
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
+                                            answer messenger messages (one reply per id) or send a notice
+seori msg close <id> --why T                 close a messenger message that needs no reply
+seori msg list [--all]                       open messenger messages (--all: every one, with its state)
 ```
 
-`--text` may be left off to read the message from stdin. `send`, `report` and `ready` exit 3 and print `HELD <target>` when a delivery may or may not have reached the pane; a held message is never resent, so check the pane, then `seori inbox ack` or `seori inbox resend` it. `QUEUED` (exit 0) means it waits in the pane's inbox. The commands the agents see are rendered with the full path to `src/cli.ts` and `SEORI_HOME` set, so `seori` does not need to be on their PATH.
+`--text` may be left off to read the message from stdin. `send`, `report` and `ready` exit 3 and print `HELD <target>` when a delivery may or may not have reached the pane; a held message is never resent, so check the pane, then `seori inbox ack` or `seori inbox resend` it. `QUEUED` (exit 0) means it waits in the pane's inbox. `msg send` exits 0 with `SENT`, 3 with `HELD` when the messenger may or may not have the reply (check the chat, then pass `--again` to send it anyway), and 2 when it refuses, for example a second reply to an id that is already answered. The commands the agents see are rendered with the full path to `src/cli.ts` and `SEORI_HOME` set, so `seori` does not need to be on their PATH.
 
 ## How a lane starts
 
@@ -114,9 +120,28 @@ Nudges at 10, 20 and 40 minutes. A lane that has not reported for 10 minutes get
 
 Merge needs a CLEAR receipt at the exact head and green checks. `seori merge` reads the PR's head SHA with `gh` and requires a receipt for that SHA in `~/.seori/receipts/` with verdict `CLEAR`. Only `seori review` writes receipts. It runs a fresh non-interactive omp reviewer (optionally with `--model`) on `prompts/review.md` pinned to that SHA. The reviewer runs isolated, without the repository's AGENTS.md, skills, rules or extensions, reads the PR with `gh`, and must end with exactly one `VERDICT: CLEAR` or `VERDICT: BLOCK` line; without one, no receipt is written. Then `gh pr checks` must return at least one check, every check must pass or be skipped, and at least one must pass: an empty check list is never green. The merge is `gh pr merge --squash --match-head-commit <sha>`, so a push after the review changes the head and the old receipt no longer applies.
 
+## Messenger channel
+
+The lead can take your requests from a messenger as well as from its pane. Configure messengers in `$SEORI_HOME/messengers.json`:
+
+```json
+{ "messengers": [ { "source": "fake", "owner": "u1" } ] }
+```
+
+`source` picks the adapter and `owner` is the one sender id whose messages reach the lead; messages from anyone else are dropped. That is the whole safety model, the same as dori's: only the owner can talk to the lead, and the owner's messages get no extra restrictions. Only the `fake` adapter exists for now (Telegram, Slack and Discord come in the next stage). It is made of files under `$SEORI_HOME/messenger/fake/`: append a line `{"msgId":"1","chat":"c1","from":"u1","text":"..."}` to `in.jsonl` to send the lead a message, read the replies in `out.jsonl`, and write `ok`, `timeout` or `error` to `send-mode` to make sends succeed, end uncertain, or fail.
+
+How a message travels:
+
+1. The daemon (the fifth pane of `seori up`) receives it and, if it is from the owner, stores it in `$SEORI_HOME/lead/` (synced to disk) before acknowledging it to the messenger. A message received twice is stored once. The daemon writes a heartbeat every few seconds; the pane runs it in a restart loop, so a crashed daemon is back within about a second. Ctrl-C in that pane stops the daemon and the loop. Only one daemon runs per `$SEORI_HOME` (`messenger/daemon.lock`).
+2. The lead's omp loads `extensions/lead-channel.ts` (only the lead: duty, lanes and the reviewer never load it). It delivers each stored message into the lead's conversation with its id, and records each delivery in a ledger next to it. A message stays open across an omp restart, `/new`, `/resume` or `/fork`.
+3. The lead answers with `seori msg send --reply-to <id> --text '...'`, or `seori msg close <id> --why '...'` when no answer is needed. Only a reply the messenger accepted, or a close, ends an id. A second reply to the same id is refused; a reply that may or may not have arrived (a timeout after sending) is recorded and not retried until you check the chat and pass `--again`.
+4. An id that is still unanswered is delivered again, up to 3 deliveries in total; after that it is given up.
+
+The duty loop watches the channel when a messenger is configured. It tells the lead once when the daemon's heartbeat is older than 90 seconds, and it tells you in the chat, once per message, when the lead is offline (no lead omp consuming) or blocked on a question for more than 2 minutes, or when it gave up on a message after 3 tries.
+
 ## State
 
-JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, and `duty/` for the duty loop's stop file. Besides the omp sessions, the only long-running processes are the duty loop and the hourly loop. The only runtime dependency is Bun.
+JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, `lead/` for the lead channel (stored messenger messages and their ledger), `messenger/` for the daemon's lock, heartbeat and the fake messenger, and `messengers.json`. Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the messenger daemon. The only runtime dependency is Bun.
 
 ## Environment
 

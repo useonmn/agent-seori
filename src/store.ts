@@ -102,7 +102,8 @@ const readOrUndefined = (path: string): string | undefined => {
   }
 };
 
-const pidAlive = (pid: number): boolean => {
+/** Whether a process with this pid exists on this host (EPERM: it exists but belongs to another user). */
+export const pidAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;

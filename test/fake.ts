@@ -1,8 +1,9 @@
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
 import { Herdr, type AgentStatus, type Exec } from "../src/herdr.ts";
+import type { MessengerConfig, SendTarget } from "../src/messenger/adapter.ts";
 import { Store, type HostLoad } from "../src/store.ts";
 
 /**
@@ -49,6 +50,33 @@ export class World {
   keyFails = 0;
   gh: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 1, stdout: "" });
   reviewer: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({ code: 0, stdout: ompJson("VERDICT: CLEAR") });
+  /** every duty alert sent through Deps.notify */
+  notified: { config: MessengerConfig; target: SendTarget; text: string }[] = [];
+  /** thrown by the next Deps.notify calls, one per call, before anything is recorded in `notified` */
+  notifyFails: Error[] = [];
+
+  /** Writes `messengers.json` under `root`: duty's channel alerts run only when one is configured. */
+  messengers(root: string, configs: MessengerConfig[]): void {
+    writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: configs }));
+  }
+
+  /** The daemon's heartbeat, written `ageMs` before the world clock; undefined removes it. */
+  heartbeat(root: string, ageMs: number | undefined): void {
+    const dir = join(root, "messenger");
+    mkdirSync(dir, { recursive: true });
+    if (ageMs === undefined) rmSync(join(dir, "daemon.heartbeat"), { force: true });
+    else writeFileSync(join(dir, "daemon.heartbeat"), JSON.stringify({ at: this.clock - ageMs, pid: process.pid }));
+  }
+
+  /** The lead extension's consumer lock: held by this live process, by a pid that has exited, or absent. */
+  consumerLock(root: string, holder: "alive" | "dead" | "none"): void {
+    const dir = join(root, "lead");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "consumer.lock");
+    if (holder === "none") return rmSync(path, { force: true });
+    const pid = holder === "alive" ? process.pid : Bun.spawnSync(["true"]).pid;
+    writeFileSync(path, JSON.stringify({ pid, host: hostname(), at: this.clock }));
+  }
 
   addPane(id: string, status: AgentStatus = "idle"): Pane {
     const p = { status, received: [], ran: [] };
@@ -128,6 +156,11 @@ export class World {
       agentCmd: "omp",
       seoriCmd: "seori",
       host: () => this.host,
+      notify: async (config, target, text) => {
+        const fail = this.notifyFails.shift();
+        if (fail) throw fail;
+        this.notified.push({ config, target, text });
+      },
     };
   }
 }
