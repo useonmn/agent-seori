@@ -4,7 +4,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { daemonLoop } from "../src/cli.ts";
-import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, runDaemon } from "../src/daemon.ts";
+import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, MAX_RESTART_DELAY_MS, readHealth, restartDelay, runDaemon } from "../src/daemon.ts";
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
 import { adapterFor } from "../src/messenger/index.ts";
@@ -71,6 +71,7 @@ describe("runDaemon", () => {
         await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
       },
       send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
     };
     const d = start(root, { adapterFor: () => replaying });
     await until("second message", () => d.events.some((e) => e.ev === "stored" && e.id === "x:c:2"));
@@ -85,7 +86,7 @@ describe("runDaemon", () => {
   });
 
   test("a crashing messenger is restarted and does not stop the others", async () => {
-    const root = home([{ source: "telegram", owner: "u1" }, { source: "flaky", owner: "u1" }, { source: "fake", owner: "u1" }]);
+    const root = home([{ source: "nosuch", owner: "u1" }, { source: "flaky", owner: "u1" }, { source: "fake", owner: "u1" }]);
     let flakyRuns = 0;
     const flaky: MessengerAdapter = {
       source: "flaky",
@@ -95,6 +96,7 @@ describe("runDaemon", () => {
         await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
       },
       send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
     };
     fakeIn(root, { msgId: "1", chat: "c", from: "u1", text: "still here" });
     const d = start(root, { adapterFor: (c, r) => (c.source === "flaky" ? flaky : fakePoll(c, r)) });
@@ -102,8 +104,46 @@ describe("runDaemon", () => {
     await d.stop();
     expect(flakyRuns).toBe(3);
     expect(d.lines()).toContain("DAEMON flaky error: boom 1; restarting in 5 ms");
-    expect(d.lines()).toContain("DAEMON telegram error: messenger telegram is not supported yet (real adapters come in a later stage); restarting in 5 ms");
+    expect(d.lines()).toContain("DAEMON nosuch error: messenger nosuch is not supported; restarting in 5 ms");
     expect(new Channel(root).inbound().map((r) => r.id).sort()).toEqual(["fake:c:1", "flaky:c:1"]);
+    // The third run stored a message, so the failure streak ended; the unsupported one is still failing.
+    expect(readHealth(root, "flaky")).toBeUndefined();
+    expect(readHealth(root, "nosuch")).toMatchObject({ error: "messenger nosuch is not supported" });
+    expect(readHealth(root, "fake")).toBeUndefined();
+  });
+
+  test("a messenger that keeps failing is restarted less and less often, up to 10 min apart", () => {
+    expect([1, 2, 3, 4].map((n) => restartDelay(5_000, n))).toEqual([5_000, 10_000, 20_000, 40_000]);
+    expect(restartDelay(5_000, 9)).toBe(MAX_RESTART_DELAY_MS);
+    expect(restartDelay(5_000, 10_000)).toBe(MAX_RESTART_DELAY_MS);
+  });
+
+  test("a message getting through ends a failure streak, and a changed messengers.json starts a fresh one", async () => {
+    const root = home([{ source: "flaky", owner: "u1" }]);
+    let runs = 0;
+    const flaky: MessengerAdapter = {
+      source: "flaky",
+      async receive(signal, onMessage) {
+        if (++runs === 1) throw new Error("boom");
+        await onMessage(msg("flaky:c:1"));
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
+    };
+    const d = start(root, { adapterFor: () => flaky });
+    await until("stored", () => d.events.some((e) => e.ev === "stored"));
+    await d.stop();
+    expect(d.lines()).toContain("DAEMON flaky error: boom; restarting in 5 ms");
+    expect(readHealth(root, "flaky")).toBeUndefined();
+
+    // A streak left by a daemon running an older messengers.json is dropped by the next daemon on the new file.
+    mkdirSync(join(root, "messenger", "flaky"), { recursive: true });
+    writeFileSync(join(root, "messenger", "flaky", "health.json"), JSON.stringify({ failingSince: 1, lastAt: 1, error: "old", failures: 9, config: "older" }));
+    const quiet: MessengerAdapter = { ...flaky, receive: (signal) => new Promise<void>((r) => signal.addEventListener("abort", () => r())) };
+    const d2 = start(root, { adapterFor: () => quiet });
+    await until("old streak dropped", () => readHealth(root, "flaky") === undefined);
+    await d2.stop();
   });
 
   test("a second daemon is refused while the first holds the lock and starts once it is gone", async () => {

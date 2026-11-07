@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Channel } from "./channel.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
@@ -17,10 +17,52 @@ import { type EngineDeps, WatchEngine } from "./watch/engine.ts";
 
 export const HEARTBEAT_MS = 5_000;
 export const RESTART_DELAY_MS = 5_000;
+/**
+ * A receive run that lasts this long without throwing counts as healthy again. Longer than ADAPTER_OUTAGE_MS
+ * (messenger/adapter.ts), so an adapter that gives up after an outage of that length extends the failure streak
+ * instead of ending it.
+ */
+export const HEALTHY_AFTER_MS = 3 * 60_000;
 
 export const daemonDir = (root: string): string => join(root, "messenger");
 export const daemonLockPath = (root: string): string => join(daemonDir(root), "daemon.lock");
 export const heartbeatPath = (root: string): string => join(daemonDir(root), "daemon.heartbeat");
+/** `messenger/<source>/health.json`: present only while that messenger's receive keeps failing; duty alerts on it. */
+export const healthPath = (root: string, source: string): string => join(daemonDir(root), source, "health.json");
+/** `config` is the messengers.json stamp the failures happened under: a new config starts a fresh attempt. */
+export type MessengerHealth = { readonly failingSince: number; readonly lastAt: number; readonly error: string; readonly failures: number; readonly config?: string };
+
+/** The longest wait between restarts of a messenger that keeps failing. */
+export const MAX_RESTART_DELAY_MS = 10 * 60_000;
+
+/**
+ * Wait before the next receive after `failures` failures in a row: doubles from the base up to MAX_RESTART_DELAY_MS, so
+ * a setup error (a rejected token, a missing Discord intent) is retried a few times a hour instead of every 5 s, which
+ * would burn Discord's 1000 identifies a day and get the token reset.
+ */
+export const restartDelay = (base: number, failures: number): number => Math.min(MAX_RESTART_DELAY_MS, base * 2 ** Math.max(0, Math.min(failures - 1, 20)));
+
+export function readHealth(root: string, source: string): MessengerHealth | undefined {
+  try {
+    return JSON.parse(readFileSync(healthPath(root, source), "utf8")) as MessengerHealth;
+  } catch {
+    return undefined;
+  }
+}
+
+function recordFailure(root: string, source: string, at: number, error: string, config: string): MessengerHealth {
+  const prev = readHealth(root, source);
+  const next: MessengerHealth = { failingSince: prev?.failingSince ?? at, lastAt: at, error, failures: (prev?.failures ?? 0) + 1, config };
+  const path = healthPath(root, source);
+  mkdirSync(join(daemonDir(root), source), { recursive: true });
+  writeFileSync(`${path}.tmp`, JSON.stringify(next));
+  renameSync(`${path}.tmp`, path);
+  return next;
+}
+
+function clearHealth(root: string, source: string): void {
+  rmSync(healthPath(root, source), { force: true });
+}
 
 export type DaemonEvent =
   | { readonly ev: "stored"; readonly id: string }
@@ -195,17 +237,37 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           text: m.text,
         });
         emit({ ev: stored ? "stored" : "duplicate", id: m.id });
+        // A message got through, so receive works: end any failure streak at once.
+        if (failing) {
+          failing = false;
+          clearHealth(root, config.source);
+        }
       };
+      // Failures recorded under another messengers.json are not this config's: start a fresh attempt.
+      const before = readHealth(root, config.source);
+      if (before && before.config !== stamp) clearHealth(root, config.source);
+      let failing = before?.config === stamp;
       while (!signal.aborted) {
+        // A run that stays up HEALTHY_AFTER_MS ends a failure streak; a crash before that extends it.
+        const healthy = setTimeout(() => {
+          failing = false;
+          clearHealth(root, config.source);
+        }, HEALTHY_AFTER_MS);
+        let delay = restartDelayMs;
         try {
           await adapterFor(config, root).receive(signal, onMessage);
           if (signal.aborted) break;
-          emit({ ev: "error", source: config.source, detail: `receive returned early; restarting in ${restartDelayMs} ms` });
+          emit({ ev: "error", source: config.source, detail: `receive returned early; restarting in ${delay} ms` });
         } catch (e) {
           if (signal.aborted) break;
-          emit({ ev: "error", source: config.source, detail: `${errorText(e)}; restarting in ${restartDelayMs} ms` });
+          const health = recordFailure(root, config.source, now(), errorText(e), stamp);
+          failing = true;
+          delay = restartDelay(restartDelayMs, health.failures);
+          emit({ ev: "error", source: config.source, detail: `${errorText(e)}; restarting in ${delay} ms` });
+        } finally {
+          clearTimeout(healthy);
         }
-        await sleep(restartDelayMs, signal);
+        await sleep(delay, signal);
       }
     };
 

@@ -20,6 +20,12 @@ export type SendTarget = { readonly chat: string; readonly thread?: string; read
 /** The request may have reached the messenger (a timeout after sending, a dropped connection). Never retried automatically. */
 export class SendUncertain extends Error {}
 
+/**
+ * Adapters retry transient errors inside receive and reject once they have failed continuously this long, so the
+ * daemon records the outage (src/daemon.ts health) and duty can tell the lead. Shorter than the daemon's HEALTHY_AFTER_MS.
+ */
+export const ADAPTER_OUTAGE_MS = 2 * 60_000;
+
 export interface MessengerAdapter {
   readonly source: string;
   /**
@@ -28,8 +34,15 @@ export interface MessengerAdapter {
    * id dedupe absorbs it). A rejected `onMessage` stops the commit for that message.
    */
   receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void>;
-  /** Resolves with the messenger's message id. Throws SendUncertain, or any other Error for a definite failure. */
+  /**
+   * Resolves with the messenger's message id (the first chunk's, when long text is split). `target.replyTo` is the part
+   * of a stored id after `<source>:<chat>:`; an `:edit:<stamp>` suffix there must be dropped (common.ts replyTarget).
+   * Throws SendUncertain when the request may have reached the platform (also when some chunks of a split reply went
+   * out and a later one failed), or any other Error for a definite failure.
+   */
   send(target: SendTarget, text: string): Promise<{ messageId: string }>;
+  /** Verifies credentials and returns who the bot is (e.g. "@seori_bot (id 123)"), for `seori messenger check`. */
+  check(): Promise<string>;
 }
 
 export type MessengerConfig = {

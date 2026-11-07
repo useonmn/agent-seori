@@ -1,14 +1,23 @@
 import type { MessengerAdapter, MessengerConfig } from "./adapter.ts";
+import { DiscordAdapter } from "./discord.ts";
 import { FakeAdapter } from "./fake.ts";
+import { SlackAdapter } from "./slack.ts";
+import { TelegramAdapter } from "./telegram.ts";
 
-/** The adapter for one configured messenger. Only `fake` exists in this stage; real platform adapters come later. */
+/** The adapter for one configured messenger; `source` names the platform. */
 export function adapterFor(config: MessengerConfig, root: string): MessengerAdapter {
   switch (config.source) {
     case "fake": {
       const pollMs = config.options?.["pollMs"];
       return new FakeAdapter(root, typeof pollMs === "number" ? { pollMs } : {});
     }
+    case "telegram":
+      return new TelegramAdapter(config, root);
+    case "slack":
+      return new SlackAdapter(config, root);
+    case "discord":
+      return new DiscordAdapter(config, root);
     default:
-      throw new Error(`messenger ${config.source} is not supported yet (real adapters come in a later stage)`);
+      throw new Error(`messenger ${config.source} is not supported`);
   }
 }

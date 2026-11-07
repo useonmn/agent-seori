@@ -100,6 +100,7 @@ seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--a
 seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다
 seori msg list [--all]                       아직 열린 리드 채널 메시지: 메신저 메시지와 감시 알림 (--all: 전부, 상태 포함)
                                             칸: id  상태  지난 시간  종류  보낸 사람 또는 감시 이름  내용
+seori msg check                              설정된 메신저마다 토큰이 맞는지 확인합니다(봇 이름을 출력)
 seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                  | --pane PANE --status idle|working|blocked|gone)
                  [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
@@ -137,7 +138,29 @@ seori watch log <id|name> [-n N]             감시가 최근에 본 일
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
 ```
 
-`source`는 어떤 메신저인지, `owner`는 리드에게 말할 수 있는 단 한 명의 보낸 사람 id입니다. 다른 사람이 보낸 메시지는 버립니다. 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. 지금은 `fake` 메신저만 있습니다. 텔레그램, 슬랙, 디스코드는 다음 단계에서 붙습니다. `fake`는 `$SEORI_HOME/messenger/fake/` 아래 파일로 움직입니다. `in.jsonl`에 `{"msgId":"1","chat":"c1","from":"u1","text":"..."}` 한 줄을 덧붙이면 리드에게 메시지를 보낸 것이 되고, 답은 `out.jsonl`에 쌓입니다. `send-mode`에 `ok`, `timeout`, `error`를 쓰면 보내기가 성공, 불확실, 실패로 끝납니다.
+`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 리드에게 말할 수 있는 단 한 명의 보낸 사람 id입니다. 다른 사람이나 봇이 보낸 메시지는 버립니다. 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
+
+토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다). 환경 변수가 있으면 그쪽이 먼저입니다:
+
+```json
+{ "telegram": { "token": "123:abc" }, "slack": { "botToken": "xoxb-...", "appToken": "xapp-..." }, "discord": { "token": "..." } }
+```
+
+| source | 만들 것 | `owner` | 환경 변수 |
+|---|---|---|---|
+| `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
+| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기 | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
+| `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
+
+`seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 어디까지 받았는지(커서)를 `$SEORI_HOME/messenger/<source>/`에 남기는데, 메시지를 저장한 뒤에만 커서를 옮깁니다. 그래서 중간에 죽어도 메시지를 잃지 않고 다시 받습니다:
+
+- 텔레그램은 `getUpdates`로 기다리며 받습니다. 봇 토큰 하나에 프로그램 하나만 받을 수 있습니다(둘이면 텔레그램이 409로 답하고, seori가 알려 줍니다). 텔레그램은 읽지 않은 메시지를 24시간만 보관합니다.
+- 슬랙은 Socket Mode를 씁니다(공개 주소가 필요 없습니다). 저장한 뒤에야 받았다고 알립니다. 다시 연결될 때마다 본 적 있는 대화를 커서부터 `conversations.history`로, 최근 스레드는 `conversations.replies`로 읽어서, 연결이 끊긴 동안 온 메시지와 스레드 답글도 놓치지 않습니다. 읽기 권한이 없는 대화는 건너뛰고, ping에 답하지 않는 연결은 다시 연결합니다.
+- 디스코드는 게이트웨이를 쓰고, 다시 켜지면 세션을 이어 갑니다(resume). 이어 갈 수 없으면 본 적 있는 대화를 커서부터 REST로 읽습니다.
+
+고친 메시지는 `(edited)`로 시작하는 새 메시지로 리드에게 갑니다. 첨부 파일은 내려받지 않고 `[attachment: 이름 (종류, 크기) 참조]` 줄로 적습니다. 긴 답은 메신저 한도(4096, 3900, 2000자)에 맞춰 문단, 줄, 단어 경계에서 나눠 보내고, 첫 조각이 원래 메시지에 답글(스레드)로 붙습니다. 첫 조각이 간 뒤에 실패하면, 갔을 수도 있는 다른 보내기처럼 불확실로 기록합니다.
+
+`fake`는 `$SEORI_HOME/messenger/fake/` 아래 파일로 움직입니다. `in.jsonl`에 `{"msgId":"1","chat":"c1","from":"u1","text":"..."}` 한 줄을 덧붙이면 리드에게 메시지를 보낸 것이 되고, 답은 `out.jsonl`에 쌓입니다. `send-mode`에 `ok`, `timeout`, `error`를 쓰면 보내기가 성공, 불확실, 실패로 끝납니다.
 
 메시지가 가는 길:
 
@@ -146,7 +169,7 @@ seori watch log <id|name> [-n N]             감시가 최근에 본 일
 3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
 4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다.
 
-메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. `messengers.json`을 읽을 수 없으면(그동안 데몬은 메신저를 받지 않습니다) 리드에게 한 번 알리고, 데몬의 heartbeat가 90초보다 오래되어도 리드에게 한 번 알립니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 omp가 없음) 2분 넘게 막혀 있으면(herdr가 blocked라고 보고함: 터미널에서 질문을 기다리거나, 모델 오류로 차례가 끝난 경우), 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다. 답이 이미 갔을 수도 있는 메시지(send-uncertain)나 포기한 메시지는 다시 전하지 않으므로, 꺼져 있다거나 막혀 있다는 알림도 보내지 않습니다.
+메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. `messengers.json`을 읽을 수 없으면(그동안 데몬은 메신저를 받지 않습니다) 리드에게 한 번 알리고, 데몬의 heartbeat가 90초보다 오래되어도 리드에게 한 번 알립니다. 어떤 메신저가 3분 동안 받지 못하고 있으면(토큰이 거절됨, 같은 텔레그램 봇을 다른 프로그램이 읽음, 디스코드 인텐트가 꺼짐, 메신저 서버가 2분 동안 답하지 않음 등) 오류 내용과 함께 리드에게 한 번 알립니다. 데몬은 받기가 계속 실패하는 동안 `messenger/<source>/health.json`을 남기고, 실패한 메신저를 점점 드물게 다시 켭니다(5초에서 두 배씩 늘려 최대 10분. 설정 오류로 디스코드의 하루 접속 한도를 다 쓰지 않도록). 메시지가 하나라도 들어오거나 3분 넘게 잘 돌면 파일을 지우고, `messengers.json`을 고치면 처음부터 다시 셉니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 omp가 없음) 2분 넘게 막혀 있으면(herdr가 blocked라고 보고함: 터미널에서 질문을 기다리거나, 모델 오류로 차례가 끝난 경우), 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다. 답이 이미 갔을 수도 있는 메시지(send-uncertain)나 포기한 메시지는 다시 전하지 않으므로, 꺼져 있다거나 막혀 있다는 알림도 보내지 않습니다.
 
 ## 감시
 
@@ -184,7 +207,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 
 ## 상태 저장 위치
 
-모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일용 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록), 데몬의 잠금 파일과 heartbeat, `fake` 메신저용 `messenger/`, 감시와 그 기록용 `watches/`, 그리고 `messengers.json`. omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
+모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일용 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
 
 ## 환경 변수
 

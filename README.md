@@ -99,6 +99,7 @@ seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--a
 seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
 seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                             columns: id  state  age  kind  sender-or-watch-name  text
+seori msg check                              verify each configured messenger's credentials (prints who the bot is)
 seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                  | --pane PANE --status idle|working|blocked|gone)
                  [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
@@ -137,7 +138,29 @@ The lead can take your requests from a messenger as well as from its pane. Confi
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
 ```
 
-`source` picks the adapter and `owner` is the one sender id whose messages reach the lead; messages from anyone else are dropped. That is the whole safety model, the same as dori's: only the owner can talk to the lead, and the owner's messages get no extra restrictions. Only the `fake` adapter exists for now (Telegram, Slack and Discord come in the next stage). It is made of files under `$SEORI_HOME/messenger/fake/`: append a line `{"msgId":"1","chat":"c1","from":"u1","text":"..."}` to `in.jsonl` to send the lead a message, read the replies in `out.jsonl`, and write `ok`, `timeout` or `error` to `send-mode` to make sends succeed, end uncertain, or fail.
+`source` picks the adapter (`telegram`, `slack`, `discord`, or `fake` for tests) and `owner` is the one sender id whose messages reach the lead; messages from anyone else, and from bots, are dropped. That is the whole safety model, the same as dori's: only the owner can talk to the lead, and the owner's messages get no extra restrictions. `options.apiBase` points an adapter at another API host (the tests use a local mock).
+
+Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuses a file others can read), or in environment variables, which win:
+
+```json
+{ "telegram": { "token": "123:abc" }, "slack": { "botToken": "xoxb-...", "appToken": "xapp-..." }, "discord": { "token": "..." } }
+```
+
+| source | what to create | `owner` | env variables |
+|---|---|---|---|
+| `telegram` | a bot from @BotFather; send it `/start` once in a DM. For groups or forum topics, turn privacy mode off (`/setprivacy`) | your numeric user id | `SEORI_TELEGRAM_TOKEN` |
+| `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write` and `im:history` (plus `app_mentions:read`, `channels:history` for channels), bot event `message.im`, and the Messages tab enabled | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
+| `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only) and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
+
+`seori msg check` asks each configured messenger who its bot is, which proves the tokens work. Each adapter keeps a cursor under `$SEORI_HOME/messenger/<source>/` and commits it only after a message is stored, so a crash replays instead of losing it:
+
+- Telegram long-polls `getUpdates` (one program per bot token; a second one makes Telegram answer 409, which seori reports). Telegram keeps unread updates for 24 hours.
+- Slack uses Socket Mode (no public URL) and acknowledges an event only after storing it. After every reconnect it reads each chat it has seen with `conversations.history` from its cursor, and its recent threads with `conversations.replies`, so messages and thread replies sent while it was disconnected are not lost. A chat the bot lacks the history scope for is skipped, and a socket that stops answering pings is reconnected.
+- Discord uses the gateway and resumes its session after a restart; when a session cannot be resumed it reads each chat it has seen from its cursor over REST.
+
+An edited message reaches the lead as a new message starting with `(edited)`. Attachments are listed as `[attachment: name (type, size) ref]` lines and never downloaded. Long replies are split at the platform limit (4096, 3900 and 2000 characters) on paragraph, line or word breaks; the first part replies to (threads under) your message. A reply that fails after its first part went out is recorded as uncertain, like any send that may have arrived.
+
+The `fake` adapter is made of files under `$SEORI_HOME/messenger/fake/`: append a line `{"msgId":"1","chat":"c1","from":"u1","text":"..."}` to `in.jsonl` to send the lead a message, read the replies in `out.jsonl`, and write `ok`, `timeout` or `error` to `send-mode` to make sends succeed, end uncertain, or fail.
 
 How a message travels:
 
@@ -146,7 +169,7 @@ How a message travels:
 3. The lead answers with `seori msg send --reply-to <id> --text '...'`, or `seori msg close <id> --why '...'` when no answer is needed. Only a reply the messenger accepted, or a close, ends an id. A second reply to the same id is refused; a reply that may or may not have arrived (a timeout after sending) is recorded and not retried until you check the chat and pass `--again`.
 4. An id that is still unanswered is delivered again, up to 3 deliveries in total; after that it is given up.
 
-The duty loop watches the channel when a messenger is configured. It tells the lead once when `messengers.json` cannot be read (the daemon then receives no messengers until it is fixed) and once when the daemon's heartbeat is older than 90 seconds. It tells you in the chat, once per message, when the lead is offline (no lead omp consuming) or stuck for more than 2 minutes (herdr reports it blocked: a question in its terminal, or a turn that ended in a model error), or when it gave up on a message after 3 tries. A message whose reply may already have arrived (send-uncertain), or that was given up, gets no offline or stuck notice: it is never delivered again.
+The duty loop watches the channel when a messenger is configured. It tells the lead once when `messengers.json` cannot be read (the daemon then receives no messengers until it is fixed), once when the daemon's heartbeat is older than 90 seconds, and once when a messenger has not been able to receive for 3 minutes (a rejected token, a second program on the same Telegram bot, a missing Discord intent, or the platform not answering for 2 minutes), with the adapter's error. The daemon writes `messenger/<source>/health.json` while receive keeps failing, restarts a failing messenger less and less often (5 seconds doubling up to 10 minutes, so a setup error does not burn Discord's daily identify limit), and removes the file once a message gets through or a run stays up 3 minutes; editing `messengers.json` starts a fresh attempt. It tells you in the chat, once per message, when the lead is offline (no lead omp consuming) or stuck for more than 2 minutes (herdr reports it blocked: a question in its terminal, or a turn that ended in a model error), or when it gave up on a message after 3 tries. A message whose reply may already have arrived (send-uncertain), or that was given up, gets no offline or stuck notice: it is never delivered again.
 
 ## Watches
 
@@ -184,7 +207,7 @@ Compared with omo's `monitor`: the same kinds of sources, coalescing, wake budge
 
 ## State
 
-JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock, heartbeat and the fake messenger, `watches/` for the watches and their event logs, and `messengers.json`. Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
+JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
 
 ## Environment
 
@@ -199,6 +222,7 @@ JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`,
 | `SEORI_MAX_STARTS` | default for `seori loop --max-starts` (2) |
 | `SEORI_MAX_LOAD` | default for `seori loop --max-load` |
 | `SEORI_LANE` | set by seori in a lane's pane; the default sender of `seori send` and the default owner of `seori watch add` |
+| `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` |
 
 ## Testing
 

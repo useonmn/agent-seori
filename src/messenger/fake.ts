@@ -125,6 +125,10 @@ export class FakeAdapter implements MessengerAdapter {
       .map((l) => JSON.parse(l) as FakeOutboundRow);
   }
 
+  async check(): Promise<string> {
+    return `fake messenger (${this.dir})`;
+  }
+
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {
     const mode = this.sendMode();
     if (mode === "error") throw new Error("fake messenger: send failed (send-mode error)");

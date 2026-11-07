@@ -3,8 +3,11 @@ import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InboundMessage, SendUncertain } from "../src/messenger/adapter.ts";
+import { DiscordAdapter } from "../src/messenger/discord.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
 import { adapterFor } from "../src/messenger/index.ts";
+import { SlackAdapter } from "../src/messenger/slack.ts";
+import { TelegramAdapter } from "../src/messenger/telegram.ts";
 
 const home = () => mkdtempSync(join(tmpdir(), "seori-fake-"));
 const row = (r: Record<string, unknown>) => `${JSON.stringify(r)}\n`;
@@ -99,9 +102,12 @@ describe("FakeAdapter send", () => {
 });
 
 describe("adapterFor", () => {
-  test("fake is supported; anything else is refused", () => {
+  test("each platform gets its adapter; an unknown source is refused", () => {
     const root = home();
     expect(adapterFor({ source: "fake", owner: "u1" }, root)).toBeInstanceOf(FakeAdapter);
-    expect(() => adapterFor({ source: "telegram", owner: "u1" }, root)).toThrow("messenger telegram is not supported yet");
+    expect(adapterFor({ source: "telegram", owner: "1" }, root)).toBeInstanceOf(TelegramAdapter);
+    expect(adapterFor({ source: "slack", owner: "U1" }, root)).toBeInstanceOf(SlackAdapter);
+    expect(adapterFor({ source: "discord", owner: "1" }, root)).toBeInstanceOf(DiscordAdapter);
+    expect(() => adapterFor({ source: "kakao", owner: "u1" }, root)).toThrow("messenger kakao is not supported");
   });
 });

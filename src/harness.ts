@@ -510,7 +510,10 @@ export const ALERT_TEXT = {
 type AlertWhy = keyof typeof ALERT_TEXT;
 
 /** `lead/duty-alerts.json`: alert state that is not per message id, so an outage or a breakage is told once, not every tick. */
-type DutyAlerts = { daemonDownSince?: number; configBrokenSince?: number };
+type DutyAlerts = { daemonDownSince?: number; configBrokenSince?: number; messengerFailing?: Record<string, number> };
+
+/** A messenger whose receive has failed for this long (bad token, another consumer, a platform outage) is told to the lead. */
+export const MESSENGER_FAILING_ALERT_MS = 3 * 60_000;
 
 const dutyAlertsPath = (root: string): string => join(root, "lead", "duty-alerts.json");
 
@@ -565,6 +568,7 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   const channel = new Channel(d.store.root);
   const now = d.now();
   await daemonAlert(d, now, events);
+  await messengerAlerts(d, messengers, now, events);
   if (broken !== undefined) return;
 
   const open = channel.open().filter((s): s is IdState & { readonly row: MessengerRow } => s.row.kind === "messenger");
@@ -660,6 +664,48 @@ async function daemonAlert(d: Deps, now: number, events: DutyEvent[]): Promise<v
   }
   saveDutyAlerts(d.store.root, { ...state, daemonDownSince: now });
   events.push({ action: "daemon-down", detail });
+}
+
+/**
+ * Tells the lead once per failure streak that a messenger cannot receive (the daemon's `messenger/<source>/health.json`,
+ * written by src/daemon.ts while receive keeps failing), with the adapter's error so the owner knows what to fix; the
+ * file disappearing ends the streak. Reads the file here rather than importing daemon.ts, which imports this module.
+ * While the daemon is down its files are stale and daemonAlert already tells the lead, so no new streak is told then.
+ */
+async function messengerAlerts(d: Deps, messengers: readonly MessengerConfig[], now: number, events: DutyEvent[]): Promise<void> {
+  const state = readJsonFile<DutyAlerts>(dutyAlertsPath(d.store.root)) ?? {};
+  const told = { ...(state.messengerFailing ?? {}) };
+  const beat = readJsonFile<{ at?: unknown }>(join(d.store.root, "messenger", "daemon.heartbeat"));
+  const daemonUp = typeof beat?.at === "number" && now - beat.at <= HEARTBEAT_STALE_MS;
+  let changed = false;
+  for (const source of new Set([...messengers.map((m) => m.source), ...Object.keys(told)])) {
+    const health = readJsonFile<{ failingSince?: unknown; error?: unknown; failures?: unknown }>(join(d.store.root, "messenger", source, "health.json"));
+    const since = typeof health?.failingSince === "number" ? health.failingSince : undefined;
+    if (since === undefined) {
+      if (told[source] === undefined) continue;
+      delete told[source];
+      changed = true;
+      events.push({ action: "messenger-recovered", detail: source });
+      continue;
+    }
+    if (!daemonUp || told[source] !== undefined || now - since < MESSENGER_FAILING_ALERT_MS) continue;
+    const minutes = Math.floor((now - since) / 60_000);
+    try {
+      await tellLead(d, `[MESSENGER] ${source} has not been able to receive for ${minutes} min (${String(health?.failures)} failures; last error: ${String(health?.error)}); messages sent there are not reaching you until this is fixed`, "duty");
+    } catch (e) {
+      if (!(e instanceof DeliveryUncertain)) {
+        events.push({ action: "messenger-alert-failed", detail: `${source}: ${failureDetail(e)}` });
+        continue;
+      }
+    }
+    told[source] = now;
+    changed = true;
+    events.push({ action: "messenger-failing", detail: `${source}: ${String(health?.error)}` });
+  }
+  if (!changed) return;
+  // Re-read: daemonAlert may have saved its own field in between.
+  const latest = readJsonFile<DutyAlerts>(dutyAlertsPath(d.store.root)) ?? {};
+  saveDutyAlerts(d.store.root, { ...latest, messengerFailing: told });
 }
 
 // ---------- review + merge gate ----------

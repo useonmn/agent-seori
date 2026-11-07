@@ -24,6 +24,7 @@ function setup() {
       if (mode === "error") throw new Error("403 forbidden");
       return { messageId: `m${++n}` };
     },
+    check: async () => "stub",
   });
   const d: MsgDeps = { adapterFor, configs: [{ source: "fake", owner: "u1" }, { source: "tg", owner: "u1" }], now: () => T0 + 1000 };
   const add = (id: string, o: Partial<MessengerRow> = {}) => {
@@ -137,6 +138,7 @@ describe("msg send --reply-to", () => {
           await gate.promise;
           return { messageId: "slow1" };
         },
+        check: async () => "stub",
       }),
     };
     const first = msgSend(root, { replyTo: ["fake:c1:100"], text: "a" }, slow);

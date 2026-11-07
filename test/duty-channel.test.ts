@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { ALERT_TEXT, dutyTick } from "../src/harness.ts";
@@ -59,6 +59,33 @@ describe("duty channel alerts", () => {
     expect((await dutyTick(d)).map((e) => e.action)).toEqual(["daemon-down"]);
     expect(lead.received.at(-1)).toContain("(no heartbeat)");
     expect(lead.received).toHaveLength(2);
+  });
+
+  test("a messenger failing to receive for 3 min is told once, and the health file going away ends it", async () => {
+    const { w, d, root, lead, advance } = setup();
+    const health = join(root, "messenger", "fake", "health.json");
+    mkdirSync(join(root, "messenger", "fake"), { recursive: true });
+    writeFileSync(health, JSON.stringify({ failingSince: w.clock, lastAt: w.clock, error: "401 Unauthorized", failures: 4 }));
+    advance(2 * MIN);
+    expect(await dutyTick(d)).toEqual([]); // a short blip is not told
+    advance(MIN);
+    expect((await dutyTick(d)).map((e) => e.action)).toEqual(["messenger-failing"]);
+    expect(lead.received).toEqual(["[MESSENGER] fake has not been able to receive for 3 min (4 failures; last error: 401 Unauthorized); messages sent there are not reaching you until this is fixed"]);
+    advance(MIN);
+    expect(await dutyTick(d)).toEqual([]);
+    rmSync(health);
+    expect(await dutyTick(d)).toEqual([{ action: "messenger-recovered", detail: "fake" }]);
+    expect(await dutyTick(d)).toEqual([]);
+    expect(lead.received).toHaveLength(1);
+  });
+
+  test("a health file left while the daemon is down is not told as a messenger failure (daemon-down covers it)", async () => {
+    const { w, d, root, lead, advance } = setup();
+    mkdirSync(join(root, "messenger", "fake"), { recursive: true });
+    writeFileSync(join(root, "messenger", "fake", "health.json"), JSON.stringify({ failingSince: w.clock, lastAt: w.clock, error: "boom", failures: 1 }));
+    advance(5 * MIN, false);
+    expect((await dutyTick(d)).map((e) => e.action)).toEqual(["daemon-down"]);
+    expect(lead.received).toHaveLength(1);
   });
 
   test("a heartbeat younger than 90 s is not an outage", async () => {

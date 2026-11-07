@@ -46,6 +46,7 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
+  seori msg check                              verify each configured messenger's credentials (prints who the bot is)
 ${WATCH_USAGE}
 
 --text may be omitted to read the message from stdin.
@@ -231,6 +232,20 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     const lines = msgList(root, { all: one(a, "all") === "true" }, d.now());
     console.log(lines.length ? lines.join("\n") : "EMPTY");
     return 0;
+  }
+  if (sub === "check") {
+    const configs = loadMessengers(root);
+    if (configs.length === 0) throw new Refusal(`no messengers configured in ${root}/messengers.json`);
+    let failed = 0;
+    for (const c of configs) {
+      try {
+        console.log(`OK ${c.source}: ${await adapterFor(c, root).check()}`);
+      } catch (e) {
+        failed++;
+        console.log(`FAIL ${c.source}: ${(e as Error).message}`);
+      }
+    }
+    return failed ? 1 : 0;
   }
   throw new Refusal(`unknown msg command ${sub}\n\n${USAGE}`);
 }
