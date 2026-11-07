@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { Channel, type InboundRow } from "../src/channel.ts";
+import { Channel, type MessengerRow } from "../src/channel.ts";
 import { Refusal } from "../src/harness.ts";
 import { SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "../src/messenger/adapter.ts";
 import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "../src/msg.ts";
@@ -26,11 +26,13 @@ function setup() {
     },
   });
   const d: MsgDeps = { adapterFor, configs: [{ source: "fake", owner: "u1" }, { source: "tg", owner: "u1" }], now: () => T0 + 1000 };
-  const add = (id: string, o: Partial<InboundRow> = {}) => {
+  const add = (id: string, o: Partial<MessengerRow> = {}) => {
     const [source, chat] = id.split(":");
     channel.appendInbound({ id, kind: "messenger", source: source!, chat: chat!, from: "u1", at: T0, text: `text of ${id}`, ...o });
   };
-  return { root, channel, sent, d, add, setMode: (m: typeof mode) => (mode = m) };
+  const addWatch = (watchId: string, seq: number, text = `event ${seq}`) =>
+    channel.appendInbound({ id: `watch:${watchId}:${seq}`, kind: "watch", watchId, name: "ci", at: T0, text });
+  return { root, channel, sent, d, add, addWatch, setMode: (m: typeof mode) => (mode = m) };
 }
 
 describe("msg send --reply-to", () => {
@@ -204,9 +206,9 @@ describe("msg close and list", () => {
 
     const open = msgList(root, {}, T0 + 3 * 3_600_000);
     expect(open).toHaveLength(3);
-    expect(open[0]).toBe(`fake:c1:100  open  3h  u1  ${JSON.stringify(`line one\nline "two" ${"x".repeat(80)}`.slice(0, 60))}`);
+    expect(open[0]).toBe(`fake:c1:100  open  3h  messenger  u1  ${JSON.stringify(`line one\nline "two" ${"x".repeat(80)}`.slice(0, 60))}`);
     expect(open[0]).not.toContain("\n");
-    expect(open[1]).toStartWith("fake:c1:101  delivered 2  3h  u1  ");
+    expect(open[1]).toStartWith("fake:c1:101  delivered 2  3h  messenger  u1  ");
     expect(open[2]).toStartWith("fake:c1:103  gave-up  ");
 
     const all = msgList(root, { all: true }, T0 + 5 * 60_000);
@@ -216,5 +218,20 @@ describe("msg close and list", () => {
       "fake:c1:102 replied 5m",
       "fake:c1:103 gave-up 5m",
     ]);
+  });
+
+  test("watch events: --reply-to refuses them, close closes them, list shows their kind and watch name", async () => {
+    const { root, channel, sent, d, add, addWatch } = setup();
+    add("fake:c1:100");
+    addWatch("w1", 1, "[watch ci w1] build failed");
+    await expect(msgSend(root, { replyTo: ["watch:w1:1"], text: "ok" }, d)).rejects.toThrow("watch events need no reply");
+    await expect(msgSend(root, { replyTo: ["fake:c1:100", "watch:w1:1"], text: "ok" }, d)).rejects.toThrow(Refusal);
+    expect(sent).toEqual([]);
+    expect(channel.ledger()).toEqual([]);
+
+    expect(msgList(root, {}, T0)[1]).toBe(`watch:w1:1  open  0m  watch  ci  ${JSON.stringify("[watch ci w1] build failed")}`);
+    msgClose(root, "watch:w1:1", "handled", T0 + 5);
+    expect(channel.ledger()).toEqual([{ id: "watch:w1:1", ev: "closed", at: T0 + 5, why: "handled" }]);
+    expect(msgList(root, {}, T0).map((l) => l.split("  ")[0])).toEqual(["fake:c1:100"]);
   });
 });

@@ -35,8 +35,8 @@ export type Decision = {
   /** Delivered together in one message, oldest first. */
   readonly deliver: readonly { readonly row: InboundRow; readonly header: Header; readonly attempt: number }[];
   readonly mode: Mode;
-  /** Ids that reached MAX_DELIVERIES and would be due again: record `gave-up` and stop. */
-  readonly giveUp: readonly { readonly id: string; readonly attempts: number }[];
+  /** Ids that reached MAX_DELIVERIES and would be due again: record `gave-up` and stop; a watch row is also closed. */
+  readonly giveUp: readonly { readonly id: string; readonly attempts: number; readonly watch: boolean }[];
 };
 
 /**
@@ -98,7 +98,7 @@ export class DeliverySchedule {
     const carry = this.carryOwed || trigger.kind === "session_start" || trigger.kind === "session_switch";
     this.carryOwed = false;
     const deliver: { row: InboundRow; header: Header; attempt: number }[] = [];
-    const giveUp: { id: string; attempts: number }[] = [];
+    const giveUp: { id: string; attempts: number; watch: boolean }[] = [];
     for (const s of states) {
       if (s.replied || s.closed || s.uncertain || s.gaveUp) continue;
       if (s.deliveries === 0) {
@@ -110,7 +110,7 @@ export class DeliverySchedule {
       // The cap is checked only when a redelivery is due, and the last delivery gets the longest backoff to be answered
       // however it became due; until then the id waits, without a 4th delivery.
       if (s.deliveries >= MAX_DELIVERIES) {
-        if (now - (s.lastDeliveredAt ?? 0) >= BACKOFF_MS.at(-1)!) giveUp.push({ id: s.row.id, attempts: s.deliveries });
+        if (now - (s.lastDeliveredAt ?? 0) >= BACKOFF_MS.at(-1)!) giveUp.push({ id: s.row.id, attempts: s.deliveries, watch: s.row.kind === "watch" });
       } else deliver.push({ row: s.row, header, attempt: s.deliveries + 1 });
     }
     return { deliver, mode: idle ? "followUp" : "aside", giveUp };
@@ -136,25 +136,48 @@ export class DeliverySchedule {
   }
 }
 
+/**
+ * The watch rows among `ids` (one delivery that just entered the conversation) that are closed now as seen: a watch
+ * event needs no reply, so the lead seeing it is all it waits for. Only an accepted entry counts (the rule of
+ * DeliverySchedule.noteEntered): an idle fold may never have been read, so it stays open and is redelivered.
+ */
+export function seenWatchIds(states: readonly IdState[], ids: readonly string[], idle: boolean): string[] {
+  if (idle) return [];
+  const wanted = new Set(ids);
+  return states.filter((s) => s.row.kind === "watch" && wanted.has(s.row.id) && !s.closed).map((s) => s.row.id);
+}
+
 const HEADERS: Record<Header, string> = {
   new: "New messenger messages:",
   carried: "Carried over from an earlier session or delivery; reply only if you have not already:",
   retry: "Delivered before and still unanswered (no reply or close recorded):",
 };
 
-/** The one custom message the lead sees for a decision: how to answer, then each message grouped by header. */
+/**
+ * The one custom message the lead sees for a decision: how to answer, then each messenger message grouped by header,
+ * then the watch events, which need no answer (the extension closes them once seen).
+ */
 export function renderDelivery(deliver: Decision["deliver"], cmd: string): string {
-  const lines = [
-    "seori lead channel: messages from your owner's messenger. Answer each one exactly once:",
-    `  ${cmd} msg send --reply-to <id> --text '...'`,
-    `  or, when no reply is needed: ${cmd} msg close <id> --why '...'`,
-  ];
-  for (const header of ["new", "carried", "retry"] as const) {
-    const group = deliver.filter((d) => d.header === header);
-    if (!group.length) continue;
-    lines.push("", HEADERS[header]);
-    for (const { row } of group) lines.push(`[${row.id}] ${row.source} from ${row.from}: ${row.text}`);
+  const lines: string[] = [];
+  const messages = deliver.filter((d) => d.row.kind === "messenger");
+  if (messages.length) {
+    lines.push(
+      "seori lead channel: messages from your owner's messenger. Answer each one exactly once:",
+      `  ${cmd} msg send --reply-to <id> --text '...'`,
+      `  or, when no reply is needed: ${cmd} msg close <id> --why '...'`,
+    );
+    for (const header of ["new", "carried", "retry"] as const) {
+      const group = messages.filter((d) => d.header === header);
+      if (!group.length) continue;
+      lines.push("", HEADERS[header]);
+      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}: ${row.text}`);
+    }
+  } else lines.push("seori lead channel: events from your watches.");
+  const events = deliver.filter((d) => d.row.kind === "watch");
+  if (events.length) {
+    lines.push("", "Watch events (no reply needed):");
+    for (const { row } of events) lines.push(`[${row.id}] ${row.text}`);
   }
-  lines.push("", "Answer these, then continue your current task.");
+  lines.push("", messages.length ? "Answer these, then continue your current task." : "Act on these if needed, then continue your current task.");
   return lines.join("\n");
 }

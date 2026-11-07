@@ -160,6 +160,21 @@ describe("duty channel alerts", () => {
     expect(alerted()).toEqual(["gave-up"]);
   });
 
+  test("watch rows get no messenger alert: not offline, not blocked, not gave-up", async () => {
+    const { w, d, root, lead, channel, advance, alerted } = setup();
+    channel.appendLedger({ id: "fake:c1:m1", ev: "replied", at: w.clock, messageId: "r1" });
+    channel.appendInbound({ id: "watch:w1:1", kind: "watch", watchId: "w1", name: "ci", at: w.clock, text: "[watch ci w1] done" });
+    channel.appendInbound({ id: "watch:w1:2", kind: "watch", watchId: "w1", name: "ci", at: w.clock, text: "[watch ci w1] again" });
+    channel.appendLedger({ id: "watch:w1:1", ev: "delivered", at: w.clock, attempt: 1, mode: "followUp" });
+    channel.appendLedger({ id: "watch:w1:2", ev: "gave-up", at: w.clock, attempts: 3 });
+    w.consumerLock(root, "dead");
+    lead.status = "blocked";
+    advance(5 * MIN);
+    expect(await dutyTick(d)).toEqual([]);
+    expect(w.notified).toEqual([]);
+    expect(alerted()).toEqual([]);
+  });
+
   test("a broken messengers.json is told to the lead once per breakage, and the daemon outage is still told", async () => {
     const { w, d, root, lead, channel, advance } = setup();
     channel.appendLedger({ id: "fake:c1:m1", ev: "gave-up", at: w.clock, attempts: 3 });

@@ -16,7 +16,7 @@ Roles:
 - Lane: an omp session in its own herdr tab, one per task, with the brief and the lane rules (`prompts/lane-footer.md`).
 - Duty: an omp session with `prompts/duty.md`, next to the duty loop process (`seori duty`), which flushes inboxes, nudges lanes that stop reporting, escalates and detects lost lanes.
 - Hourly loop: `seori loop`, a process that syncs the backlog, audits missed work, starts the next item and asks open questions through the lead. Design: [docs/hourly-loop.md](docs/hourly-loop.md).
-- Messenger daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead. See [Messenger channel](#messenger-channel).
+- Daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead, and runs the watches agents arm. See [Messenger channel](#messenger-channel) and [Watches](#watches).
 
 herdr provides the workspaces, tabs and panes, and reports each omp session's state (idle, working, blocked) over its CLI. seori reads that state before it does anything to a pane.
 
@@ -71,7 +71,7 @@ seori done fix-flaky-login            # closes the lane's pane; only a READY lan
 ## Commands
 
 ```
-seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and messenger daemon panes
+seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes
 seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
 seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, brief + lane rules
 seori report <key> --text T [--status working|waiting]
@@ -93,11 +93,20 @@ seori review <owner/repo#N> [--model M]      fresh omp reviewer at the exact hea
 seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
 seori done <key>                             lead closes a READY lane
 seori status
-seori daemon                                 receive the messengers in messengers.json into the lead channel (seori up runs it)
+seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
 seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
                                             answer messenger messages (one reply per id) or send a notice
-seori msg close <id> --why T                 close a messenger message that needs no reply
-seori msg list [--all]                       open messenger messages (--all: every one, with its state)
+seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
+seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
+                                            columns: id  state  age  kind  sender-or-watch-name  text
+seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
+                 | --pane PANE --status idle|working|blocked|gone)
+                 [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
+                                            wake the lead or a lane when it fires (DUR: 90s, 30m, 2h)
+seori watch list [--all]                     active and muted watches (--all: every one)
+seori watch stop <id|name>                   end a watch
+seori watch rearm <id|name>                  unmute a watch that used up its wake budget
+seori watch log <id|name> [-n N]             the watch's last events
 ```
 
 `--text` may be left off to read the message from stdin. `send`, `report` and `ready` exit 3 and print `HELD <target>` when a delivery may or may not have reached the pane; a held message is never resent, so check the pane, then `seori inbox ack` or `seori inbox resend` it. `QUEUED` (exit 0) means it waits in the pane's inbox. `msg send` exits 0 with `SENT`, 3 with `HELD` when the messenger may or may not have the reply (check the chat, then pass `--again` to send it anyway), and 2 when it refuses, for example a second reply to an id that is already answered. The commands the agents see are rendered with the full path to `src/cli.ts` and `SEORI_HOME` set, so `seori` does not need to be on their PATH.
@@ -139,9 +148,41 @@ How a message travels:
 
 The duty loop watches the channel when a messenger is configured. It tells the lead once when `messengers.json` cannot be read (the daemon cannot start on it) and once when the daemon's heartbeat is older than 90 seconds. It tells you in the chat, once per message, when the lead is offline (no lead omp consuming) or stuck for more than 2 minutes (herdr reports it blocked: a question in its terminal, or a turn that ended in a model error), or when it gave up on a message after 3 tries. A message whose reply may already have arrived (send-uncertain), or that was given up, gets no offline or stuck notice: it is never delivered again.
 
+## Watches
+
+An agent that waits on something outside its pane (CI, a dev server, a file, another pane) arms a watch instead of polling or sleeping, and ends its turn. The daemon watches for it and wakes it when something happens.
+
+```sh
+seori watch add --checks owner/repo#12 --name ci
+# WATCH wmhk2x1a0b ci for fix-flaky-login until 2026-11-07T14:00:00.000Z
+seori watch add --command 'bun run dev' --filter 'error|ready' --name dev
+seori watch list
+seori watch stop dev
+```
+
+Kinds:
+
+- `--command CMD [--filter RE] [--cwd DIR]`: a long-running shell command. Each output line matching the regex (every line without `--filter`) is an event; lines arriving together become one event. A command that exits 0 ends the watch as done. One that crashes (non-zero exit or a signal) is restarted with backoff up to 3 times, then the watch is stopped.
+- `--file PATH`: a file or directory; every change (created, modified, deleted) is an event, including one made while the daemon was down.
+- `--checks OWNER/REPO#N`: a PR's checks; one event when every check has finished (pass or fail), then the watch is done.
+- `--pane PANE --status idle|working|blocked|gone`: a herdr pane's agent state; one event when it gets there, then the watch is done.
+
+Owner: the watch wakes the lane in `SEORI_LANE` (set in every lane's pane) or, outside a lane, the lead. `--for lead` or `--for <lane key>` picks another owner. Any agent may arm a watch; there are no confirmations. Every event starts with `[watch <name> <id>]` and needs no reply. The lead gets it through its channel (delivered even mid-turn) as a row of kind `watch` with id `watch:<watch id>:<n>`, closed automatically once seen; `seori msg list --all` shows it next to messenger messages, and `seori msg send --reply-to` refuses a watch id. A lane gets it in its pane, mid-turn like any lane message. A lane's watches stop when the lane closes.
+
+Limits:
+
+- A watch lives 2 hours; `--timeout` sets 1 second to 24 hours.
+- `--persistent` keeps it 7 days instead, at most 5 per owner (a 6th is refused).
+- Wake budget: after 6 events within an hour the watch is muted. It keeps counting events without delivering them; `seori watch rearm` unmutes it, resets the budget and says how many events were missed.
+- Refusals (a timeout over 24 hours, a 6th persistent watch, a bad `--filter` regex, a name already in use) exit 2.
+
+`seori watch list` shows each watch's id, name, owner, status, what it watches, age, time left, wakes in the last hour and muted events; `seori watch log <id|name>` shows what it saw and delivered.
+
+Compared with omo's `monitor`: the same kinds of sources, coalescing, wake budget and 5 standing watches for 7 days, but the watches live in seori, one file each under `$SEORI_HOME/watches/`, not in the agent's session. They survive `/new`, an omp restart and a daemon restart (the restarted daemon resumes them), `seori watch list` shows them all in one place, a crashed command is restarted on its own, and PR checks and herdr pane state are watch kinds of their own.
+
 ## State
 
-JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, `lead/` for the lead channel (stored messenger messages and their ledger), `messenger/` for the daemon's lock, heartbeat and the fake messenger, and `messengers.json`. Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the messenger daemon. The only runtime dependency is Bun.
+JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock, heartbeat and the fake messenger, `watches/` for the watches and their event logs, and `messengers.json`. Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
 
 ## Environment
 
@@ -155,7 +196,7 @@ JSON on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`,
 | `SEORI_MAX_LANES` | default for `seori loop --max-lanes` (3) |
 | `SEORI_MAX_STARTS` | default for `seori loop --max-starts` (2) |
 | `SEORI_MAX_LOAD` | default for `seori loop --max-load` |
-| `SEORI_LANE` | set by seori in a lane's pane; the default sender of `seori send` |
+| `SEORI_LANE` | set by seori in a lane's pane; the default sender of `seori send` and the default owner of `seori watch add` |
 
 ## Testing
 

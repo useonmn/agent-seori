@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, hostname, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
-import { Channel, type IdState } from "./channel.ts";
+import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
@@ -549,6 +549,8 @@ function consumerOffline(lockPath: string): boolean {
  * Messenger alerts, only when a messenger is configured (or messengers.json is there but broken): a broken config and a
  * daemon outage go to the lead, then per-id alerts go to the human. A broken config has no messenger to reply through,
  * so it skips the per-id alerts, but the outage check still runs: the daemon cannot start on that file.
+ * Watch rows have no chat to alert in and nobody waits on them: the lead extension closes one once it is seen or has
+ * given up (the watch itself stays in `seori watch list`), so they are left out here.
  */
 async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   let messengers: MessengerConfig[] = [];
@@ -565,18 +567,18 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   await daemonAlert(d, now, events);
   if (broken !== undefined) return;
 
-  const open = channel.open();
+  const open = channel.open().filter((s): s is IdState & { readonly row: MessengerRow } => s.row.kind === "messenger");
   // Send-uncertain and gave-up ids are final: they are never delivered again, so "kept" or "queued" would be false.
   const waiting = open.filter((s) => !s.uncertain && !s.gaveUp);
   const waited = (at: number | undefined): boolean => at !== undefined && now - at > ALERT_AFTER_MS;
-  const due: [IdState, AlertWhy][] = [];
+  const due: [IdState & { readonly row: MessengerRow }, AlertWhy][] = [];
   const offline = waiting.filter((s) => !s.alerted.includes("lead-offline") && waited(s.row.at));
-  if (offline.length && consumerOffline(channel.consumerLockPath)) due.push(...offline.map((s): [IdState, AlertWhy] => [s, "lead-offline"]));
+  if (offline.length && consumerOffline(channel.consumerLockPath)) due.push(...offline.map((s): [typeof s, AlertWhy] => [s, "lead-offline"]));
   const stuck = waiting.filter((s) => !s.alerted.includes("lead-blocked") && waited(s.lastDeliveredAt));
   const lead = d.store.roles().lead;
   if (stuck.length && lead) {
     try {
-      if ((await d.herdr.status(lead)) === "blocked") due.push(...stuck.map((s): [IdState, AlertWhy] => [s, "lead-blocked"]));
+      if ((await d.herdr.status(lead)) === "blocked") due.push(...stuck.map((s): [typeof s, AlertWhy] => [s, "lead-blocked"]));
     } catch (e) {
       events.push({ pane: lead, action: "lead-status-failed", detail: failureDetail(e) });
     }

@@ -68,7 +68,8 @@ async function replyLocked(channel: Channel, ids: readonly string[], o: MsgSendO
   const picked = ids.map((id) => {
     const s = states.find((x) => x.row.id === id);
     if (!s) throw new Refusal(`unknown message id ${id}`);
-    return s;
+    if (s.row.kind === "watch") throw new Refusal(`${id} is a watch event: watch events need no reply (msg close closes one)`);
+    return { ...s, row: s.row };
   });
   const first = picked[0]!;
   const other = picked.find((s) => s.row.source !== first.row.source || s.row.chat !== first.row.chat);
@@ -138,9 +139,12 @@ function age(ms: number): string {
   return `${Math.round(m / 1440)}d`;
 }
 
-/** One line per id: id, state, age, sender, the first 60 characters of the text JSON-escaped (one line, no control bytes). */
+/** One line per id: id, state, age, kind, sender (a watch's name), the first 60 characters of the text JSON-escaped (one line, no control bytes). */
 export function msgList(root: string, o: { readonly all?: boolean }, now: number): string[] {
   const channel = new Channel(root);
   const shown = o.all ? channel.states() : channel.open();
-  return shown.map((s) => `${s.row.id}  ${stateOf(s)}  ${age(now - s.row.at)}  ${s.row.from}  ${JSON.stringify(s.row.text.slice(0, 60))}`);
+  return shown.map((s) => {
+    const { row } = s;
+    return `${row.id}  ${stateOf(s)}  ${age(now - row.at)}  ${row.kind}  ${row.kind === "watch" ? row.name : row.from}  ${JSON.stringify(row.text.slice(0, 60))}`;
+  });
 }

@@ -26,6 +26,21 @@ describe("appendInbound", () => {
     ]);
   });
 
+  test("watch rows share the file, dedupe and ledger states with messenger rows", () => {
+    const c = fresh();
+    const ev: InboundRow = { id: "watch:w1:1", kind: "watch", watchId: "w1", name: "ci", at: T0, text: "[watch ci w1] done" };
+    expect(c.appendInbound(row("fake:c1:1"))).toBe(true);
+    expect(c.appendInbound(ev)).toBe(true);
+    expect(c.appendInbound(ev)).toBe(false);
+    c.appendLedger({ id: "watch:w1:1", ev: "entered", at: T0 });
+    c.appendLedger({ id: "watch:w1:1", ev: "closed", at: T0, why: "seen" });
+    expect(c.states().map((s) => [s.row.kind, s.row.id, s.entered, s.closed])).toEqual([
+      ["messenger", "fake:c1:1", false, false],
+      ["watch", "watch:w1:1", true, true],
+    ]);
+    expect(c.open().map((s) => s.row.id)).toEqual(["fake:c1:1"]);
+  });
+
   test("after a torn tail (power loss mid-write) the next row starts on its own line and is readable", () => {
     const c = fresh();
     c.appendInbound(row("fake:c1:1"));

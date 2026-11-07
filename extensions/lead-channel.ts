@@ -9,7 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { readFileSync, watch, type FSWatcher } from "node:fs";
 import { basename } from "node:path";
 import { Channel } from "../src/channel.ts";
-import { DeliverySchedule, renderDelivery, type Trigger } from "../src/lead-delivery.ts";
+import { DeliverySchedule, renderDelivery, seenWatchIds, type Trigger } from "../src/lead-delivery.ts";
 
 const CUSTOM_TYPE = "seori-inbound";
 /** New rows arriving together (a burst of messenger messages) become one delivery. */
@@ -82,7 +82,11 @@ export default function leadChannel(pi: ExtensionAPI) {
     const now = Date.now();
     if (!holdLock(now)) return;
     const decision = schedule.decide(channel.states(), now, ctx.isIdle(), trigger);
-    for (const g of decision.giveUp) channel.appendLedger({ id: g.id, ev: "gave-up", at: now, attempts: g.attempts });
+    for (const g of decision.giveUp) {
+      channel.appendLedger({ id: g.id, ev: "gave-up", at: now, attempts: g.attempts });
+      // Nobody answers a watch event, so a given-up one would stay open for good; `seori watch list` still has the watch.
+      if (g.watch) channel.appendLedger({ id: g.id, ev: "closed", at: now, why: "gave-up" });
+    }
     if (!decision.deliver.length) return;
     const ids = decision.deliver.map((d) => d.row.id);
     pi.sendMessage(
@@ -131,10 +135,13 @@ export default function leadChannel(pi: ExtensionAPI) {
     const raw = prop(prop(e.message, "details"), "ids");
     if (!Array.isArray(raw)) return;
     const ids = raw.filter((id): id is string => typeof id === "string");
-    schedule.noteEntered(ids, c.isIdle()); // the ledger records every entry; the schedule ignores idle folds
+    const idle = c.isIdle();
+    schedule.noteEntered(ids, idle); // the ledger records every entry; the schedule ignores idle folds
     const at = Date.now();
     const session = c.sessionManager.getSessionId();
     for (const id of ids) channel.appendLedger({ id, ev: "entered", at, session });
+    // Watch events need no reply: an accepted entry is the lead seeing them, so they are closed instead of redelivered.
+    for (const id of seenWatchIds(channel.states(), ids, idle)) channel.appendLedger({ id, ev: "closed", at, why: "seen" });
   });
 
   pi.on("agent_end", (e, c) => {

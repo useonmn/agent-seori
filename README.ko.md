@@ -14,7 +14,7 @@ seori의 설계는 [dori-superagent](https://github.com/sisyphuslabs/dori-supera
 - 레인: 일 하나당 하나씩 여는 omp 세션입니다. herdr 탭 하나를 혼자 씁니다. 브리프를 받아 omp 목표 모드(goal mode)로 일하고, 끝나면 증거 링크를 붙여 READY를 보냅니다.
 - 듀티(duty): 레인들을 지켜보는 세션과 프로세스(`seori duty`)입니다. 바쁜 리드와 듀티 창에 온 메시지는 모아 뒀다가 한가해지면 전해 줍니다. 조용한 레인은 깨우고, 그래도 안 되면 리드에게 알립니다.
 - 시간 단위 루프(hourly loop): `seori loop`입니다. 한 시간에 한 번 백로그(할 일 목록)를 보고, 레인 자리가 비어 있으면 다음 일을 시작합니다. 사람이 정해야 할 질문은 리드를 통해 묻습니다. 자세한 설계: [docs/hourly-loop.md](docs/hourly-loop.md)
-- 메신저 데몬: `seori daemon`입니다. 메신저로 온 메시지를 받아 리드에게 전할 수 있게 저장합니다. 자세한 내용은 [메신저 채널](#메신저-채널)에 있습니다.
+- 데몬: `seori daemon`입니다. 메신저로 온 메시지를 받아 리드에게 전할 수 있게 저장하고, 에이전트가 걸어 둔 감시(watch)를 돌립니다. 자세한 내용은 [메신저 채널](#메신저-채널)과 [감시](#감시)에 있습니다.
 - 리뷰와 머지 관문: PR은 정확히 지금 헤드(head) 커밋에 대한 CLEAR 리뷰 기록이 있고, 체크가 모두 통과해야만 머지됩니다.
 
 herdr는 워크스페이스, 탭, 창(pane)을 만들어 주고, 각 omp 세션이 지금 쉬는 중(idle)인지, 일하는 중(working)인지, 막혀 있는지(blocked) 알려 줍니다. seori는 창에 무언가를 하기 전에 항상 이 상태부터 확인합니다.
@@ -40,7 +40,7 @@ seori up
 # UP lead=w1:p1 duty=w1:p2 loop=w1:p3 hourly=w1:p4 daemon=w1:p5 home=~/.seori
 ```
 
-리드 창, 듀티 창, 듀티 루프, 시간 단위 루프, 메신저 데몬이 열립니다. 이제 리드 창에 말을 걸면 됩니다. 리드가 브리프를 쓰고 레인을 엽니다. 셸에서 직접 열어도 됩니다:
+리드 창, 듀티 창, 듀티 루프, 시간 단위 루프, 데몬이 열립니다. 이제 리드 창에 말을 걸면 됩니다. 리드가 브리프를 쓰고 레인을 엽니다. 셸에서 직접 열어도 됩니다:
 
 ```sh
 seori start fix-flaky-login --brief examples/brief.md
@@ -72,7 +72,7 @@ seori done fix-flaky-login            # 레인 창을 닫습니다. READY인 레
 ## 명령 목록
 
 ```
-seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시간 단위 루프, 메신저 데몬 창을 엽니다
+seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시간 단위 루프, 데몬 창을 엽니다
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 탭, omp 세션, 브리프 + 레인 규칙
 seori report <key> --text T [--status working|waiting]
@@ -94,11 +94,20 @@ seori review <owner/repo#N> [--model M]      헤드 커밋을 새 omp 리뷰어�
 seori merge <owner/repo#N> [--dry-run]       헤드에 CLEAR 기록 + 체크 통과 -> squash 머지
 seori done <key>                             리드가 READY 레인을 닫습니다
 seori status
-seori daemon                                 messengers.json의 메신저에서 메시지를 받아 리드 채널에 저장합니다 (seori up이 켭니다)
+seori daemon                                 메신저에서 메시지를 받아 리드 채널에 저장하고 감시를 돌립니다 (seori up이 켭니다)
 seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
                                             메신저 메시지에 답합니다 (id 하나에 답 하나). --to는 알림을 보냅니다
-seori msg close <id> --why T                 답할 필요가 없는 메신저 메시지를 닫습니다
-seori msg list [--all]                       아직 열린 메신저 메시지 (--all: 전부, 상태 포함)
+seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다
+seori msg list [--all]                       아직 열린 리드 채널 메시지: 메신저 메시지와 감시 알림 (--all: 전부, 상태 포함)
+                                            칸: id  상태  지난 시간  종류  보낸 사람 또는 감시 이름  내용
+seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
+                 | --pane PANE --status idle|working|blocked|gone)
+                 [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
+                                            무슨 일이 생기면 리드나 레인을 깨웁니다 (DUR: 90s, 30m, 2h)
+seori watch list [--all]                     켜져 있거나 음소거된 감시 (--all: 전부)
+seori watch stop <id|name>                   감시를 끝냅니다
+seori watch rearm <id|name>                  깨우기 한도를 다 써서 음소거된 감시를 다시 켭니다
+seori watch log <id|name> [-n N]             감시가 최근에 본 일
 ```
 
 `--text`를 빼면 메시지를 표준 입력(stdin)에서 읽습니다. `send`, `report`, `ready`는 메시지가 전해졌는지 확실하지 않으면 `HELD <대상>`을 출력하고 종료 코드 3으로 끝납니다. 보류된 메시지는 다시 보내지 않습니다. 창을 직접 보고 `seori inbox ack`나 `seori inbox resend`로 처리하세요. `QUEUED`(종료 코드 0)는 상대 창의 받은 편지함에서 기다린다는 뜻입니다. `msg send`는 보냈으면 `SENT`(종료 코드 0), 메신저에 갔는지 확실하지 않으면 `HELD`(종료 코드 3), 거절하면 종료 코드 2로 끝납니다. 이미 답한 id에 또 답하려 하면 거절합니다. `HELD`일 때는 채팅을 직접 확인하고, 그래도 보내야 하면 `--again`을 붙입니다.
@@ -139,9 +148,41 @@ seori msg list [--all]                       아직 열린 메신저 메시지 (
 
 메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. `messengers.json`을 읽을 수 없으면(데몬이 그 파일로는 켜지지 못합니다) 리드에게 한 번 알리고, 데몬의 heartbeat가 90초보다 오래되어도 리드에게 한 번 알립니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 omp가 없음) 2분 넘게 막혀 있으면(herdr가 blocked라고 보고함: 터미널에서 질문을 기다리거나, 모델 오류로 차례가 끝난 경우), 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다. 답이 이미 갔을 수도 있는 메시지(send-uncertain)나 포기한 메시지는 다시 전하지 않으므로, 꺼져 있다거나 막혀 있다는 알림도 보내지 않습니다.
 
+## 감시
+
+에이전트가 자기 창 밖의 일(CI, 개발 서버, 파일, 다른 창)을 기다릴 때는 계속 들여다보거나 잠들지 말고 감시를 걸어 두고 차례를 끝냅니다. 데몬이 대신 지켜보다가 무슨 일이 생기면 그 에이전트를 깨웁니다.
+
+```sh
+seori watch add --checks owner/repo#12 --name ci
+# WATCH wmhk2x1a0b ci for fix-flaky-login until 2026-11-07T14:00:00.000Z
+seori watch add --command 'bun run dev' --filter 'error|ready' --name dev
+seori watch list
+seori watch stop dev
+```
+
+종류:
+
+- `--command CMD [--filter RE] [--cwd DIR]`: 오래 도는 셸 명령입니다. 출력 줄 가운데 정규식에 맞는 줄(`--filter`가 없으면 모든 줄)이 알림이 되고, 한꺼번에 나온 줄은 알림 하나로 묶입니다. 명령이 0으로 끝나면 감시도 끝납니다(done). 명령이 죽으면(0이 아닌 종료 코드나 시그널) 조금씩 기다렸다가 3번까지 다시 띄우고, 그래도 죽으면 감시를 멈춥니다.
+- `--file PATH`: 파일이나 디렉터리입니다. 생기거나 바뀌거나 지워질 때마다 알림이 갑니다. 데몬이 꺼져 있던 사이에 바뀐 것도 알립니다.
+- `--checks OWNER/REPO#N`: PR의 체크입니다. 모든 체크가 끝나면(통과든 실패든) 알림 하나를 보내고 끝납니다.
+- `--pane PANE --status idle|working|blocked|gone`: herdr 창의 에이전트 상태입니다. 그 상태가 되면 알림 하나를 보내고 끝납니다.
+
+주인: 레인 창에서 걸면(`SEORI_LANE`이 있으면) 그 레인을, 아니면 리드를 깨웁니다. `--for lead`나 `--for <레인 키>`로 다른 주인을 정할 수 있습니다. 감시는 어느 에이전트든 걸 수 있고, 확인을 묻지 않습니다. 알림은 모두 `[watch <이름> <id>]`로 시작하며 답할 필요가 없습니다. 리드는 리드 채널로 받습니다(차례 도중에도 전해짐). 종류는 `watch`, id는 `watch:<감시 id>:<번호>`이고, 리드가 보면 저절로 닫힙니다. `seori msg list --all`에 메신저 메시지와 함께 보이며, `seori msg send --reply-to`에 감시 id를 주면 거절합니다. 레인은 자기 창으로 받습니다(다른 레인 메시지처럼 차례 도중에도). 레인이 닫히면 그 레인의 감시도 멈춥니다.
+
+한도:
+
+- 감시는 2시간 동안 살아 있습니다. `--timeout`으로 1초에서 24시간까지 정할 수 있습니다.
+- `--persistent`를 주면 7일 동안 살아 있습니다. 주인마다 5개까지이고, 6번째는 거절합니다.
+- 깨우기 한도: 한 시간 안에 6번 깨우면 감시가 음소거됩니다. 그 뒤로는 알림을 보내지 않고 세기만 합니다. `seori watch rearm`으로 다시 켜면 한도가 처음으로 돌아가고, 그동안 놓친 알림 수를 알려 줍니다.
+- 거절(24시간이 넘는 timeout, 6번째 persistent 감시, 잘못된 `--filter` 정규식, 이미 쓰는 이름)은 종료 코드 2입니다.
+
+`seori watch list`는 감시마다 id, 이름, 주인, 상태, 무엇을 보는지, 지난 시간, 남은 시간, 지난 한 시간 동안 깨운 횟수, 음소거 중 놓친 알림 수를 보여 줍니다. `seori watch log <id|name>`는 감시가 본 일과 보낸 알림을 보여 줍니다.
+
+omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 깨우기 한도, 7일짜리 감시 5개는 같습니다. 다른 점은 감시가 에이전트 세션이 아니라 seori 안에(`$SEORI_HOME/watches/`에 감시마다 파일 하나) 있다는 것입니다. 그래서 `/new`, omp 재시작, 데몬 재시작에도 살아남고(다시 켜진 데몬이 이어서 돌림), `seori watch list` 하나로 모두 볼 수 있고, 죽은 명령은 저절로 다시 띄우며, PR 체크와 herdr 창 상태를 따로 지켜볼 수 있습니다.
+
 ## 상태 저장 위치
 
-모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일용 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지와 그 기록), 데몬의 잠금 파일과 heartbeat, `fake` 메신저용 `messenger/`, 그리고 `messengers.json`. omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 메신저 데몬뿐입니다. 실행에 필요한 건 Bun 하나입니다.
+모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일용 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록), 데몬의 잠금 파일과 heartbeat, `fake` 메신저용 `messenger/`, 감시와 그 기록용 `watches/`, 그리고 `messengers.json`. omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
 
 ## 환경 변수
 
@@ -155,7 +196,7 @@ seori msg list [--all]                       아직 열린 메신저 메시지 (
 | `SEORI_MAX_LANES` | `seori loop --max-lanes` 기본값 (3) |
 | `SEORI_MAX_STARTS` | `seori loop --max-starts` 기본값 (2) |
 | `SEORI_MAX_LOAD` | `seori loop --max-load` 기본값 |
-| `SEORI_LANE` | seori가 레인 창에 넣어 주는 값. `seori send`의 기본 보낸 쪽 |
+| `SEORI_LANE` | seori가 레인 창에 넣어 주는 값. `seori send`의 기본 보낸 쪽이자 `seori watch add`의 기본 주인 |
 
 ## 테스트
 

@@ -2,12 +2,14 @@ import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, 
 import { join } from "node:path";
 import { lockFile } from "./store.ts";
 
-// The lead channel: messenger messages for the lead. `seori daemon` stores a message here before it acknowledges it
-// upstream; extensions/lead-channel.ts delivers it into the lead's omp session; it is closed only by a successful
-// `seori msg send --reply-to` or by `seori msg close`. Every file is append-only JSONL under $SEORI_HOME/lead/.
+// The lead channel: what the lead is told without a pane message. Messenger messages: `seori daemon` stores one here
+// before it acknowledges it upstream; extensions/lead-channel.ts delivers it into the lead's omp session; it is closed
+// only by a successful `seori msg send --reply-to` or by `seori msg close`. Watch events (src/watch/deliver.ts) take
+// the same delivery path but need no reply: the extension closes them once the lead has seen them. Every file is
+// append-only JSONL under $SEORI_HOME/lead/.
 
 /** Upstream message ids are `<source>:<chat>:<message id>`, unique per messenger. */
-export type InboundRow = {
+export type MessengerRow = {
   readonly id: string;
   readonly kind: "messenger";
   readonly source: string;
@@ -18,6 +20,18 @@ export type InboundRow = {
   readonly text: string;
 };
 
+/** One event of a lead-owned watch; ids are `watch:<watch id>:<seq>`, seq counting that watch's rows from 1. */
+export type WatchRow = {
+  readonly id: string;
+  readonly kind: "watch";
+  readonly watchId: string;
+  readonly name: string;
+  readonly at: number;
+  readonly text: string;
+};
+
+export type InboundRow = MessengerRow | WatchRow;
+
 /**
  * - delivered: the extension handed the id to omp (attempt counts from 1; mode is how).
  * - entered: the delivered message appeared in the lead's conversation.
@@ -25,7 +39,8 @@ export type InboundRow = {
  *   leaves a trace: a `sending` with no later `replied` or `send-failed` counts as uncertain (see IdState.uncertain).
  * - replied: `seori msg send --reply-to` got a message id back from the messenger. Closes the id.
  * - send-failed: the messenger definitely did not take the reply; settles the `sending` before it, the id stays open.
- * - closed: `seori msg close`. Closes the id.
+ * - closed: `seori msg close`, or the extension for a watch row the lead has seen (why "seen") or that gave up
+ *   (why "gave-up"). Closes the id.
  * - send-uncertain: a reply may or may not have reached the messenger; never retried automatically.
  * - gave-up: MAX_DELIVERIES deliveries without a reply or close; the extension stops redelivering.
  * - alerted: duty told the human about this id (once per id and reason).

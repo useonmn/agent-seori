@@ -1,14 +1,19 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Channel } from "./channel.ts";
+import { defaultDeps, type Deps } from "./harness.ts";
+import { Herdr, spawnExec } from "./herdr.ts";
 import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
-import { lockFile } from "./store.ts";
+import { lockFile, Store } from "./store.ts";
+import { deliverWatchEvent } from "./watch/deliver.ts";
+import { type EngineDeps, WatchEngine } from "./watch/engine.ts";
 
 // `seori daemon`: receives every configured messenger and stores owner messages in the lead channel before the adapter
-// acknowledges them upstream. It never talks to omp; the lead extension delivers from the channel. One daemon per
-// $SEORI_HOME (daemon.lock), and a heartbeat file so duty can tell a dead daemon from a quiet messenger. It reads
-// messengers.json once and exits when the file changes, so `seori up`'s restart loop starts it again on the new config.
+// acknowledges them upstream, and runs the watch engine (src/watch/engine.ts) that wakes agents when a watch fires. It
+// never talks to omp; the lead extension delivers from the channel. One daemon per $SEORI_HOME (daemon.lock), and a
+// heartbeat file so duty can tell a dead daemon from a quiet messenger. It reads messengers.json once and exits when the
+// file changes, so `seori up`'s restart loop starts it again on the new config (watches resume from their files).
 
 export const HEARTBEAT_MS = 5_000;
 export const RESTART_DELAY_MS = 5_000;
@@ -47,7 +52,27 @@ export type DaemonOptions = {
   readonly restartDelayMs?: number;
   /** Replaces the default of printing daemonLine(e) to stdout. */
   readonly onEvent?: (e: DaemonEvent) => void;
+  /** Replaces parts of the watch engine's deps (tests fake delivery, gh and pane state, or shorten the tick). */
+  readonly watch?: Partial<EngineDeps>;
 };
+
+/** The real engine deps: watches reach agents through the harness, PR checks through gh, pane state through herdr. */
+function engineDeps(root: string, now: () => number): EngineDeps {
+  const store = new Store(root);
+  const herdr = new Herdr();
+  // Built on first delivery: defaultDeps() opens $SEORI_HOME's store, which only a firing watch needs.
+  let deps: Deps | undefined;
+  return {
+    now,
+    deliver: (w, text) => deliverWatchEvent((deps ??= { ...defaultDeps(), store, herdr }), w, text),
+    gh: (argv) => spawnExec("gh", argv),
+    paneStatus: (pane) => herdr.status(pane),
+    laneOpen: (key) => {
+      const status = store.lane(key)?.status;
+      return status !== undefined && status !== "done" && status !== "lost";
+    },
+  };
+}
 
 const sleep = (ms: number, signal: AbortSignal): Promise<void> => {
   if (signal.aborted) return Promise.resolve();
@@ -136,8 +161,12 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     }
   }, opts.heartbeatMs ?? HEARTBEAT_MS);
 
+  let engine: WatchEngine | undefined;
   try {
-    if (!messengers.length) emit({ ev: "idle", detail: `no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat only)` });
+    // Started only once the lock is held: one daemon, so one engine, runs a $SEORI_HOME's watches.
+    engine = new WatchEngine(root, { ...engineDeps(root, now), ...opts.watch });
+    engine.start();
+    if (!messengers.length) emit({ ev: "idle", detail: `no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat and watches only)` });
 
     const runOne = async (config: MessengerConfig): Promise<void> => {
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.
@@ -176,6 +205,8 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
   } finally {
     clearInterval(heartbeat);
     opts.signal?.removeEventListener("abort", onAbort);
+    // Stopped before the lock is released, so a restarted daemon never runs a watch's command alongside this one's.
+    await engine?.stop();
     release();
   }
   return exit;

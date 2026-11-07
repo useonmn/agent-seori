@@ -13,10 +13,12 @@ import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "./msg.ts";
 import type { Role } from "./store.ts";
+import { ownerText, WATCH_USAGE, watchAdd, watchList, watchLog, watchRearm, watchStop } from "./watch/cli.ts";
+import { WatchRefusal } from "./watch/store.ts";
 
 const USAGE = `seori - a proactive multi-session harness on herdr + omp
 
-  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and messenger daemon panes
+  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes
   seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, brief + lane rules
   seori report <key> --text T [--status working|waiting]
@@ -38,11 +40,13 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
   seori done <key>                             lead closes a READY lane
   seori status
-  seori daemon                                 receive the messengers in messengers.json into the lead channel (seori up runs it)
+  seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
   seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
                                               answer messenger messages (one reply per id) or send a notice
-  seori msg close <id> --why T                 close a messenger message that needs no reply
-  seori msg list [--all]                       open messenger messages (--all: every one, with its state)
+  seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
+  seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
+                                              columns: id  state  age  kind  sender-or-watch-name  text
+${WATCH_USAGE}
 
 --text may be omitted to read the message from stdin.
 send, report and ready exit 3 and print HELD <target> when the delivery may or may not have reached the pane:
@@ -51,13 +55,14 @@ QUEUED (exit 0) means it waits in the pane's inbox.
 msg send exits 3 with HELD when the messenger may or may not have the reply: check the chat, then pass --again.
 A second reply to an id is refused (exit 2) unless --again is given.
 SEORI_MODEL=M passes --model M to every omp seori starts (lead, duty, lanes) and is the reviewer's default model.
+watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), else for the lead; refusals exit 2.
 up and start need herdr's omp integration (herdr integration install omp).`;
 
 type Args = { pos: string[]; flags: Map<string, string[]> };
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -224,6 +229,44 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     return 0;
   }
   throw new Refusal(`unknown msg command ${sub}\n\n${USAGE}`);
+}
+
+async function watch(d: Deps, a: Args, sub: string | undefined): Promise<number> {
+  const root = d.store.root;
+  if (sub === "add") {
+    const w = watchAdd(root, {
+      command: one(a, "command"), filter: one(a, "filter"), cwd: one(a, "cwd"), file: one(a, "file"), checks: one(a, "checks"),
+      pane: one(a, "pane"), status: one(a, "status"), name: one(a, "name"), persistent: one(a, "persistent") === "true",
+      timeout: one(a, "timeout"), for: one(a, "for"),
+    }, process.env, d.now());
+    console.log(`WATCH ${w.id} ${w.name} for ${ownerText(w.owner)} until ${new Date(w.expiresAt).toISOString()}`);
+    return 0;
+  }
+  if (sub === "list") {
+    const lines = watchList(root, { all: one(a, "all") === "true" }, d.now());
+    console.log(lines.length ? lines.join("\n") : "EMPTY");
+    return 0;
+  }
+  if (sub === "stop") {
+    const w = watchStop(root, need(a.pos[2], "watch id or name"), d.now());
+    console.log(`STOPPED ${w.id} ${w.name}`);
+    return 0;
+  }
+  if (sub === "rearm") {
+    const { watch: w, missed } = watchRearm(root, need(a.pos[2], "watch id or name"), d.now());
+    console.log(`REARMED ${w.id} ${w.name}: ${missed} event(s) missed while muted; wake budget reset`);
+    return 0;
+  }
+  if (sub === "log") {
+    // -n is the one short flag: parse() only knows --flags, so it arrives as a positional pair.
+    const at = a.pos.indexOf("-n");
+    const n = at >= 0 ? Number(a.pos[at + 1]) : 20;
+    if (!(Number.isInteger(n) && n > 0)) throw new Refusal("-n takes a whole number > 0");
+    const lines = watchLog(root, need(a.pos[2] === "-n" ? a.pos[4] : a.pos[2], "watch id or name"), n);
+    console.log(lines.length ? lines.join("\n") : "EMPTY");
+    return 0;
+  }
+  throw new Refusal(`unknown watch command ${sub}\n\n${USAGE}`);
 }
 
 function status(d: Deps): void {
@@ -418,6 +461,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return daemon(d.store.root);
     case "msg":
       return msg(d, a, x);
+    case "watch":
+      return watch(d, a, x);
     default:
       console.log(USAGE);
       return cmd === undefined || cmd === "help" || cmd === "--help" ? 0 : 64;
@@ -429,7 +474,7 @@ if (import.meta.main) {
   try {
     code = await main(process.argv.slice(2));
   } catch (e) {
-    if (!(e instanceof Refusal)) throw e;
+    if (!(e instanceof Refusal || e instanceof WatchRefusal)) throw e;
     console.error(e.message);
     code = 2;
   }

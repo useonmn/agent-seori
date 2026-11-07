@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { IdState } from "../src/channel.ts";
-import { BACKOFF_MS, type Decision, DeliverySchedule, GRACE_MS, renderDelivery } from "../src/lead-delivery.ts";
+import { BACKOFF_MS, type Decision, DeliverySchedule, GRACE_MS, renderDelivery, seenWatchIds } from "../src/lead-delivery.ts";
 
 const T0 = 1_000_000;
 
@@ -18,6 +18,11 @@ const state = (id: string, s: Partial<Omit<IdState, "row">> = {}): IdState => ({
 
 const delivered = (id: string, deliveries: number, at: number, s: Partial<Omit<IdState, "row">> = {}): IdState =>
   state(id, { deliveries, lastDeliveredAt: at, entered: true, ...s });
+
+const watchState = (id: string, s: Partial<Omit<IdState, "row">> = {}): IdState => ({
+  ...state(id, s),
+  row: { id, kind: "watch", watchId: id.split(":")[1]!, name: "ci", at: T0, text: `[watch ci] event ${id}` },
+});
 
 const ids = (d: Decision) => d.deliver.map((x) => `${x.row.id}:${x.header}:${x.attempt}`);
 
@@ -175,6 +180,28 @@ describe("DeliverySchedule", () => {
     s.decide([], T0, true, { kind: "session_switch" }); // forgets this session's deliveries
     expect(s.decide([delivered("b", 1, T0, { entered: false })], T0 + GRACE_MS, true, { kind: "timer" }).deliver).toEqual([]);
   });
+
+  test("watch rows are delivered like messages; a capped one is given up marked as a watch, to be closed", () => {
+    const s = new DeliverySchedule();
+    expect(ids(s.decide([state("m1"), watchState("watch:w1:1")], T0, true, { kind: "scan" }))).toEqual(["m1:new:1", "watch:w1:1:new:1"]);
+    const capped = [delivered("m2", 3, T0), watchState("watch:w1:2", { deliveries: 3, lastDeliveredAt: T0 })];
+    expect(new DeliverySchedule().decide(capped, T0 + BACKOFF_MS.at(-1)!, true, { kind: "timer" }).giveUp).toEqual([
+      { id: "m2", attempts: 3, watch: false },
+      { id: "watch:w1:2", attempts: 3, watch: true },
+    ]);
+  });
+});
+
+describe("seenWatchIds", () => {
+  const states = [state("m1"), watchState("watch:w1:1"), watchState("watch:w1:2"), watchState("watch:w1:3", { closed: true })];
+
+  test("a busy (accepted) entry closes the open watch rows it carried, never messenger rows", () => {
+    expect(seenWatchIds(states, ["m1", "watch:w1:1", "watch:w1:3"], false)).toEqual(["watch:w1:1"]);
+  });
+
+  test("an idle entry (an aside folded without a turn) closes nothing, so the grace redelivers it", () => {
+    expect(seenWatchIds(states, ["watch:w1:1", "watch:w1:2"], true)).toEqual([]);
+  });
 });
 
 describe("renderDelivery", () => {
@@ -190,5 +217,20 @@ describe("renderDelivery", () => {
     expect(text.indexOf("[fake:c1:2]")).toBeLessThan(text.indexOf("Carried over"));
     expect(text.indexOf("Carried over")).toBeLessThan(text.indexOf("[fake:c1:1]"));
     expect(text.endsWith("Answer these, then continue your current task.")).toBe(true);
+  });
+
+  test("watch events get their own section after the messages and need no reply", () => {
+    const both = [{ row: watchState("watch:w1:1").row, header: "new" as const, attempt: 1 }, { row: state("fake:c1:2").row, header: "new" as const, attempt: 1 }];
+    const text = renderDelivery(both, "seori");
+    expect(text).toContain("seori msg send --reply-to <id> --text '...'");
+    expect(text).toContain("Watch events (no reply needed):\n[watch:w1:1] [watch ci] event watch:w1:1");
+    expect(text.indexOf("[fake:c1:2] fake from u1")).toBeLessThan(text.indexOf("Watch events"));
+    expect(text.endsWith("Answer these, then continue your current task.")).toBe(true);
+
+    const only = renderDelivery([both[0]!], "seori");
+    expect(only).not.toContain("msg send");
+    expect(only).not.toContain("New messenger messages:");
+    expect(only).toContain("[watch:w1:1] [watch ci] event watch:w1:1");
+    expect(only.endsWith("Act on these if needed, then continue your current task.")).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, runDaemon 
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
 import { adapterFor } from "../src/messenger/index.ts";
+import { type Watch, WatchStore } from "../src/watch/store.ts";
 
 function home(messengers: MessengerConfig[] = []) {
   const root = mkdtempSync(join(tmpdir(), "seori-daemon-"));
@@ -131,7 +132,7 @@ describe("runDaemon", () => {
     const firstAt = beat().at;
     await until("heartbeat advances", () => beat().at > firstAt + 2);
     expect(beat().pid).toBe(process.pid);
-    expect(d.lines()).toEqual([`DAEMON no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat only)`]);
+    expect(d.lines()).toEqual([`DAEMON no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat and watches only)`]);
     await d.stop();
     const stoppedAt = beat().at;
     await Bun.sleep(30); // proving the absence of further beats needs real time to pass
@@ -152,6 +153,26 @@ describe("runDaemon", () => {
     writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: [{ source: "fake", owner: "u1" }] }));
     expect(await e.done).toBe("config-changed");
     expect(e.lines().at(-1)).toBe(`DAEMON ${join(root, "messengers.json")} changed; exiting so it is started again with the new config`);
+    expect(existsSync(daemonLockPath(root))).toBe(false);
+  });
+
+  test("runs the watch engine while it runs and stops it (and the watch's command) when it stops", async () => {
+    const root = home();
+    const w = new WatchStore(root).add({
+      name: "ticker",
+      source: { kind: "command", command: "while :; do echo tick; echo x >> beats; sleep 0.05; done", cwd: root, filter: "tick" },
+      owner: { kind: "lead" },
+    }, Date.now());
+    const delivered: [Watch, string][] = [];
+    const d = start(root, { watch: { tickMs: 20, deliver: async (watch, text) => void delivered.push([watch, text]) } });
+    await until("a delivered watch event", () => delivered.length > 0, 5_000);
+    expect(delivered[0]![0].id).toBe(w.id);
+    expect(delivered[0]![1]).toStartWith(`[watch ticker ${w.id}] `);
+    await d.stop();
+    const beats = () => readFileSync(join(root, "beats"), "utf8").length;
+    const atStop = beats();
+    await Bun.sleep(300); // proving the command no longer runs needs real time to pass
+    expect(beats()).toBe(atStop);
     expect(existsSync(daemonLockPath(root))).toBe(false);
   });
 });
