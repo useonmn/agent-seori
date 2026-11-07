@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Outbox } from "./outbox.ts";
 import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
@@ -34,6 +34,8 @@ export type Deps = {
   readonly agentCmd: string;
   readonly seoriCmd: string;
   readonly host: () => HostLoad;
+  /** Waits between the reads that confirm a lane's kickoff took (tests advance a fake clock instead). */
+  readonly sleep: (ms: number) => Promise<void>;
   /** SEORI_MODEL: passed as `--model` to every omp seori starts (lead, duty, lanes) and the reviewer's default. */
   readonly model?: string;
   /** Sends one duty alert to the human through a configured messenger. Throws like MessengerAdapter.send. */
@@ -50,6 +52,7 @@ export const defaultDeps = (): Deps => {
     agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
     seoriCmd: process.env["SEORI_CMD"] ?? defaultSeoriCmd(store.root, process.env),
     host: () => ({ load1: process.platform === "win32" ? null : (loadavg()[0] ?? 0), cores: cpus().length, memFreePct: memFreePct() }),
+    sleep: (ms) => Bun.sleep(ms),
     model: process.env["SEORI_MODEL"] || undefined,
     notify: async (config, target, text) => {
       await adapterFor(config, store.root).send(target, text);
@@ -65,6 +68,27 @@ const seoriVars = (home: string, env: Record<string, string | undefined>): [stri
 /** The environment every pane seori opens gets through herdr's --env (see seoriVars). */
 export function paneEnv(home: string, env: Record<string, string | undefined> = process.env): Record<string, string> {
   return Object.fromEntries(seoriVars(home, env));
+}
+
+/**
+ * omp settings for every agent seori starts in a pane (lead, duty, lanes): the setup wizard off. omp opens its onboarding
+ * wizard whenever its stored setup version is older than the installed omp's, even with a provider logged in, and an
+ * agent pane has nobody to click through it: the agent never starts and text seori delivers lands in the wizard.
+ */
+export const AGENT_OMP_CONFIG = "startup:\n  setupWizard: false\n";
+
+/**
+ * Writes `$SEORI_HOME/prompts/agent-omp.yml` (AGENT_OMP_CONFIG) and returns the PI_CONFIG_FILES value that loads it after
+ * the files already in `inherited`, then `extra` (the lead's own file). seori's own files in `inherited` are dropped: a
+ * lane started from the lead's shell inherits the lead's value and must not load the lead's settings.
+ */
+export function agentOmpConfigFiles(root: string, extra: readonly string[] = [], inherited = process.env["PI_CONFIG_FILES"]): string {
+  const dir = join(root, "prompts");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "agent-omp.yml");
+  writeFileSync(path, AGENT_OMP_CONFIG);
+  const kept = (inherited ?? "").split(delimiter).filter((file) => file && dirname(file) !== dir);
+  return [...kept, path, ...extra].join(delimiter);
 }
 
 /**
@@ -391,16 +415,24 @@ export async function startLane(
   await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
   const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
-  const env = { SEORI_LANE: key, ...paneEnv(d.store.root) };
+  const env = { SEORI_LANE: key, ...paneEnv(d.store.root), PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) };
   const pane = workspace
     ? await d.herdr.createTab(key, cwd, workspace, env)
     : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace("seori", cwd)).workspaceId, env);
   try {
     await startAgent(d, key, pane.paneId);
+    await agentSessionReported(d, pane.paneId);
     const kickoff =
       `/goal Read your brief at ${briefPath} and execute it. Your lane key is ${key}. ` +
       `The work is finished only when the brief's exit condition holds and you have sent seori ready.`;
     if (!(await d.herdr.deliver(pane.paneId, kickoff))) throw new Error("omp was not in front of the pane to take the kickoff");
+    if (!(await kickoffTook(d, pane.paneId))) {
+      // The kickoff can sit typed in omp's input with its Enter lost (omp still loading under load): press only Enter.
+      await d.herdr.submitTyped(pane.paneId);
+      if (!(await kickoffTook(d, pane.paneId))) {
+        process.stderr.write(`seori: lane ${key}: omp in ${pane.paneId} has not started on the kickoff; check that pane\n`);
+      }
+    }
   } catch (e) {
     await d.herdr.close(pane.paneId).catch(() => undefined);
     throw new Refusal(`lane ${key} did not start, pane ${pane.paneId} closed: ${failureDetail(e)}`);
@@ -418,6 +450,32 @@ export async function startLane(
   d.store.saveLane(lane);
   await tellLead(d, `[START ${key}] lane opened in ${pane.paneId}`, key);
   return lane;
+}
+
+/** How long a lane start waits for omp's integration to report its session, then for omp to start on the kickoff. */
+export const AGENT_SESSION_WAIT_MS = 30_000;
+export const KICKOFF_TAKE_MS = 20_000;
+const KICKOFF_POLL_MS = 500;
+
+/**
+ * `herdr agent start` returns once herdr sees omp's screen ready, but omp can still be loading: its integration reports
+ * the session later (up to 16 s after start on a loaded Windows host), and a prompt typed before that can lose its
+ * Enter. Waits for the session, at most AGENT_SESSION_WAIT_MS; the kickoff then goes in either way.
+ */
+async function agentSessionReported(d: Deps, paneId: string): Promise<void> {
+  const until = d.now() + AGENT_SESSION_WAIT_MS;
+  while (!(await d.herdr.agentSessionPath(paneId)) && d.now() < until) await d.sleep(KICKOFF_POLL_MS);
+}
+
+/** Whether omp started on the kickoff (herdr reports it working, done or on a dialog) within KICKOFF_TAKE_MS. */
+async function kickoffTook(d: Deps, paneId: string): Promise<boolean> {
+  const until = d.now() + KICKOFF_TAKE_MS;
+  for (;;) {
+    const status = await d.herdr.status(paneId);
+    if (status === "working" || status === "done" || status === "blocked") return true;
+    if (d.now() >= until) return false;
+    await d.sleep(KICKOFF_POLL_MS);
+  }
 }
 
 function openLane(d: Deps, key: string): Lane {

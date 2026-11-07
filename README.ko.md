@@ -555,7 +555,7 @@ herdr, omp, gh를 설치하지는 않습니다. `secrets.json`, `messengers.json
 | `SEORI_MAX_STARTS` | `seori loop --max-starts` 기본값 (2) |
 | `SEORI_MAX_LOAD` | `seori loop --max-load` 기본값 |
 | `SEORI_LANE` | seori가 레인 창에 넣어 주는 값. `seori send`의 기본 보낸 쪽이자 `seori watch add`의 기본 주인 |
-| `PI_CONFIG_FILES` | omp 설정 파일들. `seori up`이 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 붙여 줍니다 |
+| `PI_CONFIG_FILES` | omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 더 붙입니다 |
 | `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | 메신저 토큰. `secrets.json`보다 먼저 |
 
 ## 테스트

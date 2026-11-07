@@ -70,6 +70,56 @@ describe("lanes", () => {
     await expect(startLane(d, "fix-login", brief, { workspace: "w1" })).rejects.toThrow(Refusal);
   });
 
+  test("the kickoff waits until omp's integration reports the session (omp loaded), at most 30 s", async () => {
+    const { w, d, brief } = setup();
+    w.sessionLate = true;
+    const id = `w1:p${w.next + 1}`;
+    w.getHook.set(id, (n) => { if (n === 3) w.panes.get(id)!.session = "/h/.omp/agent/sessions/x.jsonl"; });
+    const t0 = w.clock;
+    await startLane(d, "fix-login", brief, { workspace: "w1" });
+    const order = w.calls.filter((c) => (c.argv[0] === "pane" && c.argv[1] === "get") || (c.argv[0] === "agent" && c.argv[1] === "prompt")).map((c) => c.argv[1]);
+    // three reads until the session shows, then deliver's own read of the status right before the prompt
+    expect(order.slice(0, 5)).toEqual(["get", "get", "get", "get", "prompt"]);
+    expect(w.clock - t0).toBe(1000);
+
+    const late = setup();
+    late.w.sessionLate = true;
+    const t1 = late.w.clock;
+    const lane = await startLane(late.d, "fix-login", late.brief, { workspace: "w1" });
+    expect(late.w.clock - t1).toBe(30_000);
+    expect(late.w.panes.get(lane.paneId)!.received).toHaveLength(1);
+  });
+
+  test("a kickoff whose Enter was lost gets one Enter, never typed again; the lane starts", async () => {
+    const { w, d, lead, brief } = setup();
+    w.kickoffLost = true;
+    const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
+    const pane = w.panes.get(lane.paneId)!;
+    expect(pane.received).toHaveLength(1);
+    expect(pane.kickoffLost).toBe(false);
+    expect(w.calls.filter((c) => c.argv[1] === "send-keys").map((c) => c.argv.slice(2))).toEqual([[lane.paneId, "enter"]]);
+    expect(d.store.lane("fix-login")?.status).toBe("working");
+    expect(lead.received).toEqual([`[START fix-login] lane opened in ${lane.paneId}`]);
+  });
+
+  test("a kickoff omp still has not started after the Enter is reported on stderr; the lane stays open", async () => {
+    const { w, d, brief } = setup();
+    w.kickoffDead = true;
+    const errors: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((s: string) => (errors.push(String(s)), true)) as typeof process.stderr.write;
+    let lane;
+    try {
+      lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
+    } finally {
+      process.stderr.write = write;
+    }
+    expect(errors).toEqual([`seori: lane fix-login: omp in ${lane.paneId} has not started on the kickoff; check that pane\n`]);
+    expect(w.calls.filter((c) => c.argv[1] === "send-keys")).toHaveLength(1);
+    expect(w.panes.has(lane.paneId)).toBe(true);
+    expect(d.store.lane("fix-login")?.status).toBe("working");
+  });
+
   test("SEORI_MODEL goes to the lane's omp as --model", async () => {
     const { w, d, brief } = setup();
     const lane = await startLane({ ...d, model: "anthropic/claude-x" }, "fix-login", brief, { workspace: "w1" });
@@ -149,13 +199,18 @@ describe("lanes", () => {
     expect(w.panes.get(duty!)!.started).toEqual({ name: `duty-${duty!.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "duty.md"), "--model", "m1"] });
     // herdr agent start has no --env: the extension's environment is set on the lead's workspace shell.
     const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
-    // Only the lead's omp gets PI_CONFIG_FILES: advisor.syncBacklog strict, so the agent-end review ends before agent_end.
+    // Only the lead's omp gets lead-omp.yml: advisor.syncBacklog strict, so the agent-end review ends before agent_end.
+    // The lead and duty both get agent-omp.yml: no setup wizard in an agent pane.
     const leadConfig = join(prompts, "lead-omp.yml");
+    const agentConfig = join(prompts, "agent-omp.yml");
     expect(create.slice(-8)).toEqual([
-      "--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso", "--env", `PI_CONFIG_FILES=${leadConfig}`,
+      "--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso", "--env", `PI_CONFIG_FILES=${agentConfig}${delimiter}${leadConfig}`,
     ]);
     expect(readFileSync(leadConfig, "utf8")).toBe("advisor:\n  syncBacklog: strict\n");
-    const others = w.calls.filter((c) => !(c.argv[0] === "workspace" && c.argv[1] === "create"));
+    expect(readFileSync(agentConfig, "utf8")).toBe("startup:\n  setupWizard: false\n");
+    const dutyTab = w.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create")!.argv;
+    expect(dutyTab.at(-1)).toBe(`PI_CONFIG_FILES=${agentConfig}`);
+    const others = w.calls.filter((c) => c.argv !== create && c.argv !== dutyTab);
     expect(others.some((c) => c.argv.some((arg) => arg.startsWith("PI_CONFIG_FILES=")))).toBe(false);
     // The daemon starts first, so the duty loop's first tick finds its heartbeat instead of reporting an outage.
     expect(w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "run").map((c) => [c.argv[2], c.argv[3]])).toEqual([
@@ -183,7 +238,24 @@ describe("lanes", () => {
       else process.env["PI_CONFIG_FILES"] = prev;
     }
     const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
-    expect(create.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(d.store.root, "prompts", "lead-omp.yml")}`);
+    const prompts = join(d.store.root, "prompts");
+    expect(create.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}${delimiter}${join(prompts, "lead-omp.yml")}`);
+  });
+
+  test("a lane's omp gets agent-omp.yml (no setup wizard) but not the lead's settings it inherits from the lead's shell", async () => {
+    const { w, d, brief } = setup();
+    const prompts = join(d.store.root, "prompts");
+    const prev = process.env["PI_CONFIG_FILES"];
+    process.env["PI_CONFIG_FILES"] = ["/etc/omp/a.yml", join(prompts, "agent-omp.yml"), join(prompts, "lead-omp.yml")].join(delimiter);
+    try {
+      await startLane(d, "fix-login", brief, { workspace: "w1" });
+    } finally {
+      if (prev === undefined) delete process.env["PI_CONFIG_FILES"];
+      else process.env["PI_CONFIG_FILES"] = prev;
+    }
+    const tab = w.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create")!.argv;
+    expect(tab.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}`);
+    expect(readFileSync(join(prompts, "agent-omp.yml"), "utf8")).toBe("startup:\n  setupWizard: false\n");
   });
 
   test("start refuses the role names lead and duty as lane keys before it writes or opens anything", async () => {

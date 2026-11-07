@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
-  defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
+  agentOmpConfigFiles, defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
   startAgent, startLane, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
@@ -199,16 +199,16 @@ async function runDaemonLoop(): Promise<number> {
 
 /**
  * Writes `$SEORI_HOME/prompts/lead-omp.yml` (omp settings for the lead only) and returns the PI_CONFIG_FILES value
- * that loads it: appended to a PI_CONFIG_FILES already in the environment with the platform's path delimiter (omp splits
- * on it: ':' on macOS/Linux, ';' on Windows, whose paths contain ':'), so it overlays those too.
+ * that loads it after every agent's settings (agentOmpConfigFiles), all after a PI_CONFIG_FILES already in the
+ * environment, joined with the platform's path delimiter (omp splits on it: ':' on macOS/Linux, ';' on Windows, whose
+ * paths contain ':'), so it overlays those too.
  */
 function leadOmpConfig(root: string): string {
   const dir = join(root, "prompts");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "lead-omp.yml");
   writeFileSync(path, "advisor:\n  syncBacklog: strict\n");
-  const inherited = process.env["PI_CONFIG_FILES"];
-  return inherited ? `${inherited}${delimiter}${path}` : path;
+  return agentOmpConfigFiles(root, [path]);
 }
 
 async function up(d: Deps, cwd: string): Promise<void> {
@@ -217,12 +217,13 @@ async function up(d: Deps, cwd: string): Promise<void> {
   const env = paneEnv(d.store.root);
   // The extension reads its home and how to run seori from the environment of the shell omp starts in. The lead's omp
   // also gets PI_CONFIG_FILES with advisor.syncBacklog: strict, so the advisor's agent-end review finishes before
-  // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets it.
+  // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets that file;
+  // the lead, duty and lanes all get agent-omp.yml (no setup wizard in an agent pane).
   const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, PI_CONFIG_FILES: leadOmpConfig(d.store.root) };
   const lead = await d.herdr.createWorkspace("seori", cwd, leadEnv);
   await startAgent(d, "lead", lead.paneId, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", lead.paneId);
-  const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, env);
+  const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, { ...env, PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) });
   await startAgent(d, "duty", duty.paneId, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
   d.store.setRole("duty", duty.paneId);
   const loop = await d.herdr.split(duty.paneId, cwd, env);

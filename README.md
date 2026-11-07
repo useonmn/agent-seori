@@ -555,7 +555,7 @@ JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inb
 | `SEORI_MAX_STARTS` | default for `seori loop --max-starts` (2) |
 | `SEORI_MAX_LOAD` | default for `seori loop --max-load` |
 | `SEORI_LANE` | set by seori in a lane's pane; the default sender of `seori send` and the default owner of `seori watch add` |
-| `PI_CONFIG_FILES` | omp settings files; `seori up` appends `$SEORI_HOME/prompts/lead-omp.yml` (`advisor.syncBacklog: strict`) for the lead's omp only |
+| `PI_CONFIG_FILES` | omp settings files; seori appends `$SEORI_HOME/prompts/agent-omp.yml` (`startup.setupWizard: false`) for the lead, duty and lane omp, so an omp whose setup version is behind still starts at its prompt instead of the onboarding wizard (log in to a provider with `omp login` first), and `$SEORI_HOME/prompts/lead-omp.yml` (`advisor.syncBacklog: strict`) for the lead's omp only |
 | `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` |
 
 ## Testing

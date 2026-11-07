@@ -11,12 +11,16 @@ import { Store, type HostLoad } from "../src/store.ts";
  * reports (default 101). `started` records the name and omp args of a `herdr agent start` into this pane. `screen` is
  * what `pane read` shows (its last `--lines` lines), `session` the omp session path `pane get` reports as
  * `agent_session`, and `onPrompt` runs after each `agent prompt` reached the pane (to change the screen, say).
+ * The first `agent prompt` after a `herdr agent start` is the lane kickoff: the next `pane get` reports `working` once
+ * (omp took it), unless `kickoffLost` (its Enter was lost: omp stays idle until a `pane send-keys ... enter`). An omp
+ * started with `herdr agent start` reports a session unless the world's `sessionLate` is set.
  */
 type Pane = {
   status: AgentStatus; received: string[]; ran: string[];
   foreground?: string | { name: string; argv: string[] }[] | undefined; agent?: string; pgid?: number;
   started?: { name: string; args: string[] };
   screen?: string[]; session?: string; onPrompt?: (text: string) => void;
+  kickoffLost?: boolean; kicked?: boolean; workingReads?: number;
 };
 
 /** omp's `--mode json` output for a run whose final assistant message is `text`. */
@@ -42,6 +46,11 @@ export class World {
   promptFails = new Map<string, string>();
   /** herdr error text returned by every `agent start` (exit 1); undefined: start succeeds */
   startFails: string | undefined;
+  /** every agent started from now on loses its kickoff's Enter; `kickoffDead`: and an Enter does not help either */
+  kickoffLost = false;
+  kickoffDead = false;
+  /** an omp started from now on reports no session (herdr's integration has not reported it yet) */
+  sessionLate = false;
   /** what `herdr integration status` reports for omp */
   ompIntegration = true;
   /** pane id -> called with the 1-based count of `pane get` calls for that pane, before it answers */
@@ -107,6 +116,9 @@ export class World {
       target.started = { name: String(id), args: dash < 0 ? [] : argv.slice(dash + 1).map(String) };
       target.agent = "omp";
       target.status = "idle";
+      if (this.kickoffLost || this.kickoffDead) target.kickoffLost = true;
+      // herdr's omp integration reports the session of the omp it started (the file need not exist here)
+      if (!this.sessionLate) target.session ??= `/h/.omp/agent/sessions/${String(id)}.jsonl`;
       return ok({ agent: { name: id, agent: "omp", agent_status: "idle", pane_id: paneId }, type: "agent_started" });
     }
     if (group === "pane" && verb === "process-info") {
@@ -133,7 +145,8 @@ export class World {
       this.gets.set(id!, n);
       this.getHook.get(id!)?.(n);
       const agentSession = pane.session ? { agent_session: { agent: "omp", kind: "path", source: "herdr:omp", value: pane.session } } : {};
-      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: pane.status, ...agentSession } });
+      const status = pane.workingReads ? (pane.workingReads--, "working") : pane.status;
+      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: status, ...agentSession } });
     }
     if (group === "pane" && verb === "read") {
       const lines = Number(argv[argv.indexOf("--lines") + 1]);
@@ -143,12 +156,17 @@ export class World {
     if (group === "pane" && verb === "send-text") { pane.received.push(String(argv[3])); return ok({}); }
     if (group === "pane" && verb === "send-keys") {
       if (this.keyFails > 0) { this.keyFails--; return { code: 1, stdout: "", stderr: "key press failed" }; }
+      if (pane.kicked && pane.kickoffLost && !this.kickoffDead && argv.includes("enter")) { pane.kickoffLost = false; pane.workingReads = 1; }
       return ok({});
     }
     if (group === "agent" && verb === "prompt") {
       const fail = this.promptFails.get(id!);
       if (fail) return { code: 1, stdout: "", stderr: fail };
       pane.received.push(String(argv[3]));
+      if (pane.started && !pane.kicked) {
+        pane.kicked = true;
+        if (!pane.kickoffLost) pane.workingReads = 1;
+      }
       pane.onPrompt?.(String(argv[3]));
       return ok({});
     }
@@ -166,6 +184,9 @@ export class World {
       agentCmd: "omp",
       seoriCmd: "seori",
       host: () => this.host,
+      sleep: async (ms) => {
+        this.clock += ms;
+      },
       notify: async (config, target, text) => {
         const fail = this.notifyFails.shift();
         if (fail) throw fail;
