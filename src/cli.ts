@@ -108,6 +108,14 @@ function renderPrompt(d: Deps, name: string): string {
 /** The lead channel extension (extensions/lead-channel.ts): only the lead loads it, so only the lead gets messenger messages. */
 export const LEAD_EXTENSION = join(import.meta.dir, "..", "extensions", "lead-channel.ts");
 
+/**
+ * The daemon pane's restart loop. A daemon that crashed (SIGKILL, OOM, a panic) or exited to load a changed
+ * messengers.json is back within about a second. Only a deliberate stop ends the loop: Ctrl-C (130) or kill/SIGTERM
+ * (143). sh -c so the loop works whatever the pane's login shell is.
+ */
+export const daemonLoop = (seoriCmd: string): string =>
+  `while :; do ${seoriCmd} daemon; s=$?; case "$s" in 130|143) exit "$s";; esac; sleep 1; done`;
+
 async function up(d: Deps, cwd: string): Promise<void> {
   await requireOmpIntegration(d);
   const env = { SEORI_HOME: d.store.root };
@@ -123,10 +131,8 @@ async function up(d: Deps, cwd: string): Promise<void> {
   const loop = await d.herdr.split(duty.paneId, cwd, env);
   const hourly = await d.herdr.split(loop.paneId, cwd, { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
   const daemon = await d.herdr.split(hourly.paneId, cwd, env);
-  // A crashed daemon, or one that exited to load a changed messengers.json, is back within about a second. A daemon that
-  // died of a signal (Ctrl-C, kill) stops the loop. sh -c so the loop works whatever the pane's login shell is.
   const daemonStarted = d.now();
-  await d.herdr.run(daemon.paneId, `sh -c ${shq(`while :; do ${d.seoriCmd} daemon; s=$?; [ "$s" -ge 128 ] && exit "$s"; sleep 1; done`)}`);
+  await d.herdr.run(daemon.paneId, `sh -c ${shq(daemonLoop(d.seoriCmd))}`);
   // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
   // daemon is up; a daemon that does not come up is reported here and left to duty's outage alert.
   if (!(await heartbeatSince(d.store.root, daemonStarted))) {

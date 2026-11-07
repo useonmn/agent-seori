@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
+import { daemonLoop } from "../src/cli.ts";
 import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, runDaemon } from "../src/daemon.ts";
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
@@ -157,7 +158,7 @@ describe("runDaemon", () => {
 
 describe("seori daemon process", () => {
   const CLI = join(import.meta.dir, "..", "src", "cli.ts");
-  const LOOP = `while :; do bun ${CLI} daemon; s=$?; [ "$s" -ge 128 ] && exit "$s"; sleep 1; done`;
+  const LOOP = daemonLoop(`bun ${CLI}`);
   const pidOf = (root: string): number => (JSON.parse(readFileSync(heartbeatPath(root), "utf8")) as { pid: number }).pid;
 
   test("SIGTERM to the daemon stops seori up's restart loop with a status of 128 or more", async () => {
@@ -168,6 +169,20 @@ describe("seori daemon process", () => {
     expect(await sh.exited).toBeGreaterThanOrEqual(128);
     expect(existsSync(daemonLockPath(root))).toBe(false); // stopped cleanly before the re-raise
   }, 15_000);
+
+  test("a daemon that crashed (SIGKILL) is started again by the loop", async () => {
+    const root = home();
+    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    try {
+      await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
+      const first = pidOf(root);
+      process.kill(first, "SIGKILL");
+      await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
+      expect(sh.exitCode).toBeNull();
+    } finally {
+      sh.kill("SIGKILL");
+    }
+  }, 30_000);
 
   test("a changed messengers.json makes the restart loop start a new daemon", async () => {
     const root = home();
