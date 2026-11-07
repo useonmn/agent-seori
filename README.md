@@ -175,7 +175,7 @@ Limits:
 
 - A watch lives 2 hours; `--timeout` sets 1 second to 24 hours.
 - `--persistent` keeps it 7 days instead, at most 5 per owner (a 6th is refused).
-- Wake budget: after 6 events within an hour the watch is muted. It keeps counting events without delivering them; `seori watch rearm` unmutes it, resets the budget and says how many events were missed.
+- Wake budget: after 6 events within an hour the watch is muted. It keeps counting events without delivering them; `seori watch rearm` unmutes it, resets the budget and says how many events were missed. The count is saved every 30 seconds, so a rearm within half a minute of the last events reports fewer than were missed.
 - Refusals (a timeout over 24 hours, a 6th persistent watch, a bad `--filter` regex, a name already in use) exit 2.
 
 `seori watch list` shows each watch's id, name, owner, status, what it watches, age, time left, wakes in the last hour and muted events; `seori watch log <id|name> [-n N]` shows the last N (default 20) things it saw and delivered. `stop`, `rearm` and `log` look a name up only among the live watches of the owner `add` would pick (`--for`, else `SEORI_LANE`, else the lead), so two lanes can each have a watch named `ci`; when several of that owner's watches share the name (unnamed watches are named after their kind) they are refused with their ids. An id works for any owner's watch.
@@ -207,7 +207,7 @@ bun test         # unit tests against a fake herdr and gh; no model is called
 bun run typecheck
 ```
 
-The end-to-end tests in `test/e2e.test.ts` (lanes and the hourly loop) and `test/e2e-channel.test.ts` (the messenger channel: idle, busy, burst, lead restart, `/new`, subagents, Esc, a model outage and recovery, a permanent outage ending in gave-up, daemon crash and config change) need a real herdr with the omp integration installed, omp on PATH, and `SEORI_E2E_OMP=1`. They call a real model, so they cost money; without those they are skipped. The channel suite takes about 18 minutes; `SEORI_E2E_ONLY=1,2,3` runs a subset (scenario 8, the outage, takes about 9 minutes on its own).
+The end-to-end tests in `test/e2e.test.ts` (lanes and the hourly loop), `test/e2e-channel.test.ts` (the messenger channel: idle, busy, burst, lead restart, `/new`, subagents, Esc, a model outage and recovery, a permanent outage ending in gave-up, daemon crash and config change) and `test/e2e-watch.test.ts` (watches: command filter and exit, crash restarts, file changes, `/new`, lead restart, daemon SIGKILL, wake budget and rearm, a lane-owned watch, pane state, limits, no leftover commands after herdr stops) need a real herdr with the omp integration installed, omp on PATH, and `SEORI_E2E_OMP=1`. They call a real model, so they cost money; without those they are skipped. The channel suite takes about 18 minutes and the watch suite about 6; `SEORI_E2E_ONLY=1,2,3` runs a subset (channel scenario 8, the outage, takes about 9 minutes on its own).
 
 ## Telemetry
 
