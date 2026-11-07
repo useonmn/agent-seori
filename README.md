@@ -382,6 +382,8 @@ The lead can take your requests from a messenger as well as from its pane. Confi
 
 `source` picks the adapter (`telegram`, `slack`, `discord`, or `fake` for tests) and `owner` is the one sender id whose messages reach the lead; messages from anyone else, and from bots, are dropped. `seori msg pair` finds that id for you (see [Owner pairing](#owner-pairing)). That is the whole safety model, the same as dori's: only the owner can talk to the lead, and the owner's messages get no extra restrictions. `options.apiBase` points an adapter at another API host (the tests use a local mock).
 
+A Slack app marked as an agent app (Agents in the app settings, scope `assistant:write`) takes `"options": { "agent": true }`: every owner DM is answered in its own thread (its `thread_ts`, or the message itself for a top-level one), and once the lead has it the thread shows a working status (`assistant.threads.setStatus`, text `options.agentStatus`, default `is working on it...`). Slack drops a status after two minutes, so the daemon sets it again every minute until seori replies in that thread (a top-level reply clears it too) or 30 minutes pass. Without `agent`, DMs behave as before.
+
 Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuses a file others can read; on Windows it checks the ACL instead, see [Windows](#windows)), or in environment variables, which win:
 
 ```json

@@ -383,6 +383,8 @@ seori worklog list --open
 
 `source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 리드에게 말할 수 있는 단 한 명의 보낸 사람 id입니다. 다른 사람이나 봇이 보낸 메시지는 버립니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
 
+에이전트 앱으로 표시한 Slack 앱(앱 설정의 Agents, 권한 `assistant:write`)에는 `"options": { "agent": true }`를 줍니다. 그러면 주인의 DM마다 그 스레드에서 답합니다(`thread_ts`가 있으면 그 스레드, 최상위 메시지면 그 메시지 아래). 리드가 메시지를 받으면 스레드에 작업 중 상태를 띄웁니다(`assistant.threads.setStatus`, 문구는 `options.agentStatus`, 기본값 `is working on it...`). Slack은 2분이 지나면 상태를 지우기 때문에, daemon이 1분마다 다시 띄웁니다. seori가 그 스레드에 답하거나(최상위 답도 지웁니다) 30분이 지나면 멈춥니다. `agent`가 없으면 DM은 예전과 같습니다.
+
 토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다. Windows에서는 ACL을 봅니다. [Windows](#windows) 참고). 환경 변수가 있으면 그쪽이 먼저입니다:
 
 ```json

@@ -34,6 +34,11 @@ type Mock = {
   authAnswer: () => Response;
   openAnswer: () => Response;
   postAnswers: Array<(body: Record<string, unknown>) => Response | Promise<Response>>;
+  /** Bodies of assistant.threads.setStatus calls, in order. */
+  statuses: Record<string, unknown>[];
+  /** Date.now() when each status call arrived. */
+  statusAt: number[];
+  statusAnswer: () => Response;
   stop: () => void;
 };
 
@@ -61,6 +66,9 @@ function startMock(): Mock {
     authAnswer: () => json({ ok: true, user: "seori", user_id: "UBOT", team: "Acme", team_id: "T1" }),
     openAnswer: () => json({ ok: true, url: `ws://127.0.0.1:${server.port}/link` }),
     postAnswers: [],
+    statuses: [],
+    statusAt: [],
+    statusAnswer: () => json({ ok: true }),
     stop: () => server.stop(true),
   };
   let connections = 0;
@@ -95,6 +103,11 @@ function startMock(): Mock {
         const parent = mock.history[channel]?.find((m) => m["ts"] === root) ?? { type: "message", ts: root, thread_ts: root };
         const replies = (mock.replies[`${channel}:${root}`] ?? []).filter((m) => compareTs(String(m["ts"]), oldest) > 0);
         return json({ ok: true, messages: [parent, ...replies], has_more: false });
+      }
+      if (url.pathname === "/api/assistant.threads.setStatus") {
+        mock.statuses.push((await req.json()) as Record<string, unknown>);
+        mock.statusAt.push(Date.now());
+        return mock.statusAnswer();
       }
       if (url.pathname === "/api/chat.postMessage") {
         const body = (await req.json()) as Record<string, unknown>;
@@ -436,6 +449,81 @@ describe("SlackAdapter receive", () => {
     const got = await collect(adapter(blip, home(), { sleep, now }), (g) => g.length >= 1);
     expect(got.map((m) => m.id)).toEqual(["slack:D1:1700000000.000100"]);
     expect(clock).toBeGreaterThanOrEqual(100_000);
+  });
+});
+
+describe("SlackAdapter agent mode", () => {
+  const agent = (mock: Mock, root: string, options: Record<string, unknown> = {}) => adapter(mock, root, { options: { agent: true, ...options } });
+
+  test("every owner DM gets its own thread and a working status once delivered; without agent mode nothing changes", async () => {
+    const mock = startMock();
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", dm("1700000000.000100")));
+      ws.send(envelope("e2", dm("1700000000.000200", { thread_ts: "1700000000.000150" })));
+      ws.send(envelope("e3", dm("1700000000.000300", { user: "USTRANGER" })));
+    };
+    const got = await collect(agent(mock, home(), { agentStatus: "작업 중..." }), () => mock.statuses.length >= 2 && mock.acks.length >= 3);
+    expect(got.map((m) => [m.id, m.thread])).toEqual([
+      ["slack:D1:1700000000.000100", "1700000000.000100"],
+      ["slack:D1:1700000000.000200", "1700000000.000150"],
+    ]);
+    expect(mock.statuses).toEqual([
+      { channel_id: "D1", thread_ts: "1700000000.000100", status: "작업 중..." },
+      { channel_id: "D1", thread_ts: "1700000000.000150", status: "작업 중..." },
+    ]);
+
+    const plain = startMock();
+    plain.onConnect = (ws) => ws.send(envelope("e1", dm("1700000000.000100")));
+    const before = await collect(adapter(plain, home()), (g) => g.length >= 1);
+    expect(before[0]?.thread).toBeUndefined();
+    expect(plain.statuses).toEqual([]);
+  });
+
+  test("the status is set again until seori replies in the thread; a top-level reply clears it; the limit ends it", async () => {
+    const mock = startMock();
+    let replied = false;
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", dm("1700000000.000100")));
+      ws.send(envelope("e2", dm("1700000000.000200")));
+      void until(() => mock.statuses.length >= 4).then(() => {
+        replied = true;
+        ws.send(envelope("e3", dm("1700000000.000300", { user: "UBOT", bot_id: "B1", thread_ts: "1700000000.000100" })));
+        ws.send(envelope("e4", dm("1700000000.000400", { user: "UBOT", bot_id: "B1" })));
+      });
+    };
+    const cleared = () => mock.statusAt[mock.statuses.findIndex((s) => s["status"] === "")] ?? Infinity;
+    // Runs on for several refresh periods after the clear: once both threads were answered nothing is set again.
+    await collect(agent(mock, home(), { statusRefreshMs: 20 }), () => mock.acks.length >= 4 && Date.now() > cleared() + 150, undefined, 3_000);
+    expect(replied).toBe(true);
+    const late = mock.statuses.filter((s, i) => s["status"] !== "" && (mock.statusAt[i] ?? 0) > cleared() + 20); // a refresh already in flight may land just after
+    expect(late).toEqual([]);
+    expect(mock.statuses.filter((s) => s["status"] === "")).toEqual([{ channel_id: "D1", thread_ts: "1700000000.000200", status: "" }]);
+    expect(mock.statuses.some((s) => s["thread_ts"] === "1700000000.000100" && s["status"] === "")).toBe(false);
+
+    let clock = 0;
+    const limited = startMock();
+    limited.onConnect = (ws) => ws.send(envelope("e1", dm("1700000000.000100")));
+    await collect(adapter(limited, home(), { options: { agent: true, statusRefreshMs: 10, statusLimitMs: 1_000 }, now: () => (clock += 400) }), () => limited.statuses.some((s) => s["status"] === ""));
+    expect(limited.statuses.at(-1)).toEqual({ channel_id: "D1", thread_ts: "1700000000.000100", status: "" });
+  });
+
+  test("a refused status never blocks delivery and is not retried by the refresh", async () => {
+    const mock = startMock();
+    mock.statusAnswer = () => json({ ok: false, error: "missing_scope", needed: "assistant:write" });
+    mock.onConnect = (ws) => ws.send(envelope("e1", dm("1700000000.000100")));
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...a: unknown[]) => errors.push(a.join(" "));
+    try {
+      const started = Date.now();
+      // several refresh periods after the refusal came back
+      const got = await collect(agent(mock, home(), { statusRefreshMs: 100 }), (g) => g.length >= 1 && errors.length >= 1 && Date.now() > started + 400, undefined, 3_000);
+      expect(got.map((m) => m.thread)).toEqual(["1700000000.000100"]);
+    } finally {
+      console.error = original;
+    }
+    expect(mock.statuses.length).toBe(1);
+    expect(String(errors[0])).toMatch(/working status for D1:1700000000.000100 failed: .*missing_scope/);
   });
 });
 

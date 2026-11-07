@@ -30,6 +30,12 @@ const UNREADABLE_ERRORS = new Set(["missing_scope", "not_allowed_token_type"]);
 /** chat.postMessage errors after which "some aspect of the operation" may have succeeded (Slack's docs): uncertain. */
 const UNCERTAIN_SEND_ERRORS = new Set(["internal_error", "fatal_error"]);
 const MAX_RATELIMIT_RETRIES = 5;
+/** Agent mode: the working status shown under an owner's DM thread until seori replies (Slack renders "<app> <status>"). */
+const DEFAULT_AGENT_STATUS = "is working on it...";
+/** Slack drops a status after two minutes without a message, so it is set again this often while the lead works... */
+const DEFAULT_STATUS_REFRESH_MS = 60_000;
+/** ...but never for longer than this: a turn that never replies must not show "working" forever. */
+const DEFAULT_STATUS_LIMIT_MS = 30 * 60_000;
 
 /** `threads[channel][root ts]` = the newest ts seen in that thread. */
 type Cursor = { channels: Record<string, string>; threads: Record<string, Record<string, string>> };
@@ -63,6 +69,8 @@ type Receiving = {
   readonly botUser: string;
   readonly onMessage: (m: InboundMessage) => Promise<void>;
   readonly signal: AbortSignal;
+  /** Agent mode: `<channel>:<thread ts>` of DM threads showing the working status, until when it is kept up. */
+  readonly working: Map<string, { channel: string; thread: string; until: number }>;
 };
 
 /** Slack answered `{ ok: false, error }`: a definite failure (the request was taken and refused). */
@@ -128,6 +136,15 @@ export class SlackAdapter implements MessengerAdapter {
   private readonly helloTimeoutMs: number;
   private readonly pairing: boolean;
   private readonly cursorRoot: string;
+  /**
+   * `options.agent`: the Slack app is an agent app (Agents & AI Apps). Each owner DM then gets seori's reply in its own
+   * thread (`thread_ts`, or the message itself for a top-level one, which opens a session thread) and a working status
+   * (assistant.threads.setStatus) while the lead handles it; Slack clears it when seori replies in that thread.
+   */
+  private readonly agent: boolean;
+  private readonly agentStatus: string;
+  private readonly statusRefreshMs: number;
+  private readonly statusLimitMs: number;
 
   constructor(
     private readonly config: MessengerConfig,
@@ -153,6 +170,13 @@ export class SlackAdapter implements MessengerAdapter {
     this.now = deps.now ?? Date.now;
     this.pairing = deps.pairing === true;
     this.cursorRoot = deps.cursorRoot ?? root;
+    this.agent = config.options?.["agent"] === true;
+    const status = config.options?.["agentStatus"];
+    this.agentStatus = typeof status === "string" && status.trim() ? status : DEFAULT_AGENT_STATUS;
+    const refresh = config.options?.["statusRefreshMs"];
+    this.statusRefreshMs = typeof refresh === "number" ? refresh : DEFAULT_STATUS_REFRESH_MS;
+    const limit = config.options?.["statusLimitMs"];
+    this.statusLimitMs = typeof limit === "number" ? limit : DEFAULT_STATUS_LIMIT_MS;
   }
 
   private botToken(): string {
@@ -203,6 +227,16 @@ export class SlackAdapter implements MessengerAdapter {
   }
 
   async receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
+    const working: Receiving["working"] = new Map();
+    const refresher = this.agent ? setInterval(() => this.refreshWorking(working), this.statusRefreshMs) : undefined;
+    try {
+      await this.receiveLoop(signal, onMessage, working);
+    } finally {
+      clearInterval(refresher);
+    }
+  }
+
+  private async receiveLoop(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>, working: Receiving["working"]): Promise<void> {
     const botToken = this.botToken();
     const appToken = this.appToken();
     const file = CursorFile.for<Cursor>(this.cursorRoot, this.source);
@@ -224,7 +258,7 @@ export class SlackAdapter implements MessengerAdapter {
         const url = (await this.api("apps.connections.open", appToken, undefined, "POST", signal)).url;
         usingAppToken = false;
         if (typeof url !== "string") throw new Error("apps.connections.open returned no url");
-        const ctx: Receiving = { cursor, file, delivered, botToken, botUser, onMessage, signal };
+        const ctx: Receiving = { cursor, file, delivered, botToken, botUser, onMessage, signal, working };
         const end = await this.session(url, ctx, () => {
           healthy = true;
           failures = 0;
@@ -489,7 +523,10 @@ export class SlackAdapter implements MessengerAdapter {
     const addressed = dm || !fromHistory || (ctx.botUser !== "" && (ev.text ?? "").includes(`<@${ctx.botUser}>`));
     const text = owner && addressed ? bodyText(ev) : "";
     if (!text) {
-      if (ctx.botUser !== "" && ev.user === ctx.botUser) this.track(channel, ev.thread_ts ?? ts, ts, ctx); // the owner may answer in seori's thread
+      if (ctx.botUser !== "" && ev.user === ctx.botUser) {
+        this.track(channel, ev.thread_ts ?? ts, ts, ctx); // the owner may answer in seori's thread
+        if (dm) this.stopWorking(channel, ev.thread_ts, ctx);
+      }
       return this.advance(channel, ts, ctx);
     }
     if (ctx.cursor.channels[channel] === undefined) {
@@ -498,10 +535,57 @@ export class SlackAdapter implements MessengerAdapter {
       ctx.file.save(ctx.cursor);
     }
     this.track(channel, ev.thread_ts ?? ts, ts, ctx); // seori replies under this message: catch-up reads that thread
-    const thread = dm ? ev.thread_ts : (ev.thread_ts ?? ts);
+    const agentThread = dm && this.agent && !this.pairing;
+    const thread = dm && !agentThread ? ev.thread_ts : (ev.thread_ts ?? ts);
     const from = this.pairing ? (ev.user as string) : this.config.owner;
     await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(ts), text }, key, ctx);
+    if (agentThread && thread) this.showWorking(channel, thread, ctx.working);
     this.advance(channel, ts, ctx);
+  }
+
+  /** Agent mode: the lead has the owner's message, so the thread shows the working status until seori replies there. */
+  private showWorking(channel: string, thread: string, working: Receiving["working"]): void {
+    working.set(`${channel}:${thread}`, { channel, thread, until: this.now() + this.statusLimitMs });
+    void this.setStatus(channel, thread, this.agentStatus, working);
+  }
+
+  /**
+   * seori posted in a DM: a reply in a working thread ends it (Slack clears the status by itself); a top-level message
+   * answers every working thread of that DM, whose status is cleared explicitly. The entries go first, so no refresh
+   * puts a status back.
+   */
+  private stopWorking(channel: string, thread: string | undefined, ctx: Receiving): void {
+    for (const [key, w] of ctx.working) {
+      if (w.channel !== channel || (thread !== undefined && thread !== w.thread)) continue;
+      ctx.working.delete(key);
+      if (thread === undefined) void this.setStatus(channel, w.thread, "", ctx.working);
+    }
+  }
+
+  /** Sets every working status again (Slack drops one after two minutes) and clears those past the limit. */
+  private refreshWorking(working: Receiving["working"]): void {
+    const now = this.now();
+    for (const [key, w] of working) {
+      if (now < w.until) {
+        void this.setStatus(w.channel, w.thread, this.agentStatus, working);
+        continue;
+      }
+      working.delete(key);
+      void this.setStatus(w.channel, w.thread, "", working);
+    }
+  }
+
+  /**
+   * The status is a courtesy: a failure never stops receiving or a reply. It is reported on stderr (the daemon pane), and
+   * a definite refusal (not an agent app, a missing scope) ends the refresh of that thread so it is not repeated forever.
+   */
+  private async setStatus(channel: string, thread: string, status: string, working: Receiving["working"]): Promise<void> {
+    try {
+      await this.api("assistant.threads.setStatus", this.botToken(), { channel_id: channel, thread_ts: thread, status }, "POST");
+    } catch (e) {
+      if (e instanceof SlackApiError) working.delete(`${channel}:${thread}`);
+      console.error(`slack ${this.source}: working status for ${channel}:${thread} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private async handleEdit(ev: SlackMessage, channel: string, dm: boolean, ctx: Receiving): Promise<void> {
@@ -512,7 +596,7 @@ export class SlackAdapter implements MessengerAdapter {
     if (ctx.delivered.has(key)) return;
     const text = bodyText(m);
     if (!text) return;
-    const thread = dm ? m.thread_ts : (m.thread_ts ?? m.ts);
+    const thread = dm && !this.agent ? m.thread_ts : (m.thread_ts ?? m.ts);
     await this.deliver(
       { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from: this.config.owner, at: tsMs(stamp), text: `(edited) ${text}` },
       key,

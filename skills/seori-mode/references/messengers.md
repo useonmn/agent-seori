@@ -42,6 +42,7 @@ seori uses a bot app in Socket Mode: no public URL, no user token, no paid seat.
 2. Basic Information → App-Level Tokens → Generate, scope `connections:write`. That is the app token (`xapp-...`).
 3. Install App → Install to Workspace → allow. That gives the bot token (`xoxb-...`).
 4. The owner opens the app in Slack (Apps → the app → Messages tab) so the DM exists.
+5. Optional, to show seori as an agent: Agents → turn on "Mark this app as an agent app" (adds `assistant:write`), Event Subscriptions → add `assistant_thread_started` and `assistant_thread_context_changed`, then reinstall the app (the tokens stay the same). Add `"options": { "agent": true }` to the slack entry of `~/.seori/messengers.json` so seori answers each DM in its thread and shows a working status there while the lead works.
 
 ### Discord
 
