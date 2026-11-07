@@ -27,6 +27,8 @@ export type SeoriConfig = {
   readonly closeAfterMin: number;
   /** A lane with a thread gets its newest report posted there at most this often. */
   readonly progressEveryMin: number;
+  /** A lane whose pane shows a dialog (herdr `blocked`) this long is told to the lead once as [BLOCKED-PROMPT]. */
+  readonly blockedPromptMin: number;
   readonly supervision: {
     /** Ceilings for every lane; `seori start --wall-minutes/--token-limit/--cost-limit` override per lane. */
     readonly defaults: Ceilings;
@@ -41,6 +43,7 @@ export const DEFAULT_CONFIG: SeoriConfig = {
   repoIdentities: {},
   closeAfterMin: 5,
   progressEveryMin: 15,
+  blockedPromptMin: 10,
   supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20 },
   guard: { loadAlertPct: 150, loadOkPct: 80, memFreeMinPct: 10, diskFreeMinGb: 20, panesMax: 30 },
   heavy: { slots: 1, maxLoadPct: 80 },
@@ -82,7 +85,7 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["repoIdentities", "closeAfterMin", "progressEveryMin", "supervision", "guard", "heavy"], path);
+  only(raw, ["repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy"], path);
   const D = DEFAULT_CONFIG;
 
   const repoIdentities: Record<string, RepoIdentity> = {};
@@ -117,6 +120,7 @@ export function loadConfig(root: string): SeoriConfig {
     repoIdentities,
     closeAfterMin: num(raw, "closeAfterMin", path, D.closeAfterMin),
     progressEveryMin: num(raw, "progressEveryMin", path, D.progressEveryMin),
+    blockedPromptMin: num(raw, "blockedPromptMin", path, D.blockedPromptMin),
     supervision: {
       defaults: {
         wallMinutes: ceiling(defs["wallMinutes"], `${path} supervision.defaults.wallMinutes`, D.supervision.defaults.wallMinutes),

@@ -8,7 +8,7 @@ import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus,
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { KEY_RE, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
-import { loadConfig } from "./config.ts";
+import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
 import { progressTick } from "./progress.ts";
@@ -527,6 +527,12 @@ export async function ready(d: Deps, key: string, text: string, evidence: readon
 export async function done(d: Deps, key: string): Promise<void> {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
+  if (lane.status === "done") {
+    // Duty's done window or an earlier `seori done` closed it: nothing is left to close.
+    const closed = lane.log.findLast((e) => e.kind === "done");
+    const how = closed ? ` at ${new Date(closed.at).toISOString()} (${closed.text})` : "";
+    throw new Refusal(`lane ${key} is already closed${how}; see its final state with: ${d.seoriCmd} status (record: ${join(d.store.root, "lanes", `${key}.json`)})`);
+  }
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   const st = await d.herdr.status(lane.paneId);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
@@ -640,12 +646,12 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   return events;
 }
 
-/** A lane whose pane has shown a dialog (herdr `blocked`) this long is told to the lead as [BLOCKED-PROMPT]. */
-export const BLOCKED_PROMPT_MINUTES = 10;
+/** The default of config.json's blockedPromptMin: a lane whose pane shows a dialog this long is told as [BLOCKED-PROMPT]. */
+export const BLOCKED_PROMPT_MINUTES = DEFAULT_CONFIG.blockedPromptMin;
 
 /**
  * Records when a lane's pane was first seen `blocked` (blockedSince) and, once it has stayed blocked for
- * BLOCKED_PROMPT_MINUTES, tells the lead once per blocked spell. Nothing goes to the lane: an Enter would answer the
+ * blockedPromptMin (config.json, default BLOCKED_PROMPT_MINUTES), tells the lead once per blocked spell. Nothing goes to the lane: an Enter would answer the
  * dialog. A pane that is no longer blocked clears blockedSince (dutyTick), so a later dialog is a new spell.
  */
 async function blockedPrompt(d: Deps, lane: Lane, now: number, events: DutyEvent[]): Promise<void> {
@@ -655,15 +661,17 @@ async function blockedPrompt(d: Deps, lane: Lane, now: number, events: DutyEvent
     return;
   }
   const key = `blocked-prompt:${lane.blockedSince}`;
-  if (now - lane.blockedSince < BLOCKED_PROMPT_MINUTES * 60_000 || lane.alerts?.[key] !== undefined) return;
-  const minutes = Math.floor((now - lane.blockedSince) / 60_000);
-  const text = `[BLOCKED-PROMPT ${lane.key}] pane ${lane.paneId} waits on a dialog (a tool approval or question) for ${minutes} min; nothing is sent to the lane while it is open`;
+  if (lane.alerts?.[key] !== undefined || now - lane.blockedSince < loadConfig(d.store.root).blockedPromptMin * 60_000) return;
+  const waited = now - lane.blockedSince;
+  // A threshold under a minute (a short test setting) is told in seconds, not as "0 min".
+  const minutes = waited >= 60_000 ? `${Math.floor(waited / 60_000)} min` : `${Math.round(waited / 1000)} s`;
+  const text = `[BLOCKED-PROMPT ${lane.key}] pane ${lane.paneId} waits on a dialog (a tool approval or question) for ${minutes}; nothing is sent to the lane while it is open`;
   // Marked before telling: tellLead queues the notice in the lead's inbox first, so it is not lost if delivery waits.
   lane.alerts = { ...(lane.alerts ?? {}), [key]: now };
   lane.log.push({ at: now, kind: "blocked", text });
   d.store.saveLane(lane);
   await tellLead(d, text, "duty");
-  events.push({ lane: lane.key, action: "blocked-prompt", detail: `${minutes} min` });
+  events.push({ lane: lane.key, action: "blocked-prompt", detail: minutes });
 }
 
 // ---------- lead channel alerts ----------

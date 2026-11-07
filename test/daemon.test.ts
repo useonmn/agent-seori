@@ -4,6 +4,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { daemonLoop } from "../src/cli.ts";
+import { down, DOWN_GROUPS, recordPath } from "../src/down.ts";
 import { IS_WINDOWS } from "../src/platform.ts";
 import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, MAX_RESTART_DELAY_MS, readHealth, restartDelay, runDaemon } from "../src/daemon.ts";
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
@@ -250,7 +251,7 @@ describe("the daemon restart loop (daemonLoop)", () => {
     expect(await run([143])).toEqual({ status: 143, started: 1, slept: [] });
   });
 
-  test("a loop told to stop (its own Ctrl-C, the only stop signal on Windows) starts no new daemon", async () => {
+  test("a loop told to stop (its own Ctrl-C, SIGTERM or a seori down request) starts no new daemon", async () => {
     expect(await run([1, 1, 1], 2)).toEqual({ status: 1, started: 2, slept: [1000] });
   });
 });
@@ -279,6 +280,33 @@ describe("seori daemon process", () => {
     expect(await sh.exited).toBeGreaterThanOrEqual(128);
     expect(existsSync(daemonLockPath(root))).toBe(false); // stopped cleanly before the re-raise
   }, 15_000);
+
+  // The stop that needs no signal: on Windows nothing else ends the loop and its daemon from outside the pane.
+  test("seori down stops the restart loop and its daemon cleanly on every OS: status 143, watch command and lock gone", async () => {
+    const root = home();
+    new WatchStore(root).add({
+      name: "beats",
+      source: { kind: "command", command: "while :; do echo x >> beats; sleep 0.05; done", cwd: root, filter: "never" },
+      owner: { kind: "lead" },
+    }, Date.now());
+    const sh = loop(root);
+    try {
+      await until("the watch command running", () => existsSync(join(root, "beats")), 15_000);
+      await until("both records", () => existsSync(recordPath(root, "daemon-loop")) && existsSync(recordPath(root, "daemon")), 10_000);
+      const r = await down(root, DOWN_GROUPS["daemon"]!);
+      expect(r.ok).toBe(true);
+      expect(r.lines.map((l) => l.split(" pid=")[0])).toEqual(["STOPPED daemon-loop", "STOPPED daemon"]);
+      expect(await sh.exited).toBe(143);
+      expect(existsSync(daemonLockPath(root))).toBe(false);
+      expect(existsSync(recordPath(root, "daemon"))).toBe(false);
+      const beats = () => readFileSync(join(root, "beats"), "utf8").length;
+      const atStop = beats();
+      await Bun.sleep(300); // proving the command no longer runs needs real time to pass
+      expect(beats()).toBe(atStop);
+    } finally {
+      killAll(sh, root);
+    }
+  }, 40_000);
 
   test("a daemon that crashed (SIGKILL) is started again by the loop", async () => {
     const root = home();

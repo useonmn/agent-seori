@@ -60,6 +60,7 @@ Tell the owner the lead is up and which pane it is in.
   "repoIdentities": { "owner/repo": { "name": "Their Name", "email": "them@example.com" } },
   "closeAfterMin": 5,
   "progressEveryMin": 15,
+  "blockedPromptMin": 10,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20 },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
@@ -69,6 +70,7 @@ Tell the owner the lead is up and which pane it is in.
 - `repoIdentities`: the Git identity commits in that repo must carry; `seori verify-pr` and the merge gate check it. Ask the owner for it per repo they want checked.
 - `closeAfterMin`: how long after READY a lane with a Done line closes on its own.
 - `progressEveryMin`: how often a lane with a thread gets its newest report posted there.
+- `blockedPromptMin`: how long a lane may sit on a dialog (tool approval or question) before the lead gets one `[BLOCKED-PROMPT]`.
 - `supervision.defaults`: wall-clock, token and cost ceilings for every lane (`null` is off); `hungAfterMin`: when a working lane with no report and no file change is reported stalled.
 - `guard`: host load, memory, disk and pane-count lines; `seori can-launch` holds new lanes past them.
 - `heavy`: slots and load limit for `seori heavy`.

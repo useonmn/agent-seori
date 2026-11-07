@@ -281,6 +281,22 @@ describe("lanes", () => {
     expect(w.panes.has(lane.paneId)).toBe(false);
     expect(d.store.lane("fix-login")!.status).toBe("done");
   });
+
+  test("done on a lane that is already closed says so and where to see its final state, touching nothing", async () => {
+    const { w, d, brief } = setup();
+    await startLane(d, "fix-login", brief, { workspace: "w1" });
+    await ready(d, "fix-login", "fixed", ["https://github.com/o/r/pull/1"]);
+    await done(d, "fix-login");
+    const before = JSON.stringify(d.store.lane("fix-login"));
+    const calls = w.calls.length;
+    const err = await done(d, "fix-login").then(() => undefined, (e: Error) => e);
+    expect(err?.message).toContain("lane fix-login is already closed at ");
+    expect(err?.message).toContain("(closed by lead)");
+    expect(err?.message).toContain(`${d.seoriCmd} status`);
+    expect(err?.message).not.toContain("not ready");
+    expect(w.calls.length).toBe(calls);
+    expect(JSON.stringify(d.store.lane("fix-login"))).toBe(before);
+  });
 });
 
 describe("pane messaging", () => {

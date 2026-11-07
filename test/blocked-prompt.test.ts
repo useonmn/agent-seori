@@ -101,6 +101,18 @@ describe("a lane stuck on a dialog is told to the lead once (B2)", () => {
     expect(toldLead(lead)).toHaveLength(2);
   });
 
+  test("config.json blockedPromptMin sets the wait: 0.5 -> told after 30 s, not before", async () => {
+    const { w, d, lead } = await blockedLane();
+    await Bun.write(`${d.store.root}/config.json`, JSON.stringify({ blockedPromptMin: 0.5 }));
+    await dutyTick(d);
+    w.clock += 29_999;
+    await dutyTick(d);
+    expect(toldLead(lead)).toEqual([]);
+    w.clock += 1;
+    expect(await dutyTick(d)).toContainEqual({ lane: "lane-a", action: "blocked-prompt", detail: "30 s" });
+    expect(toldLead(lead)).toHaveLength(1);
+  });
+
   test("a blocked lane is not nudged however long it stays silent", async () => {
     const { w, d, pane } = await blockedLane();
     w.clock += 120 * 60_000;

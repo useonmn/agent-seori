@@ -78,7 +78,7 @@ Windows에서 다른 점:
 
 - 창(pane). herdr 창의 셸은 PowerShell이나 cmd라서 `변수=값 명령` 문법이 없습니다. seori는 자기가 여는 모든 창에 `SEORI_HOME`, `SEORI_HERDR_SESSION`, `SEORI_MODEL`을 `herdr --env`로 넣어 주고, 에이전트와 루프 창은 그냥 `bun "<경로>/src/cli.ts"`로 seori를 부릅니다. 데몬 창은 sh 대신 bun으로 만든 재시작 루프 `seori daemon-loop`를 돌립니다.
 - `secrets.json`. Windows에는 파일 권한 비트가 없어서(모든 파일이 666으로 보임) seori가 파일의 ACL을 읽습니다. Everyone, Users, Authenticated Users, Guests, Anonymous가 읽을 수 있으면 거절합니다. 나만 읽게 하려면: `icacls "$env:USERPROFILE\.seori\secrets.json" /inheritance:r /grant:r "${env:USERNAME}:F"`
-- 멈추기. Windows에는 SIGTERM이 없습니다. 데몬, 듀티 루프, 시간 단위 루프는 그 창이나 herdr의 seori 워크스페이스를 닫아서 멈춥니다(데몬은 감시 명령을 끄고 잠금을 푼 뒤 끝나고, 다시 뜨지 않습니다). 루프만 잠시 멈추려면 `seori duty stop`, `seori loop stop`을 씁니다. 밖에서 강제로 끈 데몬(작업 관리자, `taskkill`)은 죽은 것으로 보고 루프가 다시 띄웁니다.
+- 멈추기. Windows에는 SIGTERM이 없습니다. 데몬, 듀티 루프, 시간 단위 루프는 `seori down`(셋 다, 또는 `seori down duty|loop|daemon`)으로 멈춥니다. 모든 OS에서, 어느 창이나 터미널에서든 똑같이 동작합니다. 데몬은 감시 명령을 끄고 잠금을 푼 뒤 끝나고, 다시 뜨지 않습니다. 그 창에서 Ctrl-C를 누르거나 창이나 herdr의 seori 워크스페이스를 닫아도 멈춥니다. 끝내지 않고 루프만 잠시 멈추려면 `seori duty stop`, `seori loop stop`을 씁니다. 밖에서 강제로 끈 데몬(작업 관리자, `taskkill`)은 죽은 것으로 보고 루프가 다시 띄웁니다.
 - 감시 명령은 sh에서 돌기 때문에, 그 안의 경로는 슬래시로 씁니다(`C:/src/app/log.txt`). sh는 역슬래시를 이스케이프로 읽습니다.
 - 감시 명령을 멈출 때는 프로세스 트리 전체를 끕니다(Windows에는 프로세스 그룹이 없습니다). 죽은 데몬이 남긴 명령은 프로세스 트리와 시작 시각으로 찾아서, 감시를 다시 시작하기 전에 끕니다.
 - 부하. Windows에는 load average가 없어서, 자원 감시는 부하를 "모름"으로 보여 주고 부하로는 알리지 않습니다. 무거운 작업 자리(`seori heavy`)는 빈자리만 기다립니다. `df`가 없으면 남은 디스크는 볼륨에서 직접 읽습니다.
@@ -150,6 +150,8 @@ seori duty stop [--text WHY] | resume | status   비상 정지
 seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                             시간 단위: 백로그 정리, 놓친 일 점검, 다음 일 시작, 질문하기
 seori loop stop [--text WHY] | resume | status   비상 정지와 마지막 실행 결과
+seori down [duty|loop|daemon|all]            듀티 루프, 시간 단위 루프, 데몬 프로세스를 끝냅니다(기본 all). 모든 OS에서 동작하고,
+                                            30초 뒤에도 남은 것이 있으면 종료 코드 1
 seori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
 seori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
 seori backlog import <owner/repo> [--label seori] [--cwd DIR]   라벨 붙은 열린 이슈를 백로그로 가져옵니다
@@ -210,7 +212,7 @@ seori watch log <id|name> [-n N]             감시가 최근에 본 일
 - 말하는 쪽은 하나: 사람과 이야기하는 건 리드뿐입니다. 레인은 사람에게 할 말을 모두 리드에게 보냅니다. 듀티는 머지하지 않고 사람과 이야기하지 않습니다.
 - READY에는 증거가 필요: `seori ready`는 `--evidence` 링크가 하나도 없거나 최종 답이 비어 있으면 거절합니다. `seori done`은 READY가 아닌 레인을 닫지 않습니다. Done 줄이 있는 레인의 READY는 "다 했다"는 주장이고, seori가 닫기 전에 실제로 다시 확인합니다. [완료 조건(Done 줄)과 자동 닫기](#완료-조건done-줄과-자동-닫기)를 보세요.
 - 리드와 듀티 창은 방해하지 않고, 레인은 일하는 중에도 메시지를 받음: `seori send`는 먼저 herdr에게 상대 상태를 묻습니다. 쉬는 중이면 바로 전합니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 `working`으로 보이므로, 열려 있는 레인 창에는 일하는 중이어도 바로 전합니다. omp는 이를 작업 중 끼어든 지시(steer)로 받아 처리하고 하던 일을 이어 갑니다. 바쁜 리드나 듀티 창, 그리고 막혀 있는(blocked, 대화 상자가 열린) 창에 온 메시지는 `~/.seori/inbox/`에 모아 두고, 듀티 루프가 창이 받을 수 있을 때 한 번에 전합니다. 창 앞에 omp 대신 셸이 나와 있으면(omp가 꺼졌거나 Ctrl+Z로 멈춘 경우) 절대 입력하지 않습니다. 셸에 입력한 글자는 명령으로 실행되기 때문입니다.
-- 10분, 20분, 40분 알림: 10분 동안 보고가 없는 레인에는 `prompts/nudge.md`를 보냅니다. 창이 일하는 중(working)이어도 보냅니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 working으로 보이므로, working만으로는 진행으로 치지 않습니다. 알림은 작업 중 끼어든 지시(steer)로 들어갑니다. 20분에 한 번 더 보내고, 40분이 되면 리드에게 `[ESCALATE <key>]`를 보냅니다. 그래서 레인은 적어도 10분마다 진행 상황을 보고합니다. 새 보고가 들어오면 알림 횟수는 처음부터 다시 셉니다. 기다림(waiting)을 보고한 레인이나 막혀 있는(blocked) 레인은 건드리지 않습니다. READY 전에 창이 사라지면 `[LOST <key>]`로 알립니다.
+- 10분, 20분, 40분 알림: 10분 동안 보고가 없는 레인에는 `prompts/nudge.md`를 보냅니다. 창이 일하는 중(working)이어도 보냅니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 working으로 보이므로, working만으로는 진행으로 치지 않습니다. 알림은 작업 중 끼어든 지시(steer)로 들어갑니다. 20분에 한 번 더 보내고, 40분이 되면 리드에게 `[ESCALATE <key>]`를 보냅니다. 그래서 레인은 적어도 10분마다 진행 상황을 보고합니다. 새 보고가 들어오면 알림 횟수는 처음부터 다시 셉니다. 기다림(waiting)을 보고한 레인이나 막혀 있는(blocked) 레인은 건드리지 않습니다. 레인 창이 `blockedPromptMin`분(기본 10분) 넘게 막혀 있으면(도구 승인이나 질문이 기다리는 중) 대화 상자 하나마다 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내고, 그 창에는 아무것도 입력하지 않습니다. READY 전에 창이 사라지면 `[LOST <key>]`로 알립니다.
 - 머지 조건: `seori merge`는 PR의 지금 헤드 커밋에 대한 CLEAR 리뷰 기록(`~/.seori/receipts/`)을 요구합니다. 기록은 `seori review`만 남깁니다. 리뷰어는 새로 띄운 비대화형 omp이고, 저장소의 AGENTS.md, 스킬, 규칙, 확장을 읽지 않는 격리된 상태로 돕니다. `gh`로 PR을 읽고, 마지막 줄에 `VERDICT: CLEAR` 또는 `VERDICT: BLOCK`을 딱 한 번 씁니다. 이 줄이 없으면 기록도 없습니다. 그다음 `gh pr checks`에 체크가 하나 이상 있어야 하고, 모두 통과하거나 건너뛰어야 하며, 적어도 하나는 통과해야 합니다. 체크가 하나도 없으면 통과로 보지 않습니다. 마지막으로 verify-pr이 통과해야 합니다([verify-pr과 머지 관문](#verify-pr과-머지-관문) 참고). 리뷰 뒤에 푸시가 있으면 헤드가 바뀌므로 예전 기록은 쓸 수 없습니다.
 
 ## 완료 조건(Done 줄)과 자동 닫기
@@ -489,6 +491,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
   "repoIdentities": {},
   "closeAfterMin": 5,
   "progressEveryMin": 15,
+  "blockedPromptMin": 10,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20 },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
@@ -500,6 +503,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: 그 저장소 커밋에 있어야 할 Git 신원. verify-pr과 머지 관문이 이메일을 확인합니다. 저장소 이름은 대소문자를 무시하고 맞춥니다. 항목이 없는 저장소는 신원을 확인하지 않습니다 |
 | `closeAfterMin` | `5` | Done 줄이 있는 레인이 READY 뒤 몇 분 지나면 저절로 닫히는지(리드가 반대하지 않으면) |
 | `progressEveryMin` | `15` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지 |
+| `blockedPromptMin` | `10` | 레인 창에 대화 상자(herdr `blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
 | `supervision.defaults.wallMinutes` | `null` | 레인마다 걸린 시간 한도(분). `null`은 끔 |
 | `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |
 | `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔 |

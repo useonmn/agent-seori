@@ -67,8 +67,8 @@ export function installSkill(
 
 /**
  * `seori uninstall`: removes the skill link (or seori's own copy) and unlinks the `seori` command from bun's global bin.
- * $SEORI_HOME (secrets, messages, lanes) is removed only with `purge`. Panes `seori up` opened keep running: the
- * returned lines say how to stop them first.
+ * $SEORI_HOME (secrets, messages, lanes) is removed only with `purge`. The CLI runs `seori down` first; the lead and
+ * duty omp panes `seori up` opened keep running: the returned lines say to close that workspace.
  */
 export async function uninstall(
   opts: { src?: string; skillsDir?: string; home: string; purge: boolean; unlink?: (src: string) => Promise<string> },
@@ -97,7 +97,7 @@ export async function uninstall(
     rmSync(opts.home, { recursive: true, force: true });
     out.push(`removed ${opts.home}`);
   } else if (existsSync(opts.home)) out.push(`kept ${opts.home} (secrets, messages, lanes); remove it with seori uninstall --purge`);
-  out.push("Stop any seori up panes first: Ctrl-C in the duty, loop and daemon panes (on Windows, close them), then close the seori workspace in herdr.");
+  out.push("Close the seori workspace in herdr to end the lead and duty omp (seori down stopped its loops and daemon).");
   return out;
 }
 

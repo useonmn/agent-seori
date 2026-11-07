@@ -79,7 +79,7 @@ What differs on Windows:
 
 - Panes. herdr's panes run PowerShell or cmd, which have no `VAR=value command` syntax. seori passes its environment (`SEORI_HOME`, `SEORI_HERDR_SESSION`, `SEORI_MODEL`) to every pane it opens through `herdr --env`, and the command agents and loop panes use is plain `bun "<path>/src/cli.ts"`. The daemon pane runs `seori daemon-loop`, a restart loop written in bun rather than sh.
 - `secrets.json`. Windows has no file modes (every file reports 666), so seori reads the file's ACL and refuses it when Everyone, Users, Authenticated Users, Guests or Anonymous may read it. To make it private: `icacls "$env:USERPROFILE\.seori\secrets.json" /inheritance:r /grant:r "${env:USERNAME}:F"`.
-- Stopping. Windows has no SIGTERM: stop the daemon, duty and hourly loops by closing their panes or the seori workspace in herdr (the daemon then stops its watch commands and releases its lock, and nothing restarts it), or pause the loops with `seori duty stop` and `seori loop stop`. A daemon killed from outside (Task Manager, `taskkill`) counts as a crash and is restarted by the loop.
+- Stopping. Windows has no SIGTERM: stop the daemon, duty and hourly loops with `seori down` (all three, or `seori down duty|loop|daemon`), which works the same on every OS and from any pane or terminal; the daemon stops its watch commands and releases its lock, and nothing restarts it. Ctrl-C in their panes and closing the panes or the seori workspace in herdr stop them too. To pause the loops without ending them, use `seori duty stop` and `seori loop stop`. A daemon killed from outside (Task Manager, `taskkill`) counts as a crash and is restarted by the loop.
 - Watch commands run in sh, so write paths in them with forward slashes (`C:/src/app/log.txt`): sh treats a backslash as an escape.
 - Watch commands are stopped by killing their whole process tree (Windows has no process groups); one a crashed daemon left behind is found by its process tree and start time and killed before the watch starts again.
 - Load. Windows has no load average, so the host guard shows load as unknown and never alerts on it, and heavy slots (`seori heavy`) wait only for a free slot. Free disk comes from the volume itself when `df` is missing.
@@ -149,6 +149,8 @@ seori duty stop [--text WHY] | resume | status   kill switch
 seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                             hourly: sync backlog, audit missed work, start the next item, ask decisions
 seori loop stop [--text WHY] | resume | status   kill switch and last run
+seori down [duty|loop|daemon|all]            end the duty loop, hourly loop and daemon processes (default all) on any OS;
+                                            exit 1 if one still runs after 30 s
 seori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
 seori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
 seori backlog import <owner/repo> [--label seori] [--cwd DIR]   open labelled issues -> items
@@ -208,7 +210,7 @@ READY needs evidence. `seori ready` refuses without at least one `--evidence` li
 
 Lead and duty panes are not interrupted; lanes take messages mid-turn. `seori send` asks herdr for the pane's agent state first. An idle agent gets the message now. A lane in goal mode reads `working` until its goal ends, so an open lane's pane also gets the message while working: omp takes it as a steer, handles it and continues. A busy lead or duty pane, and any blocked pane (a dialog is open), has it queued in `~/.seori/inbox/`, and the duty loop delivers the queue as one message when the pane can read. A pane with no agent in front (omp exited, or was suspended with Ctrl+Z and left a shell in front) is never typed into, because text typed into a shell runs as a command; its messages stay queued until omp is back. `--to-shell` types one message into a plain shell on purpose and applies to that message only.
 
-Nudges at 10, 20 and 40 minutes. A lane that has not reported for 10 minutes gets `prompts/nudge.md` in its pane, even while its pane reads working: a goal-mode lane reads working until its goal ends, so working is not taken as progress, and the nudge arrives as a steer. At 20 it gets it again. At 40 the duty loop stops nudging and sends the lead `[ESCALATE <key>]`. Lanes therefore report a milestone at least every 10 minutes. A lane that reported `--status waiting` or whose pane is blocked is left alone, a new report resets the nudge count, and a lane whose pane disappears before READY is reported as `[LOST <key>]`.
+Nudges at 10, 20 and 40 minutes. A lane that has not reported for 10 minutes gets `prompts/nudge.md` in its pane, even while its pane reads working: a goal-mode lane reads working until its goal ends, so working is not taken as progress, and the nudge arrives as a steer. At 20 it gets it again. At 40 the duty loop stops nudging and sends the lead `[ESCALATE <key>]`. Lanes therefore report a milestone at least every 10 minutes. A lane that reported `--status waiting` or whose pane is blocked is left alone, a new report resets the nudge count, and a lane whose pane disappears before READY is reported as `[LOST <key>]`. A lane whose pane stays blocked (a tool approval or question waits) for `blockedPromptMin` minutes (default 10) is told to the lead once per dialog as `[BLOCKED-PROMPT <key>]`; nothing is typed into that pane.
 
 Merge needs a CLEAR receipt at the exact head, green checks and a passing verify-pr. `seori merge` reads the PR's head SHA with `gh` and requires a receipt for that SHA in `~/.seori/receipts/` with verdict `CLEAR`. Only `seori review` writes receipts. It runs a fresh non-interactive omp reviewer (optionally with `--model`) on `prompts/review.md` pinned to that SHA. The reviewer runs isolated, without the repository's AGENTS.md, skills, rules or extensions, reads the PR with `gh`, and must end with exactly one `VERDICT: CLEAR` or `VERDICT: BLOCK` line; without one, no receipt is written. Then `gh pr checks` must return at least one check, every check must pass or be skipped, and at least one must pass: an empty check list is never green. Last, verify-pr must pass (see [verify-pr and the merge gate](#verify-pr-and-the-merge-gate)). The merge is `gh pr merge --squash --match-head-commit <sha>`, so a push after the review changes the head and the old receipt no longer applies.
 
@@ -489,6 +491,7 @@ Compared with omo's `monitor`: the same kinds of sources, coalescing, wake budge
   "repoIdentities": {},
   "closeAfterMin": 5,
   "progressEveryMin": 15,
+  "blockedPromptMin": 10,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20 },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
@@ -500,6 +503,7 @@ Compared with omo's `monitor`: the same kinds of sources, coalescing, wake budge
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: the Git identity a repo's commits must carry; verify-pr and the merge gate check the email. Repo keys match without case. A repo with no entry is not identity-checked |
 | `closeAfterMin` | `5` | minutes after READY that a lane with a Done line closes on its own, unless the lead objects |
 | `progressEveryMin` | `15` | a lane with `--thread` gets its newest report posted at most this often (minutes) |
+| `blockedPromptMin` | `10` | minutes a lane's pane may show a dialog (herdr `blocked`) before the lead gets one `[BLOCKED-PROMPT <key>]`; fractions work (`0.5` is 30 s) |
 | `supervision.defaults.wallMinutes` | `null` | wall-clock ceiling per lane, in minutes; `null` is off |
 | `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off |
 | `supervision.defaults.costUsd` | `null` | cost ceiling per lane, in US dollars; `null` is off |

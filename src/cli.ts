@@ -7,6 +7,7 @@ import {
   startAgent, startLane, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
+import { down, DOWN_GROUPS, running, sleepUnless } from "./down.ts";
 import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
@@ -68,6 +69,8 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori status
   seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
   seori daemon-loop                            run the daemon and restart it when it crashes (seori up's daemon pane)
+  seori down [duty|loop|daemon|all]            stop the duty loop, hourly loop and daemon processes (default all) on any OS;
+                                              exit 1 if one is still running after 30 s
   seori install-skill [--skills-dir DIR]       link the seori-mode skill into omp (junction on Windows); install.sh/.ps1 run it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
   seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
@@ -158,9 +161,10 @@ export const LEAD_EXTENSION = join(import.meta.dir, "..", "extensions", "lead-ch
 /**
  * The daemon pane's restart loop (`seori daemon-loop`), in bun so it runs the same in any pane shell (sh, PowerShell,
  * cmd). A daemon that crashed (SIGKILL, OOM, a panic), exited to load a changed messengers.json, or was sent SIGHUP
- * (129) is back within about a second. Only a deliberate stop ends the loop: the daemon ending on Ctrl-C (130) or
- * kill/SIGTERM (143), or `stopping()` (the loop itself got Ctrl-C or SIGTERM; on Windows, Ctrl-C reaches it as the only
- * stop signal there is). Closing the pane hangs up the loop too, so nothing restarts then.
+ * (129) is back within about a second. Only a deliberate stop ends the loop: the daemon ending on Ctrl-C (130),
+ * kill/SIGTERM or `seori down` (143), or `stopping()` (the loop itself got Ctrl-C, SIGTERM or a `seori down` request;
+ * `seori down` is the stop that works the same on every OS). Closing the pane hangs up the loop too, so nothing
+ * restarts then.
  */
 export async function daemonLoop(
   start: () => Promise<number>,
@@ -175,8 +179,11 @@ export async function daemonLoop(
   }
 }
 
-async function runDaemonLoop(): Promise<number> {
+async function runDaemonLoop(root: string): Promise<number> {
   let stopping = false;
+  // `seori down` asks the loop and its daemon separately: the daemon cleans up and ends, the loop does not restart it.
+  const me = running(root, "daemon-loop");
+  me.stopped.addEventListener("abort", () => { stopping = true; });
   let child: ReturnType<typeof Bun.spawn> | undefined;
   // Ctrl-C reaches the daemon too: wait for its cleanup. A SIGTERM to the loop is passed on.
   const onInt = (): void => { stopping = true; };
@@ -194,6 +201,7 @@ async function runDaemonLoop(): Promise<number> {
   } finally {
     process.off("SIGINT", onInt);
     process.off("SIGTERM", onTerm);
+    me.release();
   }
 }
 
@@ -233,7 +241,10 @@ async function up(d: Deps, cwd: string): Promise<void> {
   await d.herdr.run(daemon.paneId, `${d.seoriCmd} daemon-loop`);
   // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
   // daemon is up; a daemon that does not come up is reported here and left to duty's outage alert.
-  if (!(await heartbeatSince(d.store.root, daemonStarted))) {
+  const beat = await heartbeatSince(d.store.root, daemonStarted, {
+    onSlow: () => console.error(`waiting for the messenger daemon in ${daemon.paneId} to start (a first start can be slow)...`),
+  });
+  if (!beat) {
     console.error(`WARNING: the messenger daemon in ${daemon.paneId} wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check that pane`);
   }
   await d.herdr.run(loop.paneId, `${d.seoriCmd} duty --interval 60`);
@@ -243,11 +254,30 @@ async function up(d: Deps, cwd: string): Promise<void> {
   );
 }
 
-const DAEMON_START_MS = 15_000;
+/**
+ * How long `seori up` waits for the daemon's first heartbeat. Measured on a Windows PC from `pane run` to the first
+ * heartbeat: about 4 s idle and up to 8.5 s while the lead and duty omp start; a first start after a reboot took over
+ * 15 s. A slow start is told once after DAEMON_SLOW_MS so `up` does not look hung.
+ */
+export const DAEMON_START_MS = 60_000;
+export const DAEMON_SLOW_MS = 15_000;
 
-/** Polls the daemon heartbeat until one written at or after `since` appears, for at most DAEMON_START_MS of real time. */
-async function heartbeatSince(root: string, since: number): Promise<boolean> {
-  for (let waited = 0; ; waited += 200) {
+export type HeartbeatWait = {
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly onSlow?: () => void;
+};
+
+/**
+ * Polls the daemon heartbeat until one written at or after `since` appears. Gives up DAEMON_START_MS after it began by
+ * the clock, not by counting sleeps, so slow reads on a loaded host do not stretch the wait.
+ */
+export async function heartbeatSince(root: string, since: number, w: HeartbeatWait = {}): Promise<boolean> {
+  const now = w.now ?? Date.now;
+  const sleep = w.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const start = now();
+  let told = false;
+  for (;;) {
     let beat: unknown;
     try {
       beat = JSON.parse(readFileSync(heartbeatPath(root), "utf8"));
@@ -255,8 +285,13 @@ async function heartbeatSince(root: string, since: number): Promise<boolean> {
       // not written yet
     }
     if (beat && typeof beat === "object" && "at" in beat && typeof beat.at === "number" && beat.at >= since) return true;
+    const waited = now() - start;
     if (waited >= DAEMON_START_MS) return false;
-    await Bun.sleep(200);
+    if (!told && waited >= DAEMON_SLOW_MS) {
+      told = true;
+      w.onSlow?.();
+    }
+    await sleep(200);
   }
 }
 
@@ -271,6 +306,12 @@ async function heartbeatSince(root: string, since: number): Promise<boolean> {
 async function daemon(root: string): Promise<number> {
   const stop = new AbortController();
   let caught: NodeJS.Signals | undefined;
+  // A `seori down` request ends it like a SIGTERM (143), which its restart loop treats as a deliberate stop.
+  const me = running(root, "daemon");
+  me.stopped.addEventListener("abort", () => {
+    caught ??= "SIGTERM";
+    stop.abort();
+  });
   const onSignal = (sig: NodeJS.Signals) => {
     caught = sig;
     stop.abort();
@@ -281,8 +322,10 @@ async function daemon(root: string): Promise<number> {
     await runDaemon(root, { signal: stop.signal });
   } finally {
     for (const s of signals) process.off(s, onSignal);
+    me.release();
   }
   if (!caught) return 0;
+  if (me.stopped.aborted) return 128 + osConstants.signals.SIGTERM;
   // Windows has no signal to re-raise (process.kill on itself just terminates it with status 1): report 128 + number.
   if (process.platform !== "win32") process.kill(process.pid, caught);
   // If the re-raised signal is not delivered before main exits, the shell convention still reports it: 128 + number.
@@ -582,11 +625,23 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       }
       if (x !== undefined) throw new Refusal(`unknown duty command ${x}\n\n${USAGE}`);
       const interval = Number(one(a, "interval") ?? "60") * 1000;
-      do {
+      const tick = async () => {
         for (const e of await dutyTick(d)) console.log(`DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`);
-        if (one(a, "once")) break;
-        await Bun.sleep(interval);
-      } while (true);
+      };
+      if (one(a, "once")) {
+        await tick();
+        return 0;
+      }
+      const me = running(d.store.root, "duty");
+      try {
+        while (!me.stopped.aborted) {
+          await tick();
+          await sleepUnless(interval, me.stopped);
+        }
+      } finally {
+        me.release();
+      }
+      console.log("DUTY ended by seori down");
       return 0;
     }
     case "loop": {
@@ -626,18 +681,25 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         !(opts.maxLoad === undefined || (Number.isFinite(opts.maxLoad) && opts.maxLoad > 0))) {
         throw new Refusal("--interval and --max-load must be finite positive numbers; --max-lanes and --max-starts whole numbers >= 0");
       }
-      do {
-        try {
-          const run = await loopTick(d, opts);
-          console.log(run.skipped ? `LOOP skipped: ${run.skipped}` : `LOOP started=${run.started.length} findings=${run.findings.length} asked=${run.asked.length}`);
-        } catch (e) {
-          console.error(`LOOP ERROR ${e instanceof Error ? e.message : String(e)}`);
-          if (one(a, "once")) return 1;
-        }
-        if (one(a, "once")) break;
-        opts.force = false;
-        await Bun.sleep(msUntilNext(d, interval));
-      } while (true);
+      const once = one(a, "once") === "true";
+      const me = once ? undefined : running(d.store.root, "loop");
+      try {
+        do {
+          try {
+            const run = await loopTick(d, opts);
+            console.log(run.skipped ? `LOOP skipped: ${run.skipped}` : `LOOP started=${run.started.length} findings=${run.findings.length} asked=${run.asked.length}`);
+          } catch (e) {
+            console.error(`LOOP ERROR ${e instanceof Error ? e.message : String(e)}`);
+            if (once) return 1;
+          }
+          if (!me) break;
+          opts.force = false;
+          await sleepUnless(msUntilNext(d, interval), me.stopped);
+        } while (!me.stopped.aborted);
+      } finally {
+        me?.release();
+      }
+      if (me) console.log("LOOP ended by seori down");
       return 0;
     }
     case "backlog": {
@@ -716,13 +778,22 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "daemon":
       return daemon(d.store.root);
     case "daemon-loop":
-      return runDaemonLoop();
+      return runDaemonLoop(d.store.root);
+    case "down": {
+      const group = DOWN_GROUPS[x ?? "all"];
+      if (!group) throw new Refusal(`seori down takes duty, loop, daemon or all\n\n${USAGE}`);
+      const r = await down(d.store.root, group);
+      console.log(r.lines.join("\n"));
+      return r.ok ? 0 : 1;
+    }
     case "install-skill": {
       const r = installSkill(SEORI_SRC, one(a, "skills-dir") ?? defaultSkillsDir());
       console.log(`${r.ok ? "SKILL" : "WARNING"} ${r.note}`);
       return r.ok ? 0 : 1;
     }
     case "uninstall": {
+      // Its loops and daemon run from this checkout: stop them before their command goes away.
+      console.log((await down(d.store.root, DOWN_GROUPS["all"]!)).lines.join("\n"));
       const lines = await uninstall({ skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, purge: a.flags.has("purge") });
       for (const line of lines) console.log(line);
       return 0;
