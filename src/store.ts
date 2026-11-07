@@ -37,6 +37,8 @@ export type Lane = {
   ceilings?: Ceilings;
   /** Once-per-change alert marks (ceiling reached, stalled, ...): key -> when it was raised. */
   alerts?: Record<string, number>;
+  /** When duty first saw the lane's pane `blocked` (a dialog open) in the current spell; cleared once it is not. */
+  blockedSince?: number;
   /** The last report posted to `thread`, and when. */
   posted?: { at: number; text: string };
   log: { at: number; kind: LaneLogKind; text: string }[];
@@ -86,7 +88,8 @@ export type Item = {
   log: { at: number; kind: "add" | "start" | "reopen" | "done" | "drop" | "ask" | "remind" | "decide"; text: string }[];
 };
 
-export type HostLoad = { load1: number; cores: number; memFreePct: number };
+/** `load1`: the 1-minute load average, null where the OS has none (Windows reports 0 always: unknown, not idle). */
+export type HostLoad = { load1: number | null; cores: number; memFreePct: number };
 
 export type LoopRun = {
   at: number;

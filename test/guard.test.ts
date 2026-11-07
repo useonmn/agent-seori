@@ -65,7 +65,7 @@ describe("sampleHost", () => {
     const { d, host } = setup();
     host.df = { code: 1, stdout: "", stderr: "df: /x: No such file or directory\n" };
     host.panes = { code: 1, stdout: "", stderr: "herdr: server not running" };
-    const s = await sampleHost(d);
+    const s = await sampleHost(d, "linux");
     expect(s.diskFreeGb).toBeUndefined();
     expect(s.panes).toBeUndefined();
     expect(s.unreadable).toEqual([

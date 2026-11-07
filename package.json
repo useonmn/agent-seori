@@ -1,7 +1,7 @@
 {
   "name": "seori",
   "version": "0.1.0",
-  "description": "A proactive multi-session coding-agent harness in ~1,600 lines, running on herdr + omp.",
+  "description": "A proactive multi-session coding-agent harness running on herdr + omp.",
   "type": "module",
   "license": "MIT",
   "bin": {

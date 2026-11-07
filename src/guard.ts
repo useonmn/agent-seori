@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type GuardThresholds, type SeoriConfig } from "./config.ts";
 import { tellLead, type Deps, type DutyEvent } from "./harness.ts";
@@ -10,10 +10,11 @@ import { DeliveryUncertain, HerdrError } from "./herdr.ts";
 /**
  * One reading of the host. `loadPct` is the 1-minute load per core in percent (100 = every core busy). Disk is the free
  * space on $SEORI_HOME's volume. A figure that could not be read is undefined, with the reason in `unreadable`; it is
- * never guessed as 0 or as fine.
+ * never guessed as 0 or as fine. `loadPct` is undefined where the OS has no load average (Windows): shown as unknown,
+ * it never alerts.
  */
 export type HostSample = {
-  readonly loadPct: number;
+  readonly loadPct?: number;
   readonly memFreePct: number;
   readonly diskFreeGb?: number;
   readonly panes?: number;
@@ -54,15 +55,23 @@ export function parsePaneCount(stdout: string): number | undefined {
  * Reads the host: load and memory from Deps.host, free disk of $SEORI_HOME's volume from `df -k -P`, and the live pane
  * count from `herdr pane list` (in seori's herdr session when SEORI_HERDR_SESSION is set, as Herdr does).
  */
-export async function sampleHost(d: Deps): Promise<HostSample> {
+export async function sampleHost(d: Deps, platform: string = process.platform): Promise<HostSample> {
   const host = d.host();
   const unreadable: string[] = [];
 
   let diskFreeGb: number | undefined;
-  const df = await d.exec("df", ["-k", "-P", d.store.root]);
+  const df = await d.exec("df", ["-k", "-P", d.store.root]).catch((e: unknown) => ({ code: 127, stdout: "", stderr: e instanceof Error ? e.message : String(e) }));
   const kb = df.code === 0 ? parseDfAvailableKb(df.stdout) : undefined;
-  if (kb === undefined) unreadable.push(`disk free unreadable (df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)})`);
-  else diskFreeGb = kb / KB_PER_GB;
+  if (kb !== undefined) diskFreeGb = kb / KB_PER_GB;
+  else if (platform === "win32") {
+    // Windows usually has no df (Git for Windows ships one, not always on PATH): the volume's free space comes from statfs.
+    try {
+      const fs = statfsSync(d.store.root);
+      diskFreeGb = (fs.bavail * fs.bsize) / 1024 / KB_PER_GB;
+    } catch (e) {
+      unreadable.push(`disk free unreadable (statfs: ${e instanceof Error ? e.message : String(e)})`);
+    }
+  } else unreadable.push(`disk free unreadable (df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)})`);
 
   let panes: number | undefined;
   const session = process.env["SEORI_HERDR_SESSION"];
@@ -71,7 +80,7 @@ export async function sampleHost(d: Deps): Promise<HostSample> {
   if (panes === undefined) unreadable.push(`panes unreadable (herdr pane list: ${pl.code === 0 ? "unexpected output" : why(pl.stderr, pl.stdout)})`);
 
   return {
-    loadPct: host.cores > 0 ? Math.round((host.load1 / host.cores) * 100) : 0,
+    ...(host.load1 !== null ? { loadPct: host.cores > 0 ? Math.round((host.load1 / host.cores) * 100) : 0 } : {}),
     memFreePct: host.memFreePct,
     ...(diskFreeGb !== undefined ? { diskFreeGb } : {}),
     ...(panes !== undefined ? { panes } : {}),
@@ -107,7 +116,7 @@ export const canLaunchLine = (r: { ok: boolean; reasons: readonly string[] }): s
 /** One line with every figure, e.g. `load 40% per core, memory free 52%, disk free 120 GB, panes 7`. */
 export function hostLine(s: HostSample): string {
   return [
-    `load ${s.loadPct}% per core`,
+    `load ${s.loadPct === undefined ? "unknown" : `${s.loadPct}% per core`}`,
     `memory free ${s.memFreePct}%`,
     `disk free ${s.diskFreeGb === undefined ? "unknown" : gb(s.diskFreeGb)}`,
     `panes ${s.panes ?? "unknown"}`,
@@ -156,8 +165,9 @@ export function readGuardState(root: string): GuardState | undefined {
  * unreadable figure never alerts.
  */
 export function guardVerdict(s: HostSample, t: GuardThresholds, wasLoadHigh: boolean): { loadHigh: boolean; reasons: string[] } {
-  const loadHigh = wasLoadHigh ? s.loadPct >= t.loadOkPct : s.loadPct > t.loadAlertPct;
-  const load = loadHigh ? [wasLoadHigh && s.loadPct <= t.loadAlertPct ? `load ${s.loadPct}% per core, not yet under ${t.loadOkPct}%` : `load ${s.loadPct}% per core > ${t.loadAlertPct}%`] : [];
+  const pct = s.loadPct;
+  const loadHigh = pct === undefined ? false : wasLoadHigh ? pct >= t.loadOkPct : pct > t.loadAlertPct;
+  const load = loadHigh ? [wasLoadHigh && pct! <= t.loadAlertPct ? `load ${pct}% per core, not yet under ${t.loadOkPct}%` : `load ${pct}% per core > ${t.loadAlertPct}%`] : [];
   return { loadHigh, reasons: [...load, ...holdReasons(s, t)] };
 }
 

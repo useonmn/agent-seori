@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Installs seori (the `seori` CLI) and the seori-mode skill for omp.
 # Usage: curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
+# Uninstall: bash install.sh --uninstall [--purge]   (or: seori uninstall [--purge]); --purge also deletes SEORI_HOME
+# Windows: use install.ps1 (PowerShell) instead.
 # Needs: git, bun 1.3+. Checks (never installs): herdr, herdr's omp integration, omp.
 # Optional env:
 #   SEORI_SRC     where the checkout lives (default ~/.seori/src)
@@ -15,6 +17,12 @@ src="${SEORI_SRC:-$home/src}"
 skills="${SKILLS_DIR:-$HOME/.omp/agent/skills}"
 
 command -v bun >/dev/null || { echo "bun 1.3 or newer is required: https://bun.sh" >&2; exit 1; }
+
+if [ "${1:-}" = "--uninstall" ]; then
+  shift
+  [ -f "$src/src/cli.ts" ] || { echo "no seori checkout at $src (set SEORI_SRC)" >&2; exit 1; }
+  SEORI_HOME="$home" exec bun "$src/src/cli.ts" uninstall --skills-dir "$skills" "$@"
+fi
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 
 # seori's state holds secrets.json and the owner's messages: only this user may read it.
@@ -66,14 +74,13 @@ warn() {
   warnings=$((warnings + 1))
 }
 
-mkdir -p "$skills"
-link="$skills/seori-mode"
-if [ -e "$link" ] && [ ! -L "$link" ]; then
-  warn "$link exists and is not a link; leaving it alone (move it away and run install.sh again to install the skill)"
-  skill_note="NOT linked ($link is a real directory)"
+# The skill link is made by seori itself (src/install.ts): a symlink here, a junction on Windows (Git Bash's ln would
+# copy), and an old link or seori copy is replaced so a reinstall never keeps a stale skill.
+if skill_out="$(bun "$src/src/cli.ts" install-skill --skills-dir "$skills")"; then
+  skill_note="${skill_out#SKILL }"
 else
-  ln -sfn "$src/skills/seori-mode" "$link"
-  skill_note="$link -> $src/skills/seori-mode"
+  warn "${skill_out#WARNING }"
+  skill_note="NOT linked (see the warning above)"
 fi
 
 # secrets.json, messengers.json and config.json are the owner's: never created or overwritten here.

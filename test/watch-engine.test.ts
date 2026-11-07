@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { type EngineDeps, MAX_LINE_BYTES, type PaneState, readLines, WatchEngine } from "../src/watch/engine.ts";
 import { type NewWatch, type Watch, WatchStore } from "../src/watch/store.ts";
+import { BG_PID, groupAlive, killGroupNow, spawnGroup } from "./helpers/proc.ts";
 
 /** Polls a condition the engine reaches asynchronously; fails with `what` rather than hanging. */
-async function until(what: string, cond: () => boolean, ms = 4_000): Promise<void> {
+async function until(what: string, cond: () => boolean | Promise<boolean>, ms = 4_000): Promise<void> {
   const end = Date.now() + ms;
-  while (!cond()) {
+  while (!(await cond())) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await Bun.sleep(5);
   }
@@ -51,6 +51,8 @@ function setup(overrides: Partial<EngineDeps> = {}) {
   return { root, store, clock, delivered, texts, engine, add };
 }
 
+/** A path as one sh word: forward slashes (sh eats the backslashes of a Windows path) in single quotes. */
+const shArg = (path: string): string => `'${path.replaceAll("\\", "/")}'`;
 const cmd = (command: string, filter?: string) => ({ kind: "command" as const, command, cwd: tmpdir(), filter });
 const alive = (pid: number): boolean => {
   try {
@@ -110,7 +112,7 @@ describe("command watches", () => {
   test("engine stop kills the whole process group and leaves the watch active", async () => {
     const t = setup();
     const pidFile = join(t.root, "bg.pid");
-    const w = t.add({ name: "bg", source: cmd(`sleep 30 & echo $! > ${pidFile}; wait`) });
+    const w = t.add({ name: "bg", source: cmd(`sleep 30 & echo ${BG_PID} > ${shArg(pidFile)}; wait`) });
     const e = t.engine();
     e.start();
     await until("background pid", () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
@@ -124,7 +126,7 @@ describe("command watches", () => {
   test("`seori watch stop` (status changed on disk) kills the running command", async () => {
     const t = setup();
     const pidFile = join(t.root, "bg.pid");
-    const w = t.add({ name: "bg", source: cmd(`sleep 30 & echo $! > ${pidFile}; wait`) });
+    const w = t.add({ name: "bg", source: cmd(`sleep 30 & echo ${BG_PID} > ${shArg(pidFile)}; wait`) });
     t.engine().start();
     await until("background pid", () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
     const pid = Number(readFileSync(pidFile, "utf8").trim());
@@ -137,12 +139,12 @@ describe("command watches", () => {
   test("a process group left by a crashed daemon is killed before the command is spawned again", async () => {
     const t = setup();
     const spawnedAt = Date.now();
-    const orphan = spawn("sh", ["-c", "sleep 30 & wait"], { detached: true, stdio: "ignore" });
+    const orphan = spawnGroup("sleep 30 & wait");
     const pgid = orphan.pid as number;
     const w = t.add({ name: "srv", source: cmd("sleep 30") });
     t.store.save({ ...(t.store.get(w.id) as Watch), pgid, spawnedAt });
     t.engine().start();
-    await until("orphan group killed", () => !alive(-pgid));
+    await until("orphan group killed", async () => !(await groupAlive(pgid, spawnedAt)), 10_000);
     await until("new group recorded", () => {
       const cur = t.store.get(w.id);
       return cur?.pgid !== undefined && cur.pgid !== pgid;
@@ -152,7 +154,8 @@ describe("command watches", () => {
 
   test("a recorded group whose processes predate the recorded spawn (pid reuse) is left alone", async () => {
     const t = setup();
-    const other = spawn("sh", ["-c", "sleep 30"], { detached: true, stdio: "ignore" });
+    const since = Date.now() - 2_000;
+    const other = spawnGroup("sleep 30");
     const pgid = other.pid as number;
     try {
       const w = t.add({ name: "srv", source: cmd("sleep 30") });
@@ -165,7 +168,7 @@ describe("command watches", () => {
       });
       expect(alive(pgid)).toBe(true);
     } finally {
-      other.kill("SIGKILL");
+      await killGroupNow(other, since);
     }
   });
 
@@ -414,7 +417,7 @@ describe("lifecycle", () => {
   const chatty = (root: string) => {
     const file = join(root, "count");
     const lines = (): number => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) || 0 : 0);
-    const source = cmd(`i=0; while true; do i=$((i+1)); echo $i; echo $i > ${file}; sleep 0.08; done`);
+    const source = cmd(`i=0; while true; do i=$((i+1)); echo $i; echo $i > ${shArg(file)}; sleep 0.08; done`);
     const linesAfter = async (n: number): Promise<void> => {
       const from = lines();
       await until(`${n} more lines`, () => lines() >= from + n);

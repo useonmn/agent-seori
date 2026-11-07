@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { IS_WINDOWS, jobFor, killTreeWindows, shPath, treeOf, windowsProcesses, type ProcessJob } from "../platform.ts";
 import { lstatSync, readdirSync, type Stats, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
@@ -360,12 +361,23 @@ export function readLines(stream: Readable, onLine: (line: string) => void): Pro
   return promise;
 }
 
-/** Signals the whole process group: the command runs under `sh -c`, and pipelines or background jobs must die with it. */
-function killGroup(p: ChildProcess, signal: NodeJS.Signals): void {
-  if (p.pid !== undefined) killPgid(p.pid, signal);
+/**
+ * Signals the whole process group: the command runs under `sh -c`, and pipelines or background jobs must die with it.
+ * Windows has no process groups: the command's process tree (processes started since `spawnedAt`) is force-killed.
+ */
+async function killGroup(p: ChildProcess, signal: NodeJS.Signals, spawnedAt: number, job?: ProcessJob): Promise<void> {
+  // Windows: the command's Job Object holds everything it started (see jobFor); the tree kill is the fallback.
+  if (job) return job.kill();
+  if (p.pid !== undefined) await killPgid(p.pid, signal, spawnedAt);
 }
 
-function killPgid(pgid: number, signal: NodeJS.Signals | 0): boolean {
+/** True when the group (Windows: the tree) was there; signal 0 only checks. */
+async function killPgid(pgid: number, signal: NodeJS.Signals | 0, spawnedAt: number): Promise<boolean> {
+  if (IS_WINDOWS) {
+    const since = spawnedAt - SPAWN_CLOCK_SLACK_MS;
+    if (signal === 0) return treeOf(await windowsProcesses(pgid), pgid, since).length > 0;
+    return (await killTreeWindows(pgid, since)) > 0;
+  }
   try {
     process.kill(-pgid, signal);
     return true;
@@ -382,6 +394,8 @@ function killPgid(pgid: number, signal: NodeJS.Signals | 0): boolean {
  * reliably.
  */
 async function isOurGroup(pgid: number, spawnedAt: number): Promise<boolean> {
+  // Windows: the recorded root and its descendants, each started no earlier than the spawn record (see treeOf).
+  if (IS_WINDOWS) return treeOf(await windowsProcesses(pgid), pgid, spawnedAt - SPAWN_CLOCK_SLACK_MS).length > 0;
   const p = Bun.spawn(["ps", "-A", "-o", "pgid=", "-o", "etime="], { stdout: "pipe", stderr: "ignore" });
   const out = await new Response(p.stdout).text();
   await p.exited;
@@ -420,10 +434,10 @@ async function reapOrphan(ctx: RunnerCtx, saved: Watch): Promise<void> {
   const { pgid, spawnedAt } = saved;
   if (pgid === undefined) return;
   if (spawnedAt !== undefined && (await isOurGroup(pgid, spawnedAt))) {
-    killPgid(pgid, "SIGTERM");
+    await killPgid(pgid, "SIGTERM", spawnedAt);
     const deadline = Date.now() + ctx.timing.killGraceMs;
-    while (killPgid(pgid, 0) && Date.now() < deadline) await Bun.sleep(20);
-    killPgid(pgid, "SIGKILL");
+    while (!IS_WINDOWS && (await killPgid(pgid, 0, spawnedAt)) && Date.now() < deadline) await Bun.sleep(20);
+    await killPgid(pgid, "SIGKILL", spawnedAt);
     ctx.log({ ev: "orphan-killed", pgid });
   }
   await ctx.update((w) => (w.pgid === pgid ? withoutGroup(w) : w));
@@ -446,6 +460,8 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
   let flushTimer: Timer | undefined;
   let backoffTimer: Timer | undefined;
   let startedAt = 0;
+  let childSpawnedAt = 0;
+  let childJob: ProcessJob | undefined;
 
   const flush = async (): Promise<void> => {
     clearTimeout(flushTimer);
@@ -471,8 +487,12 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
     startedAt = ctx.deps.now();
     // Wall clock, not deps.now: it is compared with process ages ps reports.
     const spawnedAt = Date.now();
-    const p = spawn("sh", ["-c", src.command], { cwd: src.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    childSpawnedAt = spawnedAt;
+    // detached on Windows would open a console window and gives no process group; the tree is killed there instead.
+    const p = spawn(shPath(), ["-c", src.command], { cwd: src.cwd, detached: !IS_WINDOWS, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     child = p;
+    const job = IS_WINDOWS && p.pid !== undefined ? jobFor(p.pid) : undefined;
+    childJob = job;
     ctx.log({ ev: "spawned", pid: p.pid });
     const pgid = p.pid;
     // detached: the command leads its own process group, so its pid is the group id.
@@ -485,7 +505,8 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
       const r = await outcome.promise;
       // A background job of the command may still hold the pipes; give them a moment, then take the group down.
       await Promise.race([drained, Bun.sleep(200)]);
-      killGroup(p, "SIGKILL");
+      await killGroup(p, "SIGKILL", spawnedAt, job);
+      job?.close();
       child = undefined;
       if (pgid !== undefined) await ctx.update((w) => (w.pgid === pgid ? withoutGroup(w) : w));
       if (!stopped) await exited(r.code, r.signal, r.error);
@@ -532,8 +553,9 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
       // `stopped` is set, so nothing spawns from here on: the child (if any) is the last one; with none, `finished`
       // is the orphan check still in flight.
       const p = child;
-      if (p) killGroup(p, "SIGTERM");
-      const hard = p ? setTimeout(() => killGroup(p, "SIGKILL"), ctx.timing.killGraceMs) : undefined;
+      const job = childJob;
+      if (p) await killGroup(p, "SIGTERM", childSpawnedAt, job);
+      const hard = p ? setTimeout(() => void killGroup(p, "SIGKILL", childSpawnedAt, job), ctx.timing.killGraceMs) : undefined;
       await finished;
       clearTimeout(hard);
     },

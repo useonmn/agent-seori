@@ -77,7 +77,7 @@ export class World {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "consumer.lock");
     if (holder === "none") return rmSync(path, { force: true });
-    const pid = holder === "alive" ? process.pid : Bun.spawnSync(["true"]).pid;
+    const pid = holder === "alive" ? process.pid : Bun.spawnSync([process.execPath, "-e", ""]).pid;
     writeFileSync(path, JSON.stringify({ pid, host: hostname(), at: this.clock }));
   }
 
@@ -157,9 +157,10 @@ export class World {
   };
 
   deps(): Deps {
+    const root = mkdtempSync(join(tmpdir(), "seori-test-"));
     return {
-      store: new Store(mkdtempSync(join(tmpdir(), "seori-test-"))),
-      herdr: new Herdr(this.exec, ""),
+      store: new Store(root),
+      herdr: new Herdr(this.exec, "", join(root, "messages")),
       exec: this.exec,
       now: () => this.clock,
       agentCmd: "omp",

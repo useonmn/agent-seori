@@ -6,6 +6,7 @@
  * recorded under another step is refused. Writes hold a lock file and are fsynced before they are acknowledged.
  */
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { fsyncDir } from "./platform.ts";
 import { dirname, join } from "node:path";
 
 import { Refusal } from "./harness.ts";
@@ -114,14 +115,7 @@ export function recordCheckpoint(root: string, key: string, input: CheckpointInp
       closeSync(fd);
     }
     // A new journal's directory entry must be durable too, or a crash could lose an acknowledged first checkpoint.
-    if (created) {
-      const dir = openSync(dirname(path), "r");
-      try {
-        fsyncSync(dir);
-      } finally {
-        closeSync(dir);
-      }
-    }
+    if (created) fsyncDir(dirname(path));
     return { checkpoint, unchanged: false };
   } finally {
     release();

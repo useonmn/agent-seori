@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { readableByOthers } from "../platform.ts";
 import { SendUncertain } from "./adapter.ts";
 
 // Shared by the Telegram, Slack and Discord adapters: secrets, durable cursors, text splitting, ids, and an HTTP call
@@ -15,14 +16,18 @@ export function secretsPath(root: string): string {
 /**
  * One secret for one messenger: the environment variable wins (tests, one-off runs), then secrets.json. Missing is a
  * configuration error naming both places. A secrets.json readable by group or others is refused, so tokens never sit
- * world-readable without the owner noticing.
+ * world-readable without the owner noticing (on Windows, by its ACL: see readableByOthers).
  */
-export function secret(root: string, source: string, key: string, envName: string, env: Record<string, string | undefined> = process.env): string {
+export function secret(
+  root: string, source: string, key: string, envName: string, env: Record<string, string | undefined> = process.env,
+  othersCanRead: (path: string) => string | undefined = readableByOthers,
+): string {
   const fromEnv = env[envName];
   if (fromEnv) return fromEnv;
   const path = secretsPath(root);
   if (existsSync(path)) {
-    if ((statSync(path).mode & 0o077) !== 0) throw new Error(`${path} must not be readable by others (chmod 600 ${path})`);
+    const exposed = othersCanRead(path);
+    if (exposed) throw new Error(exposed);
     const all = JSON.parse(readFileSync(path, "utf8")) as Secrets;
     const value = all[source]?.[key];
     if (value) return value;

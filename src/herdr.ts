@@ -1,3 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 // Thin, typed wrapper over the herdr CLI. Every call goes through one injectable `Exec`,
 // so tests can replace herdr with a recorder and the e2e test can point at an isolated session.
 
@@ -51,17 +56,36 @@ const ENTER_ATTEMPTS = 3;
 
 const SHELLS: ReadonlySet<string> = new Set([
   "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox",
+  "cmd",
 ]);
-const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "").split("/").pop()!.toLowerCase();
+// Windows reports `C:\...\pwsh.exe` or `bash.exe`: split on either separator and drop `.exe`.
+const baseName = (value: unknown): string =>
+  String(value ?? "").replace(/^-/, "").split(/[\\/]/).pop()!.toLowerCase().replace(/\.exe$/, "");
 // A shell runs a command (not a prompt) only with an explicit command flag: -c, also inside combined short flags such
 // as -lc, or PowerShell's -Command/-File/-EncodedCommand (whole words only: its other long flags contain a 'c'). Any other operand (a script path, --rcfile FILE, -o OPT) stays held.
+// cmd.exe runs a command with /c (and keeps its prompt with /k).
 const runsCommand = (shell: string, arg: string): boolean =>
-  shell === "pwsh" || shell === "powershell"
-    ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg)
-    : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
+  shell === "cmd"
+    ? /^\/c$/i.test(arg)
+    : shell === "pwsh" || shell === "powershell"
+      ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg)
+      : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
 // PowerShell's -NoExit (any prefix it accepts: -noe, -noex, -noexi, -noexit, one or two dashes) keeps an interactive
 // prompt after the command runs, so that shell is held.
-const keepsPrompt = (shell: string, arg: string): boolean => (shell === "pwsh" || shell === "powershell") && /^--?noe(x(i(t)?)?)?$/i.test(arg);
+const keepsPrompt = (shell: string, arg: string): boolean =>
+  ((shell === "pwsh" || shell === "powershell") && /^--?noe(x(i(t)?)?)?$/i.test(arg)) || (shell === "cmd" && /^\/k$/i.test(arg));
+
+/**
+ * The typed fallback sends one line (a multi-line paste swallows its Enter). Text whose layout matters (a code fence or
+ * an indented line) would be mangled by joining its lines, so it is written to a file and the line points there.
+ */
+export function fallbackLine(text: string, spill: (body: string) => string): string {
+  const body = text.trim();
+  if (!body.includes("\n")) return body;
+  if (!/```|\n[ \t]+\S/.test(body)) return body.replace(/\s*\n\s*/g, " / ");
+  const first = body.split("\n", 1)[0]!.trim();
+  return `[seori] a multi-line message is in ${spill(`${body}\n`)}; read that file whole. It starts: ${first}`;
+}
 
 /**
  * True when `pane process-info` shows an interactive shell in the pane's foreground process group, or cannot be read.
@@ -89,7 +113,16 @@ export class Herdr {
   constructor(
     private readonly exec: Exec = spawnExec,
     private readonly session: string | undefined = process.env["SEORI_HERDR_SESSION"],
+    /** Where the typed fallback writes a multi-line message whose layout matters (see fallbackLine). */
+    private readonly spillDir: string = join(process.env["SEORI_HOME"] ?? join(homedir(), ".seori"), "messages"),
   ) {}
+
+  private spill(body: string): string {
+    mkdirSync(this.spillDir, { recursive: true });
+    const path = join(this.spillDir, `${Date.now()}-${randomUUID().slice(0, 8)}.md`);
+    writeFileSync(path, body);
+    return path;
+  }
 
   private async call(argv: readonly string[]): Promise<Record<string, unknown>> {
     const full = this.session ? ["--session", this.session, ...argv] : [...argv];
@@ -211,6 +244,8 @@ export class Herdr {
    * message may already be in the pane (#89); the caller must not send it again as is.
    */
   async deliver(paneId: string, text: string): Promise<boolean> {
+    // A dialog (a tool approval) may have opened since the caller read the status: an Enter would answer it.
+    if ((await this.paneAgent(paneId)).status === "blocked") return false;
     if (await this.shellInForeground(paneId)) return false;
     try {
       await this.call(["agent", "prompt", paneId, text]);
@@ -224,13 +259,14 @@ export class Herdr {
       // agent_not_ready also covers an agent that exited and left a shell in front: typing would run the text there.
       // Re-read right before typing (#66): only a pane that still has an agent gets keystrokes.
       const { status: st, agent } = await this.paneAgent(paneId);
-      if (st === "shell" || st === "gone") return false;
+      // `blocked`: a dialog is open; typed text would go into it and the Enter could approve it. Kept queued.
+      if (st === "shell" || st === "gone" || st === "blocked") return false;
       const front = await this.foreground(paneId);
       if (front.shell) return false;
       // A multi-line paste swallows the Enter that follows it, so type the message as one line.
       // A failed send-text may still have typed some or all of it: ambiguous as well.
       try {
-        await this.call(["pane", "send-text", paneId, text.trim().replace(/\s*\n\s*/g, " / ")]);
+        await this.call(["pane", "send-text", paneId, fallbackLine(text, (body) => this.spill(body))]);
       } catch (err) {
         throw new DeliveryUncertain(err, false);
       }

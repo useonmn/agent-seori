@@ -49,7 +49,7 @@ export const defaultDeps = (): Deps => {
     now: Date.now,
     agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
     seoriCmd: process.env["SEORI_CMD"] ?? defaultSeoriCmd(store.root, process.env),
-    host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
+    host: () => ({ load1: process.platform === "win32" ? null : (loadavg()[0] ?? 0), cores: cpus().length, memFreePct: memFreePct() }),
     model: process.env["SEORI_MODEL"] || undefined,
     notify: async (config, target, text) => {
       await adapterFor(config, store.root).send(target, text);
@@ -57,13 +57,25 @@ export const defaultDeps = (): Deps => {
   };
 };
 
+/** What selects this seori: its home, the herdr session it drives and the model it starts omp with. */
+const seoriVars = (home: string, env: Record<string, string | undefined>): [string, string][] =>
+  ([["SEORI_HOME", home], ["SEORI_HERDR_SESSION", env["SEORI_HERDR_SESSION"]], ["SEORI_MODEL", env["SEORI_MODEL"]]] as [string, string | undefined][])
+    .filter((kv): kv is [string, string] => Boolean(kv[1]));
+
+/** The environment every pane seori opens gets through herdr's --env (see seoriVars). */
+export function paneEnv(home: string, env: Record<string, string | undefined> = process.env): Record<string, string> {
+  return Object.fromEntries(seoriVars(home, env));
+}
+
 /**
- * How agents and loop panes call seori. Panes do not inherit this process's env, so the command carries what selects
- * this seori: its home, the herdr session it drives and the model it starts omp with (the hourly loop starts lanes).
+ * How agents and loop panes call seori. On macOS/Linux the command carries seoriVars as an env prefix, so it also works
+ * in a shell seori did not open (a lead started by hand). Windows pane shells (PowerShell, cmd) have no env-prefix
+ * syntax: there the command is plain `bun "<cli>"` (forward slashes, double quotes: valid in PowerShell, cmd and Git
+ * Bash) and the variables come from the pane environment (paneEnv).
  */
-export function defaultSeoriCmd(home: string, env: Record<string, string | undefined>): string {
-  const vars: [string, string | undefined][] = [["SEORI_HOME", home], ["SEORI_HERDR_SESSION", env["SEORI_HERDR_SESSION"]], ["SEORI_MODEL", env["SEORI_MODEL"]]];
-  const prefix = vars.filter(([, v]) => v).map(([k, v]) => `${k}=${shq(v!)}`).join(" ");
+export function defaultSeoriCmd(home: string, env: Record<string, string | undefined>, platform: string = process.platform): string {
+  if (platform === "win32") return `bun "${CLI.replaceAll("\\", "/")}"`;
+  const prefix = seoriVars(home, env).map(([k, v]) => `${k}=${shq(v)}`).join(" ");
   return `${prefix} bun ${shq(CLI)}`;
 }
 
@@ -379,7 +391,7 @@ export async function startLane(
   await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
   const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
-  const env = { SEORI_LANE: key, SEORI_HOME: d.store.root };
+  const env = { SEORI_LANE: key, ...paneEnv(d.store.root) };
   const pane = workspace
     ? await d.herdr.createTab(key, cwd, workspace, env)
     : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace("seori", cwd)).workspaceId, env);
@@ -520,7 +532,17 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       }
       // A goal-mode lane reads `working` until its goal ends, so `working` is not progress: staleness counts from the
       // last lane activity seori records (start, report, ready). Delivery to a working lane pane is a steer.
-      if (lane.status === "waiting" || st === "blocked") continue;
+      // A dialog (a tool approval) is open: nothing is sent to the lane, a long wait is told to the lead once.
+      if (st === "blocked") {
+        await blockedPrompt(d, lane, now, events);
+        continue;
+      }
+      if (lane.blockedSince !== undefined) {
+        delete lane.blockedSince;
+        if (lane.alerts) for (const k of Object.keys(lane.alerts)) if (k.startsWith("blocked-prompt:")) delete lane.alerts[k];
+        d.store.saveLane(lane);
+      }
+      if (lane.status === "waiting") continue;
       const silentMin = (now - lane.lastActivityAt) / 60_000;
       const due = NUDGE_MINUTES[lane.nudges];
       if (due === undefined || silentMin < due) continue;
@@ -558,6 +580,32 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     }
   }
   return events;
+}
+
+/** A lane whose pane has shown a dialog (herdr `blocked`) this long is told to the lead as [BLOCKED-PROMPT]. */
+export const BLOCKED_PROMPT_MINUTES = 10;
+
+/**
+ * Records when a lane's pane was first seen `blocked` (blockedSince) and, once it has stayed blocked for
+ * BLOCKED_PROMPT_MINUTES, tells the lead once per blocked spell. Nothing goes to the lane: an Enter would answer the
+ * dialog. A pane that is no longer blocked clears blockedSince (dutyTick), so a later dialog is a new spell.
+ */
+async function blockedPrompt(d: Deps, lane: Lane, now: number, events: DutyEvent[]): Promise<void> {
+  if (lane.blockedSince === undefined) {
+    lane.blockedSince = now;
+    d.store.saveLane(lane);
+    return;
+  }
+  const key = `blocked-prompt:${lane.blockedSince}`;
+  if (now - lane.blockedSince < BLOCKED_PROMPT_MINUTES * 60_000 || lane.alerts?.[key] !== undefined) return;
+  const minutes = Math.floor((now - lane.blockedSince) / 60_000);
+  const text = `[BLOCKED-PROMPT ${lane.key}] pane ${lane.paneId} waits on a dialog (a tool approval or question) for ${minutes} min; nothing is sent to the lane while it is open`;
+  // Marked before telling: tellLead queues the notice in the lead's inbox first, so it is not lost if delivery waits.
+  lane.alerts = { ...(lane.alerts ?? {}), [key]: now };
+  lane.log.push({ at: now, kind: "blocked", text });
+  d.store.saveLane(lane);
+  await tellLead(d, text, "duty");
+  events.push({ lane: lane.key, action: "blocked-prompt", detail: `${minutes} min` });
 }
 
 // ---------- lead channel alerts ----------

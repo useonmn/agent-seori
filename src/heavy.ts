@@ -11,13 +11,17 @@ import { lockFile } from "./store.ts";
 
 export const HEAVY_POLL_MS = 15_000;
 
-/** The 1-minute load per core in percent, the figure config.heavy.maxLoadPct is compared with. */
-export const loadPctNow = (): number => Math.round(((loadavg()[0] ?? 0) / Math.max(1, cpus().length)) * 100);
+/**
+ * The 1-minute load per core in percent, the figure config.heavy.maxLoadPct is compared with. Undefined on Windows,
+ * which has no load average: there only the slots limit heavy commands.
+ */
+export const loadPctNow = (): number | undefined =>
+  process.platform === "win32" ? undefined : Math.round(((loadavg()[0] ?? 0) / Math.max(1, cpus().length)) * 100);
 
 export type HeavyOpts = {
   readonly config: SeoriConfig;
-  /** Load per core in percent; defaults to loadPctNow. */
-  readonly load?: () => number;
+  /** Load per core in percent, undefined when unknown; defaults to loadPctNow. */
+  readonly load?: () => number | undefined;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly pollMs?: number;
@@ -50,9 +54,10 @@ export async function acquireHeavySlot(root: string, label: string, opts: HeavyO
   let told: string | undefined;
   for (;;) {
     const pct = load();
-    const slot = pct < maxLoadPct ? takeSlot(root, slots, now()) : undefined;
+    const quiet = pct === undefined || pct < maxLoadPct;
+    const slot = quiet ? takeSlot(root, slots, now()) : undefined;
     if (slot) return slot;
-    const why = pct < maxLoadPct ? `all ${slots} heavy slot(s) busy` : `load ${pct}% per core, not under ${maxLoadPct}%`;
+    const why = quiet ? `all ${slots} heavy slot(s) busy` : `load ${pct}% per core, not under ${maxLoadPct}%`;
     if (why !== told) onWait(heavyWaitLine(label, why));
     told = why;
     await sleep(opts.pollMs ?? HEAVY_POLL_MS);

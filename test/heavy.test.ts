@@ -13,7 +13,7 @@ const lock = (root: string, n: number, pid: number): void => {
 };
 /** A pid that has exited: a finished child's. */
 const deadPid = (): number => {
-  const p = Bun.spawnSync(["true"]);
+  const p = Bun.spawnSync([process.execPath, "-e", ""]);
   return p.pid;
 };
 
@@ -64,13 +64,23 @@ describe("slots", () => {
 describe("runHeavy", () => {
   test("runs the command, returns its exit code and frees the slot", async () => {
     const root = home();
-    expect(await runHeavy(root, "t", ["sh", "-c", "exit 3"], { config: config(1), load: () => 0 })).toBe(3);
+    expect(await runHeavy(root, "t", [process.execPath, "-e", "process.exit(3)"], { config: config(1), load: () => 0 })).toBe(3);
     expect(existsSync(join(heavyDir(root), "1.lock"))).toBe(false);
-    expect(await runHeavy(root, "t", ["true"], { config: config(1), load: () => 0 })).toBe(0);
+    expect(await runHeavy(root, "t", [process.execPath, "-e", ""], { config: config(1), load: () => 0 })).toBe(0);
   });
 
-  test("a command killed by a signal reports 128 + the signal number", async () => {
-    expect(await runHeavy(home(), "t", ["sh", "-c", "kill -TERM $$"], { config: config(1), load: () => 0 })).toBe(143);
+  // Windows has no signals to die of: a process.kill there terminates with status 1.
+  test.if(process.platform !== "win32")("a command killed by a signal reports 128 + the signal number", async () => {
+    expect(await runHeavy(home(), "t", [process.execPath, "-e", 'process.kill(process.pid, "SIGTERM")'], { config: config(1), load: () => 0 })).toBe(143);
+  });
+
+  test("an unknown load (Windows has no load average) holds nothing: only the slots limit heavy commands", async () => {
+    const root = home();
+    const lines: string[] = [];
+    const slot = await acquireHeavySlot(root, "build", { config: config(1), load: () => undefined, onWait: (l) => lines.push(l), sleep: async () => {} });
+    expect(slot.n).toBe(1);
+    expect(lines).toEqual([]);
+    slot.release();
   });
 
   test("a command that cannot start is an error and frees the slot", async () => {

@@ -113,9 +113,13 @@ describe("states", () => {
       c.ledgerPath,
       Array.from({ length: n * 4 }, (_, i) => `${JSON.stringify({ id: `fake:c1:${i % n}`, ev: "delivered", at: T0 + i, attempt: 1, mode: "followUp" })}\n`).join(""),
     );
-    const start = performance.now();
+    // Counted, not timed: a wall-clock bound fails on a slow CI host. Per-row reads of the ledger would show up here.
+    const reads = { ledger: 0, inbound: 0 };
+    const [ledger, inbound] = [c.ledger.bind(c), c.inbound.bind(c)];
+    c.ledger = () => (reads.ledger++, ledger());
+    c.inbound = () => (reads.inbound++, inbound());
     const states = c.states();
-    expect(performance.now() - start).toBeLessThan(1000);
+    expect(reads).toEqual({ ledger: 1, inbound: 1 });
     expect(states).toHaveLength(n);
     expect(states[7]!.deliveries).toBe(4);
   });

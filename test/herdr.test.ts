@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Herdr, HerdrError, interactiveShellInFront, shq, type Exec, type ExecResult } from "../src/herdr.ts";
+import { shPath } from "../src/platform.ts";
 
 // A recorder in place of the herdr binary: every argv is kept, and each reply is chosen per call.
 function recorder(reply: (argv: readonly string[]) => ExecResult = () => ok({})) {
@@ -75,7 +76,7 @@ describe("herdr argv", () => {
     const h = new Herdr(r.exec, "");
     const text = `it's "done" $(rm -rf ~) \`id\`\nline two`;
     expect(await h.deliver("w1:p1", text)).toBe(true);
-    expect(r.calls).toEqual([["pane", "process-info", "--pane", "w1:p1"], ["agent", "prompt", "w1:p1", text]]);
+    expect(r.calls).toEqual([["pane", "get", "w1:p1"], ["pane", "process-info", "--pane", "w1:p1"], ["agent", "prompt", "w1:p1", text]]);
   });
 });
 
@@ -120,7 +121,7 @@ describe("herdr replies", () => {
 describe("shq", () => {
   test("a quoted word reaches a real shell unchanged, single quotes and $ included", async () => {
     for (const s of ["plain", "two words", "it's", "''", "$HOME `id` $(echo x)", "back\\slash", "new\nline", ""]) {
-      const proc = Bun.spawn(["sh", "-c", `printf %s ${shq(s)}`], { stdout: "pipe" });
+      const proc = Bun.spawn([shPath(), "-c", `printf %s ${shq(s)}`], { stdout: "pipe" });
       expect(await new Response(proc.stdout).text()).toBe(s);
     }
   });

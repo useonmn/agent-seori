@@ -32,10 +32,10 @@ describe("WatchStore.update", () => {
   test("waits for another process's lock and then applies the change on the fresh copy", () => {
     const { store, w, lockPath } = setup();
     // Another process (a live pid on this host) holds the lock and has written its change (muted); it releases at 200 ms.
-    const holder = spawn("sh", ["-c", "sleep 30"], { stdio: "ignore" });
+    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });
     try {
       writeFileSync(lockPath, JSON.stringify({ pid: holder.pid, host: hostname(), at: Date.now() }));
-      spawn("sh", ["-c", `sleep 0.2; rm -f '${lockPath}'`], { stdio: "ignore" });
+      spawn(process.execPath, ["-e", `setTimeout(() => require("node:fs").rmSync(${JSON.stringify(lockPath)}, { force: true }), 200)`], { stdio: "ignore" });
       store.save({ ...w, status: "muted" });
       const started = Date.now();
       const saved = store.update(w.id, (cur) => ({ ...cur, mutedEvents: cur.mutedEvents + 1 }));
@@ -49,7 +49,7 @@ describe("WatchStore.update", () => {
 
   test("gives up with an error while a live process keeps holding the lock", () => {
     const { store, w, lockPath } = setup();
-    const holder = spawn("sh", ["-c", "sleep 30"], { stdio: "ignore" });
+    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });
     try {
       writeFileSync(lockPath, JSON.stringify({ pid: holder.pid, host: hostname(), at: Date.now() }));
       expect(() => store.update(w.id, (cur) => ({ ...cur, restarts: 1 }))).toThrow(/locked/);

@@ -48,7 +48,7 @@ describe("seori watch add", () => {
     expect(r.out).toBe(`WATCH ${id} dev for lead until ${new Date(w.clock + DEFAULT_TIMEOUT_MS).toISOString()}`);
     expect(watches().get(id)).toMatchObject({
       name: "dev", owner: { kind: "lead" }, persistent: false, status: "active",
-      source: { kind: "command", command: "bun dev", cwd: "/tmp", filter: "ERROR|ready" },
+      source: { kind: "command", command: "bun dev", cwd: resolve("/tmp"), filter: "ERROR|ready" },
     });
   });
 
@@ -106,7 +106,7 @@ describe("seori watch list, stop, rearm, log", () => {
     w.clock += 14 * 60_000;
     expect((await run(["watch", "list"], d)).out.split("\n")).toEqual([
       `${a}  ci  lead  active  checks: acme/app#7  age 15m  expires in 1h45m  wakes 0/6 last hour  muted events 0`,
-      `${b}  f  lead  active  file: /tmp/f  age 14m  expires in 1h46m  wakes 0/6 last hour  muted events 0`,
+      `${b}  f  lead  active  file: ${resolve("/tmp/f")}  age 14m  expires in 1h46m  wakes 0/6 last hour  muted events 0`,
     ]);
     expect(await run(["watch", "stop", "ci"], d)).toEqual({ code: 0, out: `STOPPED ${a} ci` });
     expect((await run(["watch", "list"], d)).out.split("\n").map((l) => l.split("  ")[0])).toEqual([b]);

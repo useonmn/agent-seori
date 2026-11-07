@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import {
-  defaultDeps, done, dutyTick, inboxList, mergeGate, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
+  defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
   startAgent, startLane, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
-import { shq } from "./herdr.ts";
+import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
@@ -67,6 +67,9 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori heavy <label> -- <cmd...>              run a heavy command when load is low and a heavy slot is free
   seori status
   seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
+  seori daemon-loop                            run the daemon and restart it when it crashes (seori up's daemon pane)
+  seori install-skill [--skills-dir DIR]       link the seori-mode skill into omp (junction on Windows); install.sh/.ps1 run it
+  seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
   seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
                                               answer messenger messages (one reply per id) or send a notice; while the
                                               lead extension runs it is drafted and goes out when the lead's turn ends
@@ -100,7 +103,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -153,17 +156,51 @@ function renderPrompt(d: Deps, name: string): string {
 export const LEAD_EXTENSION = join(import.meta.dir, "..", "extensions", "lead-channel.ts");
 
 /**
- * The daemon pane's restart loop. A daemon that crashed (SIGKILL, OOM, a panic), exited to load a changed
- * messengers.json, or was sent SIGHUP (129) is back within about a second. Only a deliberate stop ends the loop: Ctrl-C
- * (130) or kill/SIGTERM (143). Closing the pane hangs up the loop's shell too, so nothing restarts then. sh -c so the
- * loop works whatever the pane's login shell is.
+ * The daemon pane's restart loop (`seori daemon-loop`), in bun so it runs the same in any pane shell (sh, PowerShell,
+ * cmd). A daemon that crashed (SIGKILL, OOM, a panic), exited to load a changed messengers.json, or was sent SIGHUP
+ * (129) is back within about a second. Only a deliberate stop ends the loop: the daemon ending on Ctrl-C (130) or
+ * kill/SIGTERM (143), or `stopping()` (the loop itself got Ctrl-C or SIGTERM; on Windows, Ctrl-C reaches it as the only
+ * stop signal there is). Closing the pane hangs up the loop too, so nothing restarts then.
  */
-export const daemonLoop = (seoriCmd: string): string =>
-  `while :; do ${seoriCmd} daemon; s=$?; case "$s" in 130|143) exit "$s";; esac; sleep 1; done`;
+export async function daemonLoop(
+  start: () => Promise<number>,
+  stopping: () => boolean,
+  sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms),
+): Promise<number> {
+  for (;;) {
+    const status = await start();
+    if (status === 130 || status === 143 || stopping()) return status;
+    await sleep(1000);
+    if (stopping()) return status;
+  }
+}
+
+async function runDaemonLoop(): Promise<number> {
+  let stopping = false;
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  // Ctrl-C reaches the daemon too: wait for its cleanup. A SIGTERM to the loop is passed on.
+  const onInt = (): void => { stopping = true; };
+  const onTerm = (): void => { stopping = true; child?.kill("SIGTERM"); };
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
+  try {
+    return await daemonLoop(async () => {
+      const p = Bun.spawn([process.execPath, import.meta.path, "daemon"], { env: process.env, stdio: ["inherit", "inherit", "inherit"] });
+      child = p;
+      await p.exited;
+      const sig = p.signalCode;
+      return p.exitCode ?? 128 + (typeof sig === "string" ? osConstants.signals[sig] : (sig ?? 0));
+    }, () => stopping);
+  } finally {
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
+  }
+}
 
 /**
  * Writes `$SEORI_HOME/prompts/lead-omp.yml` (omp settings for the lead only) and returns the PI_CONFIG_FILES value
- * that loads it: appended with ':' to a PI_CONFIG_FILES already in the environment, so it overlays those too.
+ * that loads it: appended to a PI_CONFIG_FILES already in the environment with the platform's path delimiter (omp splits
+ * on it: ':' on macOS/Linux, ';' on Windows, whose paths contain ':'), so it overlays those too.
  */
 function leadOmpConfig(root: string): string {
   const dir = join(root, "prompts");
@@ -171,19 +208,17 @@ function leadOmpConfig(root: string): string {
   const path = join(dir, "lead-omp.yml");
   writeFileSync(path, "advisor:\n  syncBacklog: strict\n");
   const inherited = process.env["PI_CONFIG_FILES"];
-  return inherited ? `${inherited}:${path}` : path;
+  return inherited ? `${inherited}${delimiter}${path}` : path;
 }
 
 async function up(d: Deps, cwd: string): Promise<void> {
   await requireOmpIntegration(d);
-  const env = { SEORI_HOME: d.store.root };
-  const session = process.env["SEORI_HERDR_SESSION"];
+  // Every pane gets seori's environment from herdr (--env), so its commands need no shell-specific env prefix.
+  const env = paneEnv(d.store.root);
   // The extension reads its home and how to run seori from the environment of the shell omp starts in. The lead's omp
   // also gets PI_CONFIG_FILES with advisor.syncBacklog: strict, so the advisor's agent-end review finishes before
   // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets it.
-  const leadEnv = {
-    ...env, SEORI_CMD: d.seoriCmd, ...(session ? { SEORI_HERDR_SESSION: session } : {}), PI_CONFIG_FILES: leadOmpConfig(d.store.root),
-  };
+  const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, PI_CONFIG_FILES: leadOmpConfig(d.store.root) };
   const lead = await d.herdr.createWorkspace("seori", cwd, leadEnv);
   await startAgent(d, "lead", lead.paneId, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", lead.paneId);
@@ -194,7 +229,7 @@ async function up(d: Deps, cwd: string): Promise<void> {
   const hourly = await d.herdr.split(loop.paneId, cwd, { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
   const daemon = await d.herdr.split(hourly.paneId, cwd, env);
   const daemonStarted = d.now();
-  await d.herdr.run(daemon.paneId, `sh -c ${shq(daemonLoop(d.seoriCmd))}`);
+  await d.herdr.run(daemon.paneId, `${d.seoriCmd} daemon-loop`);
   // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
   // daemon is up; a daemon that does not come up is reported here and left to duty's outage alert.
   if (!(await heartbeatSince(d.store.root, daemonStarted))) {
@@ -247,7 +282,8 @@ async function daemon(root: string): Promise<number> {
     for (const s of signals) process.off(s, onSignal);
   }
   if (!caught) return 0;
-  process.kill(process.pid, caught);
+  // Windows has no signal to re-raise (process.kill on itself just terminates it with status 1): report 128 + number.
+  if (process.platform !== "win32") process.kill(process.pid, caught);
   // If the re-raised signal is not delivered before main exits, the shell convention still reports it: 128 + number.
   return 128 + osConstants.signals[caught];
 }
@@ -678,6 +714,18 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return 0;
     case "daemon":
       return daemon(d.store.root);
+    case "daemon-loop":
+      return runDaemonLoop();
+    case "install-skill": {
+      const r = installSkill(SEORI_SRC, one(a, "skills-dir") ?? defaultSkillsDir());
+      console.log(`${r.ok ? "SKILL" : "WARNING"} ${r.note}`);
+      return r.ok ? 0 : 1;
+    }
+    case "uninstall": {
+      const lines = await uninstall({ skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, purge: a.flags.has("purge") });
+      for (const line of lines) console.log(line);
+      return 0;
+    }
     case "msg":
       return msg(d, a, x);
     case "watch":

@@ -325,8 +325,10 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
   const candidates = d.store.items()
     .filter((i) => i.status === "open" && !i.decision && !isOpenLane(d.store.lane(i.id)?.status ?? "done"))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  if (candidates.length > 0 && (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT)) {
-    run.held.push(`host busy: load ${host.load1.toFixed(1)} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}%`);
+  // An unknown load (Windows) holds nothing; memory still does.
+  const loadBusy = host.load1 !== null && host.load1 > (maxLoad ?? host.cores);
+  if (candidates.length > 0 && (loadBusy || host.memFreePct < MEM_FREE_MIN_PCT)) {
+    run.held.push(`host busy: load ${host.load1?.toFixed(1) ?? "unknown"} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}%`);
     starts = 0;
   }
   // Each start attempt uses one of this run's slots, so a broken host costs at most `starts` failures per run.
@@ -385,7 +387,7 @@ export function summary(run: LoopRun): string {
   const lines = [
     `[LOOP ${new Date(run.at).toISOString().slice(0, 16)}Z] lanes ${s.lanes}/${s.maxLanes}${s.adhoc.length ? ` (not from backlog: ${s.adhoc.join(", ")})` : ""}` +
       ` | items open ${s.items.open} (decide ${s.items.decide}) running ${s.items.running}` +
-      ` | load ${s.host.load1.toFixed(1)}/${s.host.cores} mem-free ${s.host.memFreePct}%`,
+      ` | load ${s.host.load1?.toFixed(1) ?? "unknown"}/${s.host.cores} mem-free ${s.host.memFreePct}%`,
   ];
   for (const k of ["synced", "findings", "started", "held"] as const) if (run[k].length) lines.push(`${k}: ${run[k].join("; ")}`);
   lines.push(...run.asked);

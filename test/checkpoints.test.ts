@@ -58,7 +58,7 @@ describe("checkpoints", () => {
     writeFileSync(`${path}.lock`, JSON.stringify({ pid: process.pid, host: hostname(), at: T0 }));
     expect(() => recordCheckpoint(root, "fix-a", push, T0)).toThrow(/locked by another writer/);
     expect(existsSync(path)).toBe(false);
-    const dead = Bun.spawnSync(["true"]).pid;
+    const dead = Bun.spawnSync([process.execPath, "-e", ""]).pid;
     writeFileSync(`${path}.lock`, JSON.stringify({ pid: dead, host: hostname(), at: T0 }));
     expect(recordCheckpoint(root, "fix-a", push, T0).unchanged).toBe(false);
     expect(existsSync(`${path}.lock`)).toBe(false);

@@ -201,7 +201,7 @@ describe("one flush per pane (#108 3)", () => {
 
   test("a lock held by a dead pid on this host, or older than 60 s from another host, is taken over", async () => {
     const s = setup();
-    const exited = Bun.spawn(["true"]);
+    const exited = Bun.spawn([process.execPath, "-e", ""]);
     await exited.exited;
     for (const stale of [
       { pid: 1, host: "other-host", at: s.w.clock - INBOX_LOCK_STALE_MS - 1 },

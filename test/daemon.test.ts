@@ -4,6 +4,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { daemonLoop } from "../src/cli.ts";
+import { IS_WINDOWS } from "../src/platform.ts";
 import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, MAX_RESTART_DELAY_MS, readHealth, restartDelay, runDaemon } from "../src/daemon.ts";
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
@@ -155,7 +156,7 @@ describe("runDaemon", () => {
     expect(existsSync(daemonLockPath(root))).toBe(false);
 
     // A lock left by a dead process on this host is taken over.
-    const dead = Bun.spawnSync(["true"]).pid;
+    const dead = Bun.spawnSync([process.execPath, "-e", ""]).pid;
     writeFileSync(daemonLockPath(root), JSON.stringify({ pid: dead, host: hostname(), at: 1 }));
     const second = start(root);
     await until("lock taken over", () => JSON.parse(readFileSync(daemonLockPath(root), "utf8")).pid === process.pid);
@@ -232,14 +233,47 @@ describe("runDaemon", () => {
   });
 });
 
+describe("the daemon restart loop (daemonLoop)", () => {
+  const run = async (statuses: number[], stopAfter = Infinity) => {
+    let started = 0;
+    const slept: number[] = [];
+    const status = await daemonLoop(
+      async () => statuses[started++] ?? 0,
+      () => started >= stopAfter,
+      async (ms) => void slept.push(ms),
+    );
+    return { status, started, slept };
+  };
+
+  test("a crash or a config change starts the daemon again after a second; Ctrl-C (130) or SIGTERM (143) ends it", async () => {
+    expect(await run([1, 137, 0, 129, 130])).toEqual({ status: 130, started: 5, slept: [1000, 1000, 1000, 1000] });
+    expect(await run([143])).toEqual({ status: 143, started: 1, slept: [] });
+  });
+
+  test("a loop told to stop (its own Ctrl-C, the only stop signal on Windows) starts no new daemon", async () => {
+    expect(await run([1, 1, 1], 2)).toEqual({ status: 1, started: 2, slept: [1000] });
+  });
+});
+
 describe("seori daemon process", () => {
   const CLI = join(import.meta.dir, "..", "src", "cli.ts");
-  const LOOP = daemonLoop(`bun ${CLI}`);
+  const env = (root: string) => ({ ...process.env, SEORI_HOME: root });
+  const loop = (root: string) => Bun.spawn([process.execPath, CLI, "daemon-loop"], { env: env(root), stdout: "ignore", stderr: "ignore" });
   const pidOf = (root: string): number => (JSON.parse(readFileSync(heartbeatPath(root), "utf8")) as { pid: number }).pid;
+  /** Kills the loop and, on Windows where killing it leaves its child running, the daemon it started too. */
+  const killAll = (sh: ReturnType<typeof loop>, root: string) => {
+    sh.kill("SIGKILL");
+    try {
+      process.kill(pidOf(root), "SIGKILL");
+    } catch {
+      // already gone
+    }
+  };
 
-  test("SIGTERM to the daemon stops seori up's restart loop with a status of 128 or more", async () => {
+  // POSIX signals: Windows has no SIGTERM or SIGHUP to send (process.kill there terminates, which is a crash).
+  test.if(!IS_WINDOWS)("SIGTERM to the daemon stops seori up's restart loop with a status of 128 or more", async () => {
     const root = home();
-    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    const sh = loop(root);
     await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
     process.kill(pidOf(root), "SIGTERM");
     expect(await sh.exited).toBeGreaterThanOrEqual(128);
@@ -248,7 +282,7 @@ describe("seori daemon process", () => {
 
   test("a daemon that crashed (SIGKILL) is started again by the loop", async () => {
     const root = home();
-    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    const sh = loop(root);
     try {
       await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
       const first = pidOf(root);
@@ -256,18 +290,18 @@ describe("seori daemon process", () => {
       await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
       expect(sh.exitCode).toBeNull();
     } finally {
-      sh.kill("SIGKILL");
+      killAll(sh, root);
     }
   }, 30_000);
 
-  test("SIGHUP (its pane closed) stops the daemon cleanly, watch commands included, with status 129", async () => {
+  test.if(!IS_WINDOWS)("SIGHUP (its pane closed) stops the daemon cleanly, watch commands included, with status 129", async () => {
     const root = home();
     new WatchStore(root).add({
       name: "beats",
       source: { kind: "command", command: "while :; do echo x >> beats; sleep 0.05; done", cwd: root, filter: "never" },
       owner: { kind: "lead" },
     }, Date.now());
-    const daemon = Bun.spawn(["bun", CLI, "daemon"], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    const daemon = Bun.spawn([process.execPath, CLI, "daemon"], { env: env(root), stdout: "ignore", stderr: "ignore" });
     try {
       await until("the watch command running", () => existsSync(join(root, "beats")), 10_000);
       daemon.kill("SIGHUP");
@@ -282,9 +316,9 @@ describe("seori daemon process", () => {
     }
   }, 15_000);
 
-  test("a SIGHUP sent while the restart loop lives restarts the daemon", async () => {
+  test.if(!IS_WINDOWS)("a SIGHUP sent while the restart loop lives restarts the daemon", async () => {
     const root = home();
-    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    const sh = loop(root);
     try {
       await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
       const first = pidOf(root);
@@ -292,23 +326,25 @@ describe("seori daemon process", () => {
       await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
       expect(sh.exitCode).toBeNull();
     } finally {
-      sh.kill("SIGKILL");
+      killAll(sh, root);
     }
   }, 30_000);
 
   test("a changed messengers.json makes the restart loop start a new daemon", async () => {
     const root = home();
-    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    const sh = loop(root);
     try {
       await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
       const first = pidOf(root);
       writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: [{ source: "fake", owner: "u1" }] }));
       await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
       expect(sh.exitCode).toBeNull();
-      process.kill(pidOf(root), "SIGTERM");
-      expect(await sh.exited).toBeGreaterThanOrEqual(128);
+      if (!IS_WINDOWS) {
+        process.kill(pidOf(root), "SIGTERM");
+        expect(await sh.exited).toBeGreaterThanOrEqual(128);
+      }
     } finally {
-      sh.kill("SIGKILL");
+      killAll(sh, root);
     }
   }, 30_000);
 });

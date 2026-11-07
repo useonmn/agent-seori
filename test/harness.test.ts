@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
-import { agentName, defaultSeoriCmd, done, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { agentName, defaultSeoriCmd, done, paneEnv, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { ompJson, World } from "./fake.ts";
 
 function setup() {
@@ -29,9 +29,16 @@ async function captureLog(fn: () => Promise<unknown>): Promise<string> {
 
 describe("seori command for agents and loop panes", () => {
   test("carries the herdr session and model when set, so loops and lanes drive the same herdr and omp model", () => {
-    const cmd = defaultSeoriCmd("/h o", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "anthropic/claude-haiku-5-5" });
+    const cmd = defaultSeoriCmd("/h o", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "anthropic/claude-haiku-5-5" }, "linux");
     expect(cmd).toStartWith("SEORI_HOME='/h o' SEORI_HERDR_SESSION='iso' SEORI_MODEL='anthropic/claude-haiku-5-5' bun ");
-    expect(defaultSeoriCmd("/h", {})).toStartWith("SEORI_HOME='/h' bun ");
+    expect(defaultSeoriCmd("/h", {}, "darwin")).toStartWith("SEORI_HOME='/h' bun ");
+  });
+
+  test("on Windows it is a plain bun command that PowerShell, cmd and Git Bash all run; the variables come with the pane", () => {
+    const cmd = defaultSeoriCmd("C:\\Users\\me\\.seori", { SEORI_HERDR_SESSION: "iso" }, "win32");
+    expect(cmd).toMatch(/^bun "[^"\\']+\/src\/cli\.ts"$/);
+    expect(paneEnv("C:\\h", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" })).toEqual({ SEORI_HOME: "C:\\h", SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" });
+    expect(paneEnv("/h", {})).toEqual({ SEORI_HOME: "/h" });
   });
 });
 
@@ -152,11 +159,15 @@ describe("lanes", () => {
     expect(others.some((c) => c.argv.some((arg) => arg.startsWith("PI_CONFIG_FILES=")))).toBe(false);
     // The daemon starts first, so the duty loop's first tick finds its heartbeat instead of reporting an outage.
     expect(w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "run").map((c) => [c.argv[2], c.argv[3]])).toEqual([
-      ["w1:p6", `sh -c 'while :; do seori daemon; s=$?; case "$s" in 130|143) exit "$s";; esac; sleep 1; done'`],
+      ["w1:p6", "seori daemon-loop"],
       ["w1:p4", "seori duty --interval 60"],
       ["w1:p5", "seori loop"],
     ]);
     expect(out).toBe(`UP lead=${lead} duty=${duty} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root}`);
+    // Every pane gets seori's environment from herdr, so its commands need no shell env prefix (Windows panes have none).
+    const splits = w.calls.filter((c) => (c.argv[0] === "tab" && c.argv[1] === "create") || (c.argv[0] === "pane" && c.argv[1] === "split"));
+    expect(splits).toHaveLength(4);
+    for (const c of splits) expect(c.argv).toEqual(expect.arrayContaining([`SEORI_HOME=${d.store.root}`, "SEORI_HERDR_SESSION=iso"]));
   });
 
   test("up appends the lead's omp config to a PI_CONFIG_FILES already in the environment", async () => {
@@ -172,7 +183,7 @@ describe("lanes", () => {
       else process.env["PI_CONFIG_FILES"] = prev;
     }
     const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
-    expect(create.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml:${join(d.store.root, "prompts", "lead-omp.yml")}`);
+    expect(create.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(d.store.root, "prompts", "lead-omp.yml")}`);
   });
 
   test("start refuses the role names lead and duty as lane keys before it writes or opens anything", async () => {
@@ -338,9 +349,11 @@ describe("duty loop", () => {
     const events = await dutyTick(d);
     expect(events).toContainEqual({ pane: "w1:p9", action: "delivery-ambiguous", detail: expect.stringContaining("herdr exploded") });
     expect(events).toContainEqual({ pane: "w1:p1", action: "flushed" });
-    expect(lead.received).toHaveLength(2);
-    expect(lead.received).toContain("to lead");
-    expect(lead.received.filter((t) => t.startsWith("[DELIVERY-AMBIGUOUS w1:p9]"))).toHaveLength(1);
+    // Inbox panes come in directory order, which differs between file systems: the notice and "to lead" arrive as two
+    // deliveries or as one batch. What matters is that both reach the lead, the notice exactly once.
+    const toLead = lead.received.join("\n");
+    expect(toLead).toContain("to lead");
+    expect(toLead.split("[DELIVERY-AMBIGUOUS w1:p9]")).toHaveLength(2);
     expect(broken.received).toEqual([]);
   });
 

@@ -183,14 +183,16 @@ describe("checkSignals", () => {
   test("the default command runner runs with no shell in the lane's cwd", async () => {
     const { d, cwd, lane } = setup();
     writeFileSync(join(cwd, "marker"), "");
-    expect(await checkSignals(d, lane('command ["ls","marker"] stdout~"^marker"'))).toEqual([]);
-    expect(await checkSignals(d, lane('command ["ls","$HOME"]'))).toEqual([expect.stringMatching(/^command \["ls","\$HOME"\] -> exit [1-9]/)]);
+    expect(await checkSignals(d, lane(`command ["bun","-e","require('fs').accessSync('marker'); console.log('marker')"] stdout~"^marker"`))).toEqual([]);
+    expect(await checkSignals(d, lane(`command ["bun","-e","require('fs').accessSync('$HOME')"]`))).toEqual([expect.stringMatching(/^command \["bun",.*\] -> exit [1-9]/)]);
     expect(await checkSignals(d, lane('command ["no-such-binary-seori"]'))).toEqual([expect.stringMatching(/^command \["no-such-binary-seori"\] -> exit 127/)]);
   });
 
   test("the default command runner's timeout bounds the run, even when the child ignores SIGTERM or a grandchild holds the pipes", async () => {
     const { cwd } = setup();
-    for (const argv of [["bash", "-c", "trap '' TERM; sleep 6; true"], ["bash", "-c", "sleep 6 & wait"]]) {
+    const ignoresTerm = "process.on('SIGTERM', () => {}); setTimeout(() => {}, 6000)";
+    const grandchild = `require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 6000)'], { stdio: 'inherit' }); setTimeout(() => {}, 6000)`;
+    for (const argv of [[process.execPath, "-e", ignoresTerm], [process.execPath, "-e", grandchild]]) {
       const t0 = Date.now();
       const r = await defaultSignalIo.run(argv, { cwd, timeoutMs: 300 });
       expect(r.code).toBe(124);

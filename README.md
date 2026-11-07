@@ -12,6 +12,8 @@ seori's design is based on [dori-superagent](https://github.com/sisyphuslabs/dor
 curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 ```
 
+On Windows, in PowerShell: `irm https://raw.githubusercontent.com/useonmn/agent-seori/main/install.ps1 | iex` (see [Windows](#windows)).
+
 Then start herdr, run omp in a pane and say `seori mode` (or `서리 모드`). The seori-mode skill walks you through the rest and stops wherever it needs your choice or your hand: a name for the bot, herdr's omp integration, the install, which messenger (Telegram, Slack or Discord), creating the bot with you in the browser, `secrets.json` and `seori msg check`, pairing you as the owner with `seori msg pair`, a first greeting through the bot, `seori up`, and an onboarding that, with your consent, reads your tools read-only into omp memory. Once seori is set up, saying `seori mode` again runs `seori boot` and reports what it lists. See [seori mode skill](#seori-mode-skill).
 
 ## What it is
@@ -35,6 +37,53 @@ herdr provides the workspaces, tabs and panes, and reports each omp session's st
 - omp (oh-my-pi), the `omp` binary on PATH.
 - The GitHub CLI `gh`, for PR head SHAs, checks, reviews and the merge.
 
+macOS, Linux and Windows are supported; Windows has a few differences, below.
+
+## Windows
+
+seori runs natively on Windows 10/11 (no WSL), with the same herdr, omp and gh.
+
+Requirements, on top of the list above:
+
+- [Git for Windows](https://git-scm.com/download/win). Watch commands (`seori watch add --command`) are written in sh and run in Git for Windows' `sh.exe`; seori finds it next to `git.exe` even when only Git's `cmd` folder is on PATH. `SEORI_SH` points at another sh.
+- PowerShell 5.1 or 7 for the installer.
+
+Install, update and uninstall:
+
+```powershell
+irm https://raw.githubusercontent.com/useonmn/agent-seori/main/install.ps1 | iex   # install or update
+.\install.ps1 -Uninstall            # remove the skill link and the seori command (keeps ~\.seori)
+.\install.ps1 -Uninstall -Purge     # also delete ~\.seori
+```
+
+`install.ps1` does what `install.sh` does (see [seori mode skill](#seori-mode-skill)), with two Windows differences: the skill is linked as a directory junction (no admin rights or developer mode needed), and `~\.seori` is restricted to your account (and SYSTEM) with `icacls` instead of mode 700. The same `SEORI_SRC`, `SEORI_HOME`, `SKILLS_DIR` and `SEORI_NO_PULL` variables apply; `-NoLink` skips `bun link`.
+
+herdr's omp integration is installed the same way, from PowerShell:
+
+```powershell
+herdr integration install omp
+herdr integration status   # the omp: line must not say "not installed"
+```
+
+Using it from PowerShell:
+
+```powershell
+seori up
+seori start fix-flaky-login --brief examples\brief.md --cwd C:\src\app
+seori status
+seori watch add --command "bun test 2>&1" --filter "fail|error" --cwd C:\src\app
+$env:SEORI_HOME = "D:\seori-home"; seori status   # another state directory
+```
+
+What differs on Windows:
+
+- Panes. herdr's panes run PowerShell or cmd, which have no `VAR=value command` syntax. seori passes its environment (`SEORI_HOME`, `SEORI_HERDR_SESSION`, `SEORI_MODEL`) to every pane it opens through `herdr --env`, and the command agents and loop panes use is plain `bun "<path>/src/cli.ts"`. The daemon pane runs `seori daemon-loop`, a restart loop written in bun rather than sh.
+- `secrets.json`. Windows has no file modes (every file reports 666), so seori reads the file's ACL and refuses it when Everyone, Users, Authenticated Users, Guests or Anonymous may read it. To make it private: `icacls "$env:USERPROFILE\.seori\secrets.json" /inheritance:r /grant:r "${env:USERNAME}:F"`.
+- Stopping. Windows has no SIGTERM: stop the daemon, duty and hourly loops by closing their panes or the seori workspace in herdr (the daemon then stops its watch commands and releases its lock, and nothing restarts it), or pause the loops with `seori duty stop` and `seori loop stop`. A daemon killed from outside (Task Manager, `taskkill`) counts as a crash and is restarted by the loop.
+- Watch commands run in sh, so write paths in them with forward slashes (`C:/src/app/log.txt`): sh treats a backslash as an escape.
+- Watch commands are stopped by killing their whole process tree (Windows has no process groups); one a crashed daemon left behind is found by its process tree and start time and killed before the watch starts again.
+- Load. Windows has no load average, so the host guard shows load as unknown and never alerts on it, and heavy slots (`seori heavy`) wait only for a free slot. Free disk comes from the volume itself when `df` is missing.
+
 ## Quick start by hand
 
 ```sh
@@ -53,7 +102,7 @@ That opens a herdr workspace with a lead pane, a duty pane, the duty loop, the h
 
 ```sh
 seori start fix-flaky-login --brief examples/brief.md
-# STARTED fix-flaky-login pane=w1:p5 brief=~/.seori/briefs/fix-flaky-login.md
+# STARTED fix-flaky-login pane=w1:p6 brief=~/.seori/briefs/fix-flaky-login.md
 seori status
 ```
 
@@ -331,7 +380,7 @@ The lead can take your requests from a messenger as well as from its pane. Confi
 
 `source` picks the adapter (`telegram`, `slack`, `discord`, or `fake` for tests) and `owner` is the one sender id whose messages reach the lead; messages from anyone else, and from bots, are dropped. `seori msg pair` finds that id for you (see [Owner pairing](#owner-pairing)). That is the whole safety model, the same as dori's: only the owner can talk to the lead, and the owner's messages get no extra restrictions. `options.apiBase` points an adapter at another API host (the tests use a local mock).
 
-Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuses a file others can read), or in environment variables, which win:
+Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuses a file others can read; on Windows it checks the ACL instead, see [Windows](#windows)), or in environment variables, which win:
 
 ```json
 { "telegram": { "token": "123:abc" }, "slack": { "botToken": "xoxb-...", "appToken": "xapp-..." }, "discord": { "token": "..." } }
@@ -480,11 +529,13 @@ The commands that read the config (`start`, `ready` for a lane with a Done line,
 
 - clones the repository into `~/.seori/src` (`SEORI_SRC` picks another place), or fast-forwards an existing checkout; when the checkout has local work it stops and says how to keep it (`SEORI_NO_PULL=1` installs the checkout as it is) or drop it;
 - runs `bun install` and `bun link`, which puts `seori` on PATH through Bun's global bin directory;
-- links the skill to `~/.omp/agent/skills/seori-mode` (`SKILLS_DIR` picks another place); a real directory already there is left alone, with a warning;
+- links the skill to `~/.omp/agent/skills/seori-mode` (`SKILLS_DIR` picks another place) with `seori install-skill`: a symlink, or a directory junction on Windows; an older link or seori copy is replaced, and a real directory already there is left alone, with a warning;
 - creates `~/.seori` (or `$SEORI_HOME`) with mode 700;
 - warns when herdr, herdr's omp integration, omp, gh, or `seori` on PATH is missing.
 
-It never installs herdr, omp or gh, and never creates or overwrites `secrets.json`, `messengers.json` or `config.json`.
+It never installs herdr, omp or gh, and never creates or overwrites `secrets.json`, `messengers.json` or `config.json`. On Windows, use `install.ps1` ([Windows](#windows)).
+
+To uninstall, stop the `seori up` panes (Ctrl-C in the duty, loop and daemon panes, or on Windows just close them, then close the workspace), then run `seori uninstall` (or `bash install.sh --uninstall`, or `.\install.ps1 -Uninstall` on Windows). It removes the skill link (or seori's own copy) and runs `bun unlink` for the `seori` command, and keeps `~/.seori` with your secrets and history unless you add `--purge`.
 
 ## State
 
@@ -497,7 +548,8 @@ JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inb
 | `SEORI_HOME` | state directory, default `~/.seori` |
 | `SEORI_AGENT_CMD` | the reviewer's omp command, default `omp` (lead, duty and lanes always start through `herdr agent start --kind omp`) |
 | `SEORI_MODEL` | model for every omp seori starts (`--model`), and the reviewer's default model; unset = omp's default |
-| `SEORI_CMD` | how the agents and loop panes call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <path>/src/cli.ts` |
+| `SEORI_CMD` | how the agents and loop panes call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <path>/src/cli.ts` (on Windows `bun "<path>/src/cli.ts"`, with those variables set on the pane) |
+| `SEORI_SH` | the sh that runs watch commands, default `sh` on PATH (on Windows, Git for Windows' `sh.exe`) |
 | `SEORI_HERDR_SESSION` | a named herdr session to talk to |
 | `SEORI_MAX_LANES` | default for `seori loop --max-lanes` (3) |
 | `SEORI_MAX_STARTS` | default for `seori loop --max-starts` (2) |
@@ -512,6 +564,8 @@ JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inb
 bun test         # unit tests against a fake herdr and gh; no model is called
 bun run typecheck
 ```
+
+GitHub Actions runs both on Ubuntu, macOS and Windows for every push and pull request (`.github/workflows/ci.yml`).
 
 The end-to-end tests in `test/e2e.test.ts` (lanes and the hourly loop), `test/e2e-channel.test.ts` (the messenger channel: idle, busy, burst, lead restart, `/new`, subagents, Esc, a model outage and recovery, a permanent outage ending in gave-up, daemon crash and config change) and `test/e2e-watch.test.ts` (watches: command filter and exit, crash restarts, file changes, `/new`, lead restart, daemon SIGKILL, wake budget and rearm, a lane-owned watch, pane state, limits, no leftover commands after herdr stops) need a real herdr with the omp integration installed, omp on PATH, and `SEORI_E2E_OMP=1`. They call a real model, so they cost money; without those they are skipped. The channel suite takes about 18 minutes and the watch suite about 6; `SEORI_E2E_ONLY=1,2,3` runs a subset (channel scenario 8, the outage, takes about 9 minutes on its own).
 
