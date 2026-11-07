@@ -175,6 +175,21 @@ describe("runDaemon", () => {
     expect(beats()).toBe(atStop);
     expect(existsSync(daemonLockPath(root))).toBe(false);
   });
+
+  test("an invalid messengers.json is reported and the daemon runs its watches without messengers", async () => {
+    const root = home();
+    writeFileSync(join(root, "messengers.json"), "{ not json");
+    new WatchStore(root).add({ name: "ticker", source: { kind: "command", command: "while :; do echo tick; sleep 0.05; done", cwd: root }, owner: { kind: "lead" } }, Date.now());
+    const delivered: string[] = [];
+    const d = start(root, { watch: { tickMs: 20, deliver: async (_w, text) => void delivered.push(text) } });
+    await until("a delivered watch event", () => delivered.length > 0, 5_000);
+    expect(existsSync(heartbeatPath(root))).toBe(true);
+    expect(d.events[0]).toMatchObject({ ev: "error", source: "messengers.json" });
+    expect(d.lines()[0]).toEndWith("; running without messengers (heartbeat and watches only) until the file changes");
+    // Fixing the file restarts the daemon on it, like any config change.
+    writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: [] }));
+    expect(await d.done).toBe("config-changed");
+  });
 });
 
 describe("seori daemon process", () => {
@@ -198,6 +213,42 @@ describe("seori daemon process", () => {
       await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
       const first = pidOf(root);
       process.kill(first, "SIGKILL");
+      await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
+      expect(sh.exitCode).toBeNull();
+    } finally {
+      sh.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  test("SIGHUP (its pane closed) stops the daemon cleanly, watch commands included, with status 129", async () => {
+    const root = home();
+    new WatchStore(root).add({
+      name: "beats",
+      source: { kind: "command", command: "while :; do echo x >> beats; sleep 0.05; done", cwd: root, filter: "never" },
+      owner: { kind: "lead" },
+    }, Date.now());
+    const daemon = Bun.spawn(["bun", CLI, "daemon"], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    try {
+      await until("the watch command running", () => existsSync(join(root, "beats")), 10_000);
+      daemon.kill("SIGHUP");
+      expect(await daemon.exited).toBe(129);
+      expect(existsSync(daemonLockPath(root))).toBe(false);
+      const beats = () => readFileSync(join(root, "beats"), "utf8").length;
+      const atStop = beats();
+      await Bun.sleep(300); // proving the command no longer runs needs real time to pass
+      expect(beats()).toBe(atStop);
+    } finally {
+      daemon.kill("SIGKILL");
+    }
+  }, 15_000);
+
+  test("a SIGHUP sent while the restart loop lives restarts the daemon", async () => {
+    const root = home();
+    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    try {
+      await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
+      const first = pidOf(root);
+      process.kill(first, "SIGHUP");
       await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
       expect(sh.exitCode).toBeNull();
     } finally {

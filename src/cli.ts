@@ -56,6 +56,7 @@ msg send exits 3 with HELD when the messenger may or may not have the reply: che
 A second reply to an id is refused (exit 2) unless --again is given.
 SEORI_MODEL=M passes --model M to every omp seori starts (lead, duty, lanes) and is the reviewer's default model.
 watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), else for the lead; refusals exit 2.
+watch stop, rearm and log take a name of that same owner's live watches (--for picks another owner) or any watch's id.
 up and start need herdr's omp integration (herdr integration install omp).`;
 
 type Args = { pos: string[]; flags: Map<string, string[]> };
@@ -114,9 +115,10 @@ function renderPrompt(d: Deps, name: string): string {
 export const LEAD_EXTENSION = join(import.meta.dir, "..", "extensions", "lead-channel.ts");
 
 /**
- * The daemon pane's restart loop. A daemon that crashed (SIGKILL, OOM, a panic) or exited to load a changed
- * messengers.json is back within about a second. Only a deliberate stop ends the loop: Ctrl-C (130) or kill/SIGTERM
- * (143). sh -c so the loop works whatever the pane's login shell is.
+ * The daemon pane's restart loop. A daemon that crashed (SIGKILL, OOM, a panic), exited to load a changed
+ * messengers.json, or was sent SIGHUP (129) is back within about a second. Only a deliberate stop ends the loop: Ctrl-C
+ * (130) or kill/SIGTERM (143). Closing the pane hangs up the loop's shell too, so nothing restarts then. sh -c so the
+ * loop works whatever the pane's login shell is.
  */
 export const daemonLoop = (seoriCmd: string): string =>
   `while :; do ${seoriCmd} daemon; s=$?; case "$s" in 130|143) exit "$s";; esac; sleep 1; done`;
@@ -168,9 +170,12 @@ async function heartbeatSince(root: string, since: number): Promise<boolean> {
 }
 
 /**
- * Runs the daemon until SIGINT or SIGTERM, then stops it cleanly (lock released, heartbeat stopped) and re-raises the
- * signal: the shell running `seori up`'s restart loop sees a status of 128 or more and stops the loop too, so Ctrl-C or
- * `kill` stops the daemon instead of restarting it. Returns 0 when messengers.json changed, which the loop restarts.
+ * Runs the daemon until SIGINT, SIGTERM or SIGHUP, then stops it cleanly (watch commands killed, lock released,
+ * heartbeat stopped) and re-raises the signal. The shell running `seori up`'s restart loop sees 130 (Ctrl-C) or 143
+ * (kill) and stops the loop too, so a deliberate stop is not undone. SIGHUP (129) is handled for the closed-pane case,
+ * where skipping the cleanup would leave each command watch's process group running (they run in their own session)
+ * for the next daemon to duplicate; a SIGHUP sent while the loop lives restarts the daemon, like a crash. Returns 0
+ * when messengers.json changed, which the loop restarts.
  */
 async function daemon(root: string): Promise<number> {
   const stop = new AbortController();
@@ -179,13 +184,12 @@ async function daemon(root: string): Promise<number> {
     caught = sig;
     stop.abort();
   };
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  for (const s of signals) process.on(s, onSignal);
   try {
     await runDaemon(root, { signal: stop.signal });
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    for (const s of signals) process.off(s, onSignal);
   }
   if (!caught) return 0;
   process.kill(process.pid, caught);
@@ -247,13 +251,16 @@ async function watch(d: Deps, a: Args, sub: string | undefined): Promise<number>
     console.log(lines.length ? lines.join("\n") : "EMPTY");
     return 0;
   }
+  // stop, rearm and log find a name among the caller's watches (owner as for add); an id works for any owner.
+  const forFlag = one(a, "for");
+  const caller = { ...(forFlag !== undefined ? { for: forFlag } : {}), env: process.env };
   if (sub === "stop") {
-    const w = watchStop(root, need(a.pos[2], "watch id or name"), d.now());
+    const w = watchStop(root, need(a.pos[2], "watch id or name"), caller, d.now());
     console.log(`STOPPED ${w.id} ${w.name}`);
     return 0;
   }
   if (sub === "rearm") {
-    const { watch: w, missed } = watchRearm(root, need(a.pos[2], "watch id or name"), d.now());
+    const { watch: w, missed } = watchRearm(root, need(a.pos[2], "watch id or name"), caller, d.now());
     console.log(`REARMED ${w.id} ${w.name}: ${missed} event(s) missed while muted; wake budget reset`);
     return 0;
   }
@@ -262,7 +269,7 @@ async function watch(d: Deps, a: Args, sub: string | undefined): Promise<number>
     const at = a.pos.indexOf("-n");
     const n = at >= 0 ? Number(a.pos[at + 1]) : 20;
     if (!(Number.isInteger(n) && n > 0)) throw new Refusal("-n takes a whole number > 0");
-    const lines = watchLog(root, need(a.pos[2] === "-n" ? a.pos[4] : a.pos[2], "watch id or name"), n);
+    const lines = watchLog(root, need(a.pos[2] === "-n" ? a.pos[4] : a.pos[2], "watch id or name"), caller, n);
     console.log(lines.length ? lines.join("\n") : "EMPTY");
     return 0;
   }

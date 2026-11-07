@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type EngineDeps, type PaneState, WatchEngine } from "../src/watch/engine.ts";
+import { PassThrough } from "node:stream";
+import { type EngineDeps, MAX_LINE_BYTES, type PaneState, readLines, WatchEngine } from "../src/watch/engine.ts";
 import { type NewWatch, type Watch, WatchStore } from "../src/watch/store.ts";
 
 /** Polls a condition the engine reaches asynchronously; fails with `what` rather than hanging. */
@@ -14,7 +16,7 @@ async function until(what: string, cond: () => boolean, ms = 4_000): Promise<voi
   }
 }
 
-const FAST = { coalesceMs: 60, filePollMs: 10, fileCoalesceMs: 40, checksPollMs: 10, panePollMs: 10, backoffMs: [10, 20, 30], killGraceMs: 500 };
+const FAST = { coalesceMs: 60, filePollMs: 10, fileCoalesceMs: 40, checksPollMs: 10, panePollMs: 10, backoffMs: [10, 20, 30], killGraceMs: 500, mutedSaveMs: 0 };
 
 const engines: WatchEngine[] = [];
 afterEach(async () => {
@@ -131,6 +133,100 @@ describe("command watches", () => {
     await until("command killed", () => !alive(pid));
     expect(t.delivered).toEqual([]);
   });
+
+  test("a process group left by a crashed daemon is killed before the command is spawned again", async () => {
+    const t = setup();
+    const spawnedAt = Date.now();
+    const orphan = spawn("sh", ["-c", "sleep 30 & wait"], { detached: true, stdio: "ignore" });
+    const pgid = orphan.pid as number;
+    const w = t.add({ name: "srv", source: cmd("sleep 30") });
+    t.store.save({ ...(t.store.get(w.id) as Watch), pgid, spawnedAt });
+    t.engine().start();
+    await until("orphan group killed", () => !alive(-pgid));
+    await until("new group recorded", () => {
+      const cur = t.store.get(w.id);
+      return cur?.pgid !== undefined && cur.pgid !== pgid;
+    });
+    expect(readFileSync(t.store.eventsPath(w.id), "utf8")).toContain(`"ev":"orphan-killed","pgid":${pgid}`);
+  });
+
+  test("a recorded group whose processes predate the recorded spawn (pid reuse) is left alone", async () => {
+    const t = setup();
+    const other = spawn("sh", ["-c", "sleep 30"], { detached: true, stdio: "ignore" });
+    const pgid = other.pid as number;
+    try {
+      const w = t.add({ name: "srv", source: cmd("sleep 30") });
+      // Recorded as spawned a minute from now: the live group cannot be the one this watch started.
+      t.store.save({ ...(t.store.get(w.id) as Watch), pgid, spawnedAt: Date.now() + 60_000 });
+      t.engine().start();
+      await until("new group recorded", () => {
+        const cur = t.store.get(w.id);
+        return cur?.pgid !== undefined && cur.pgid !== pgid;
+      });
+      expect(alive(pgid)).toBe(true);
+    } finally {
+      other.kill("SIGKILL");
+    }
+  });
+
+  test("the process group is forgotten once the command is gone", async () => {
+    const t = setup();
+    const w = t.add({ name: "job", source: cmd("sleep 0.1; echo x") });
+    t.engine().start();
+    await until("group recorded", () => t.store.get(w.id)?.pgid !== undefined);
+    await until("done", () => t.store.get(w.id)?.status === "done");
+    await until("group cleared", () => t.store.get(w.id)?.pgid === undefined);
+    expect(t.store.get(w.id)?.spawnedAt).toBeUndefined();
+  });
+
+  test("a run longer than the last backoff step resets the restart count", async () => {
+    const t = setup({ now: () => Date.now() });
+    t.clock.now = Date.now();
+    const w = t.add({ name: "rare", source: cmd("sleep 0.1; exit 3") });
+    t.store.save({ ...(t.store.get(w.id) as Watch), restarts: 3 });
+    t.engine().start();
+    const log = t.store.eventsPath(w.id);
+    await until("restarted", () => existsSync(log) && readFileSync(log, "utf8").includes('"ev":"restarted"'));
+    const cur = t.store.get(w.id);
+    expect(cur?.status).toBe("active");
+    expect(cur?.restarts).toBe(1);
+  });
+
+  test("a huge line without a newline is cut and does not hold up later lines", async () => {
+    const t = setup();
+    const w = t.add({ name: "bar", source: cmd("head -c 200000 /dev/zero | tr '\\0' x; echo; sleep 0.3; echo after; sleep 30") });
+    t.engine().start();
+    await until("after delivered", () => t.delivered.length >= 2);
+    // One cut line (the rest of it dropped up to its newline), shown capped like any long line.
+    expect(t.texts()).toEqual([`[watch bar ${w.id}] ${"x".repeat(4_096)}…`, `[watch bar ${w.id}] after`]);
+  });
+});
+
+describe("readLines", () => {
+  test("cuts a line at MAX_LINE_BYTES, drops the rest of it, and resumes at the next newline", async () => {
+    const s = new PassThrough();
+    const lines: string[] = [];
+    const done = readLines(s, (l) => lines.push(l));
+    s.write("x".repeat(MAX_LINE_BYTES - 10));
+    s.write("y".repeat(MAX_LINE_BYTES));
+    s.write("z".repeat(10));
+    s.write("tail\r\nnext\npartial");
+    s.end();
+    await done;
+    expect(lines).toEqual([`${"x".repeat(MAX_LINE_BYTES - 10)}${"y".repeat(10)}`, "next", "partial"]);
+  });
+
+  test("splits lines across chunks", async () => {
+    const s = new PassThrough();
+    const lines: string[] = [];
+    const done = readLines(s, (l) => lines.push(l));
+    s.write("ab");
+    s.write("c\nd");
+    s.write("e\n\nf\n");
+    s.end();
+    await done;
+    expect(lines).toEqual(["abc", "de", "", "f"]);
+  });
 });
 
 describe("file watches", () => {
@@ -168,6 +264,23 @@ describe("file watches", () => {
     // Asserting an absence: there is no signal to await, so give the real poller (10 ms) several rounds.
     await Bun.sleep(150);
     expect(t.delivered).toHaveLength(1);
+  });
+
+  test("a directory watch reports a file modified in place deep inside it", async () => {
+    const t = setup();
+    const dir = join(t.root, "dist");
+    mkdirSync(join(dir, "a", "b"), { recursive: true });
+    const file = join(dir, "a", "b", "app.js");
+    writeFileSync(file, "one");
+    const w = t.add({ name: "d", source: { kind: "file", path: dir } });
+    t.engine().start();
+    await until("baseline checkpoint", () => t.store.get(w.id)?.checkpoint !== undefined);
+    expect(t.store.get(w.id)?.checkpoint?.count).toBe(3);
+    const dirMtime = statSync(dir).mtimeMs;
+    writeFileSync(file, "two");
+    await until("modified", () => t.delivered.length === 1);
+    expect(statSync(dir).mtimeMs).toBe(dirMtime);
+    expect(t.texts()).toEqual([`[watch d ${w.id}] modified ${dir}`]);
   });
 });
 
@@ -214,6 +327,32 @@ describe("pane watches", () => {
     await until("event", () => t.delivered.length === 1);
     expect(t.texts()).toEqual([`[watch p ${w.id}] pane p1 is idle`]);
     expect(t.store.get(w.id)?.status).toBe("done");
+  });
+
+  test("an idle watch also fires when herdr reports the pane done", async () => {
+    const seq: PaneState[] = ["working", "done"];
+    let i = 0;
+    const t = setup({ paneStatus: async () => seq[Math.min(i++, seq.length - 1)] as PaneState });
+    const w = t.add({ name: "p", source: { kind: "pane", pane: "p1", status: "idle" } });
+    t.engine().start();
+    await until("event", () => t.delivered.length === 1);
+    expect(t.texts()).toEqual([`[watch p ${w.id}] pane p1 is done`]);
+    expect(t.store.get(w.id)?.status).toBe("done");
+  });
+
+  test("a non-idle status does not take done as a match", async () => {
+    let polls = 0;
+    const t = setup({
+      paneStatus: async () => {
+        polls++;
+        return "done";
+      },
+    });
+    const w = t.add({ name: "p", source: { kind: "pane", pane: "p1", status: "blocked" } });
+    t.engine().start();
+    await until("several polls", () => polls >= 5);
+    expect(t.delivered).toEqual([]);
+    expect(t.store.get(w.id)?.status).toBe("active");
   });
 
   test("a missing pane finishes the watch too", async () => {
@@ -269,6 +408,55 @@ describe("lifecycle", () => {
     t.store.save({ ...cur, status: "active", wakes: [], mutedEvents: 0 });
     await until("delivery resumed", () => t.delivered.length >= 9);
     expect(t.texts().slice(7).every((x) => /^\[watch chat \w+\] \d+$/.test(x))).toBe(true);
+  });
+
+  /** A chatty command that also writes its line count to a file, so a test can wait for lines instead of for time. */
+  const chatty = (root: string) => {
+    const file = join(root, "count");
+    const lines = (): number => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) || 0 : 0);
+    const source = cmd(`i=0; while true; do i=$((i+1)); echo $i; echo $i > ${file}; sleep 0.08; done`);
+    const linesAfter = async (n: number): Promise<void> => {
+      const from = lines();
+      await until(`${n} more lines`, () => lines() >= from + n);
+    };
+    return { source, linesAfter };
+  };
+
+  test("while muted, events are only counted: no text logged, count saved every mutedSaveMs and on engine stop", async () => {
+    const t = setup({ timing: { ...FAST, mutedSaveMs: 30_000 } });
+    const c = chatty(t.root);
+    const w = t.add({ name: "chat", source: c.source });
+    const e = t.engine();
+    e.start();
+    await until("muted", () => t.store.get(w.id)?.status === "muted");
+    const logSize = statSync(t.store.eventsPath(w.id)).size;
+    await c.linesAfter(5);
+    expect(statSync(t.store.eventsPath(w.id)).size).toBe(logSize);
+    expect(t.store.get(w.id)?.mutedEvents).toBe(1);
+    t.clock.now += 30_000;
+    await until("count saved", () => (t.store.get(w.id)?.mutedEvents ?? 0) > 2);
+    const saved = t.store.get(w.id)?.mutedEvents ?? 0;
+    await c.linesAfter(3);
+    expect(t.store.get(w.id)?.mutedEvents).toBe(saved);
+    await e.stop();
+    expect(t.store.get(w.id)?.mutedEvents ?? 0).toBeGreaterThan(saved);
+    expect(t.store.get(w.id)?.status).toBe("muted");
+    expect(statSync(t.store.eventsPath(w.id)).size).toBe(logSize);
+  });
+
+  test("a muted count not yet saved is dropped when the watch is rearmed", async () => {
+    const t = setup({ timing: { ...FAST, mutedSaveMs: 30_000 } });
+    const c = chatty(t.root);
+    const w = t.add({ name: "chat", source: c.source });
+    t.engine().start();
+    await until("muted", () => t.store.get(w.id)?.status === "muted");
+    await c.linesAfter(4);
+    t.store.update(w.id, (cur) => ({ ...cur, status: "active", wakes: [], mutedEvents: 0 }));
+    await until("delivery resumed", () => t.delivered.length >= 8);
+    t.clock.now += 30_000;
+    await c.linesAfter(2);
+    expect(t.store.get(w.id)?.status).toBe("active");
+    expect(t.store.get(w.id)?.mutedEvents).toBe(0);
   });
 
   test("wakes older than the window do not count toward the budget", async () => {

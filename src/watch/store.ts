@@ -1,5 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { lockFile } from "../store.ts";
 
 // Watches: something `seori daemon` keeps an eye on for an agent (the lead or a lane), waking it when it fires. One
 // JSON file per watch under $SEORI_HOME/watches/, so a watch outlives the agent's session (/new, restarts) and the
@@ -46,8 +47,17 @@ export type Watch = {
   readonly mutedEvents: number;
   /** Command restarts after a crash (non-zero exit or signal). */
   readonly restarts: number;
-  /** File watches: what the file looked like at the last event, so a change while the daemon was down is reported once. */
-  readonly checkpoint?: { readonly exists: boolean; readonly mtimeMs?: number; readonly size?: number };
+  /**
+   * Command watches: the running command's process group and when it was spawned (wall clock ms), so a daemon that
+   * died without killing it can take the orphan down before spawning a second copy. Cleared once the group is killed.
+   */
+  readonly pgid?: number;
+  readonly spawnedAt?: number;
+  /**
+   * File watches: what the path looked like at the last event, so a change while the daemon was down is reported once.
+   * For a directory, mtimeMs is the newest mtime, size the total size and count the number of entries beneath it.
+   */
+  readonly checkpoint?: { readonly exists: boolean; readonly mtimeMs?: number; readonly size?: number; readonly count?: number };
 };
 
 /** A non-persistent watch lives 2 hours unless --timeout says otherwise (at most 24 hours). */
@@ -61,6 +71,10 @@ export const WAKE_BUDGET = 6;
 export const WAKE_WINDOW_MS = 3_600_000;
 /** A crashing command is restarted this many times (with backoff) before the watch is stopped. */
 export const MAX_RESTARTS = 3;
+/** `<id>.events.jsonl` is rotated to `<id>.events.jsonl.1` (one generation) once it passes this size. */
+export const EVENTS_MAX_BYTES = 1_048_576;
+/** How long store.update waits for another process's per-watch lock before giving up. */
+const UPDATE_LOCK_WAIT_MS = 2_000;
 
 export class WatchRefusal extends Error {}
 
@@ -121,6 +135,32 @@ export class WatchStore {
     renameSync(tmp, this.path(w.id));
   }
 
+  /**
+   * Read-modify-write under the watch's lock file (`<id>.json.lock`), so the daemon's engine and `seori watch` (another
+   * process) never overwrite each other's change with a stale copy. Waits briefly for a held lock, then throws. `fn`
+   * returning the very object it was given means "no change" and skips the write. Returns the watch as saved, or
+   * undefined when the watch file is gone.
+   */
+  update(id: string, fn: (w: Watch) => Watch): Watch | undefined {
+    const lockPath = `${this.path(id)}.lock`;
+    const deadline = Date.now() + UPDATE_LOCK_WAIT_MS;
+    let release = lockFile(lockPath, Date.now());
+    while (!release) {
+      if (Date.now() > deadline) throw new Error(`watch ${id} is locked by another process (${lockPath})`);
+      Bun.sleepSync(5);
+      release = lockFile(lockPath, Date.now());
+    }
+    try {
+      const w = this.get(id);
+      if (!w) return undefined;
+      const next = fn(w);
+      if (next !== w) this.save(next);
+      return next;
+    } finally {
+      release();
+    }
+  }
+
   /** Validates limits and stores an active watch. Refuses a 6th persistent watch for the same owner. */
   add(input: NewWatch, now: number): Watch {
     const persistent = input.persistent === true;
@@ -158,7 +198,16 @@ export class WatchStore {
     return w;
   }
 
+  /** Appends one event; past EVENTS_MAX_BYTES the log is rotated first, so a chatty watch cannot fill the disk. */
   appendEvent(id: string, event: Record<string, unknown>): void {
-    appendFileSync(this.eventsPath(id), `${JSON.stringify(event)}\n`);
+    const path = this.eventsPath(id);
+    let size = 0;
+    try {
+      size = statSync(path).size;
+    } catch {
+      // no log yet
+    }
+    if (size >= EVENTS_MAX_BYTES) renameSync(path, `${path}.1`);
+    appendFileSync(path, `${JSON.stringify(event)}\n`);
   }
 }

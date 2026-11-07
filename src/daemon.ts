@@ -131,7 +131,15 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
   const emit = opts.onEvent ?? ((e: DaemonEvent) => console.log(daemonLine(e)));
   // Stamped before the read: an edit landing between the two is still seen as a change.
   const stamp = configStamp(root);
-  const messengers = loadMessengers(root);
+  // A broken file must not stop the watches too: run without messengers until the file changes (the stamp check below
+  // then restarts the daemon on the fixed file). duty tells the lead the file cannot be read.
+  let messengers: MessengerConfig[] = [];
+  let configError: string | undefined;
+  try {
+    messengers = loadMessengers(root);
+  } catch (e) {
+    configError = errorText(e);
+  }
 
   mkdirSync(daemonDir(root), { recursive: true });
   const lockPath = daemonLockPath(root);
@@ -166,7 +174,11 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     // Started only once the lock is held: one daemon, so one engine, runs a $SEORI_HOME's watches.
     engine = new WatchEngine(root, { ...engineDeps(root, now), ...opts.watch });
     engine.start();
-    if (!messengers.length) emit({ ev: "idle", detail: `no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat and watches only)` });
+    if (configError !== undefined) {
+      emit({ ev: "error", source: "messengers.json", detail: `${configError}; running without messengers (heartbeat and watches only) until the file changes` });
+    } else if (!messengers.length) {
+      emit({ ev: "idle", detail: `no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat and watches only)` });
+    }
 
     const runOne = async (config: MessengerConfig): Promise<void> => {
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.

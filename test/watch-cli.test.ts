@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { main } from "../src/cli.ts";
 import { Refusal, type Deps } from "../src/harness.ts";
@@ -112,7 +113,7 @@ describe("seori watch list, stop, rearm, log", () => {
     const all = (await run(["watch", "list", "--all"], d)).out.split("\n");
     expect(all[0]).toBe(`${a}  ci  lead  stopped  checks: acme/app#7  age 15m  ended: stopped by seori watch stop  wakes 0/6 last hour  muted events 0`);
     await expect(main(["watch", "stop", a], d)).rejects.toThrow(/already stopped/);
-    await expect(main(["watch", "stop", "nothing"], d)).rejects.toThrow(/no watch nothing/);
+    await expect(main(["watch", "stop", "nothing"], d)).rejects.toThrow(/no live watch nothing for lead/);
   });
 
   test("rearm unmutes a muted watch, resets its wakes and reports the missed events; an active watch is refused", async () => {
@@ -141,6 +142,52 @@ describe("seori watch list, stop, rearm, log", () => {
     ]);
     expect((await run(["watch", "log", "f"], d)).out.split("\n")).toHaveLength(3);
     await expect(main(["watch", "log", "f", "-n", "0"], d)).rejects.toThrow(/-n/);
+  });
+
+  test("stop, rearm and log find a name among the caller's own watches; an id reaches any owner's", async () => {
+    const { d, lane, watches } = setup();
+    lane("lane-a");
+    lane("lane-b");
+    const a = idOf((await run(["watch", "add", "--checks", "acme/app#1", "--name", "ci", "--for", "lane-a"], d)).out);
+    const b = idOf((await run(["watch", "add", "--checks", "acme/app#2", "--name", "ci", "--for", "lane-b"], d)).out);
+    const status = (id: string) => watches().get(id)!.status;
+
+    // The lead has no `ci`: neither lane's watch is touched.
+    await expect(main(["watch", "stop", "ci"], d)).rejects.toThrow(/no live watch ci for lead/);
+    await expect(main(["watch", "log", "ci"], d)).rejects.toThrow(/no live watch ci for lead/);
+    process.env["SEORI_LANE"] = "lane-b";
+    expect(await run(["watch", "stop", "ci"], d)).toEqual({ code: 0, out: `STOPPED ${b} ci` });
+    expect([status(a), status(b)]).toEqual(["active", "stopped"]);
+    delete process.env["SEORI_LANE"];
+    expect(await run(["watch", "stop", "ci", "--for", "lane-a"], d)).toEqual({ code: 0, out: `STOPPED ${a} ci` });
+
+    const c = idOf((await run(["watch", "add", "--file", "/tmp/x", "--for", "lane-a"], d)).out);
+    expect(await run(["watch", "stop", c], d)).toEqual({ code: 0, out: `STOPPED ${c} file` });
+  });
+
+  test("a name shared by several of the caller's live watches is refused with their ids", async () => {
+    const { w, d, watches } = setup();
+    const one = idOf((await run(["watch", "add", "--checks", "acme/app#1"], d)).out);
+    w.clock += 1_000;
+    const two = idOf((await run(["watch", "add", "--checks", "acme/app#2"], d)).out);
+    await expect(main(["watch", "stop", "checks"], d)).rejects.toThrow(`2 live watches for lead are named checks (${one}, ${two}); give an id`);
+    expect(watches().list().map((w) => w.status)).toEqual(["active", "active"]);
+  });
+
+  test("log reads only the end of a long events file and older lines from the rotated .1 file", async () => {
+    const { d, watches } = setup();
+    const id = idOf((await run(["watch", "add", "--file", "/tmp/f", "--name", "f"], d)).out);
+    const path = watches().eventsPath(id);
+    const row = (n: number) => `${JSON.stringify({ at: n, ev: "seen", text: `${"x".repeat(200)} ${n}` })}\n`;
+    const rows = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => row(from + i)).join("");
+    // Several 64 KiB chunks, with the last line torn mid-write.
+    writeFileSync(`${path}.1`, rows(1, 10));
+    writeFileSync(path, `${rows(11, 1000)}{"at":10`);
+    const texts = (out: string) => out.split("\n").map((l) => l.split(" ").at(-1));
+    expect(texts((await run(["watch", "log", "f", "-n", "3"], d)).out)).toEqual(['999"}', '1000"}', '{"at":10']);
+    writeFileSync(path, rows(11, 12));
+    expect(texts((await run(["watch", "log", "f", "-n", "4"], d)).out)).toEqual(['9"}', '10"}', '11"}', '12"}']);
+    expect((await run(["watch", "log", "f", "-n", "50"], d)).out.split("\n")).toHaveLength(12);
   });
 
   test("parseDuration reads s, m, h, d", () => {

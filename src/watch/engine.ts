@@ -1,12 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { lstatSync, readdirSync, type Stats, statSync } from "node:fs";
+import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { MAX_RESTARTS, WAKE_BUDGET, WAKE_WINDOW_MS, type Watch, type WatchSource, WatchStore } from "./store.ts";
 
 // Runs the watches in $SEORI_HOME/watches/ inside `seori daemon`. The files are the truth: every tick re-reads them, so
 // `seori watch stop|rearm` (another process) takes effect within a tick, and a daemon restart resumes every live watch.
-// State changes are read-modify-written under a per-watch queue so the engine never clobbers what the CLI just wrote
-// with a stale copy, and deliveries for one watch arrive in order.
+// State changes are read-modify-written through store.update (a per-watch lock file shared with the CLI), so neither
+// process clobbers what the other just wrote with a stale copy; a per-watch queue keeps one watch's deliveries in order.
 
 export type PaneState = "idle" | "working" | "blocked" | "done" | "unknown" | "shell" | "gone";
 
@@ -23,6 +24,8 @@ export type WatchTiming = {
   readonly backoffMs: readonly number[];
   /** After SIGTERM to a command's process group, SIGKILL follows this much later. */
   readonly killGraceMs: number;
+  /** While muted, events are only counted; the count reaches the watch file at most this often (and on status changes). */
+  readonly mutedSaveMs: number;
 };
 
 export const DEFAULT_TIMING: WatchTiming = {
@@ -33,6 +36,7 @@ export const DEFAULT_TIMING: WatchTiming = {
   panePollMs: 5_000,
   backoffMs: [5_000, 15_000, 45_000],
   killGraceMs: 2_000,
+  mutedSaveMs: 30_000,
 };
 
 export type EngineDeps = {
@@ -50,6 +54,16 @@ const MAX_BATCH_LINES = 40;
 const MAX_BATCH_BYTES = 4_096;
 /** Output lines kept for the final `exited 0` event. */
 const TAIL_LINES = 5;
+/** A line longer than this (a `\r` progress bar, binary output) is cut here and emitted, so the buffer stays bounded. */
+export const MAX_LINE_BYTES = 65_536;
+/**
+ * Directory watches walk at most this many entries, this deep, without following symlinks: enough for a source or
+ * build tree, and a bounded cost per poll for a huge one (changes past the limit go unnoticed).
+ */
+const DIR_MAX_ENTRIES = 10_000;
+const DIR_MAX_DEPTH = 8;
+/** ps ages have 1 s resolution; a process group member that started this long before the recorded spawn is not ours. */
+const SPAWN_CLOCK_SLACK_MS = 2_000;
 
 type Runner = { stop(): Promise<void> };
 type Checkpoint = NonNullable<Watch["checkpoint"]>;
@@ -74,6 +88,8 @@ export class WatchEngine {
   private readonly timing: WatchTiming;
   private readonly runners = new Map<string, Runner>();
   private readonly queues = new Map<string, Promise<unknown>>();
+  /** Muted events counted but not yet written to the watch file, and when the count was last written. */
+  private readonly mutedCounts = new Map<string, { count: number; savedAt: number }>();
   private interval: Timer | undefined;
   private ticking: Promise<void> | undefined;
   private stopping = false;
@@ -102,6 +118,17 @@ export class WatchEngine {
     this.runners.clear();
     await Promise.all(runners.map((r) => r.stop()));
     await Promise.all(this.queues.values());
+    for (const [id, m] of this.mutedCounts) this.saveMutedCount(id, m.count);
+    this.mutedCounts.clear();
+  }
+
+  private saveMutedCount(id: string, count: number): void {
+    if (count === 0) return;
+    try {
+      this.store.update(id, (w) => (w.status === "muted" ? { ...w, mutedEvents: w.mutedEvents + count } : w));
+    } catch (e) {
+      console.error(`seori watch ${id}: cannot save muted count: ${errorText(e)}`);
+    }
   }
 
   /** One pass over the watch files; concurrent calls share the pass in flight. */
@@ -120,6 +147,7 @@ export class WatchEngine {
     for (const w of this.store.list()) {
       seen.add(w.id);
       if (!live(w)) {
+        this.mutedCounts.delete(w.id);
         await this.drop(w.id);
       } else if (now >= w.expiresAt) {
         await this.drop(w.id);
@@ -179,51 +207,70 @@ export class WatchEngine {
     return w.wakes.filter((t) => t > since);
   }
 
+  /**
+   * While muted only counts, in memory, writing the count at most every mutedSaveMs: a chatty muted watch would
+   * otherwise rewrite its file and log its text twice a second for days. A rearm (status back to active on disk)
+   * voids the unsaved count, which belonged to the mute that ended.
+   */
   private event(id: string, text: string): Promise<void> {
     return this.queue(id, async () => {
-      const w = this.store.get(id);
-      if (!w || !live(w) || this.stopping) return;
-      this.log(id, { ev: "seen", text });
-      if (w.status === "muted") {
-        this.store.save({ ...w, mutedEvents: w.mutedEvents + 1 });
-        this.log(id, { ev: "muted", text });
-        return;
-      }
-      const wakes = [...this.prunedWakes(w), this.deps.now()];
-      if (wakes.length > WAKE_BUDGET) {
-        const muted: Watch = { ...w, status: "muted", reason: "wake budget", wakes, mutedEvents: w.mutedEvents + 1 };
-        this.store.save(muted);
+      if (this.stopping) return;
+      const now = this.deps.now();
+      // Assigned inside the update callback, which TypeScript does not track; hence the cast.
+      let outcome = "none" as "none" | "counted" | "muted" | "deliver";
+      const w = this.store.update(id, (w) => {
+        if (!live(w)) return w;
+        if (w.status === "muted") {
+          outcome = "counted";
+          const m = this.mutedCounts.get(id) ?? { count: 0, savedAt: now };
+          m.count++;
+          this.mutedCounts.set(id, m);
+          if (now - m.savedAt < this.timing.mutedSaveMs) return w;
+          this.mutedCounts.set(id, { count: 0, savedAt: now });
+          return { ...w, mutedEvents: w.mutedEvents + m.count };
+        }
+        this.mutedCounts.delete(id);
+        const wakes = [...this.prunedWakes(w), now];
+        if (wakes.length > WAKE_BUDGET) {
+          outcome = "muted";
+          this.mutedCounts.set(id, { count: 0, savedAt: now });
+          return { ...w, status: "muted", reason: "wake budget", wakes, mutedEvents: w.mutedEvents + 1 };
+        }
+        outcome = "deliver";
+        return { ...w, wakes };
+      });
+      if (!w || outcome === "none" || outcome === "counted") return;
+      if (outcome === "muted") {
         this.log(id, { ev: "muted", text });
         const hours = WAKE_WINDOW_MS / 3_600_000;
-        await this.send(muted, `muted after ${WAKE_BUDGET} wakes in ${hours}h; seori watch rearm ${id} to resume`);
+        await this.send(w, `muted after ${WAKE_BUDGET} wakes in ${hours}h; seori watch rearm ${id} to resume`);
         return;
       }
-      const next: Watch = { ...w, wakes };
-      this.store.save(next);
-      await this.send(next, text);
+      this.log(id, { ev: "seen", text });
+      await this.send(w, text);
     });
   }
 
   /** Moves a live watch to a final status; `text` undefined ends it silently. A watch that already ended is left alone. */
   private finish(id: string, status: "done" | "stopped" | "expired", reason: string, text: string | undefined): Promise<void> {
     return this.queue(id, async () => {
-      const w = this.store.get(id);
-      if (!w || !live(w)) return;
-      const next: Watch = { ...w, status, reason, wakes: text === undefined ? w.wakes : [...this.prunedWakes(w), this.deps.now()] };
-      this.store.save(next);
+      const pending = this.mutedCounts.get(id)?.count ?? 0;
+      this.mutedCounts.delete(id);
+      let changed = false;
+      const next = this.store.update(id, (w) => {
+        if (!live(w)) return w;
+        changed = true;
+        const mutedEvents = w.status === "muted" ? w.mutedEvents + pending : w.mutedEvents;
+        return { ...w, status, reason, mutedEvents, wakes: text === undefined ? w.wakes : [...this.prunedWakes(w), this.deps.now()] };
+      });
+      if (!next || !changed) return;
       this.log(id, { ev: status, reason });
       if (text !== undefined) await this.send(next, text);
     });
   }
 
   private update(id: string, fn: (w: Watch) => Watch): Promise<Watch | undefined> {
-    return this.queue(id, async () => {
-      const w = this.store.get(id);
-      if (!w) return undefined;
-      const next = fn(w);
-      if (next !== w) this.store.save(next);
-      return next;
-    });
+    return this.queue(id, async () => this.store.update(id, fn));
   }
 
   private run(w: Watch): Runner {
@@ -238,7 +285,7 @@ export class WatchEngine {
     const s = w.source;
     switch (s.kind) {
       case "command":
-        return commandRunner(ctx, s);
+        return commandRunner(ctx, s, w);
       case "file":
         return fileRunner(ctx, s, w.checkpoint);
       case "checks":
@@ -275,22 +322,35 @@ function poll(ctx: RunnerCtx, ms: number, fn: () => Promise<boolean>): Runner {
   };
 }
 
-/** Splits a stream into lines (CR stripped); resolves once the stream has ended and the last partial line is out. */
-function readLines(stream: Readable, onLine: (line: string) => void): Promise<void> {
+/**
+ * Splits a stream into lines (CR stripped); resolves once the stream has ended and the last partial line is out. Only
+ * each new chunk is searched for newlines, and a line growing past MAX_LINE_BYTES is emitted cut and the rest of it
+ * dropped, so a `\r`-only progress bar or binary output cannot grow the buffer or the CPU spent on it.
+ */
+export function readLines(stream: Readable, onLine: (line: string) => void): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   let buf = "";
+  let skipping = false;
+  const emit = (line: string): void => onLine(line.replace(/\r$/, ""));
   stream.setEncoding("utf8");
   stream.on("data", (chunk: string) => {
-    buf += chunk;
-    let nl = buf.indexOf("\n");
-    while (nl >= 0) {
-      onLine(buf.slice(0, nl).replace(/\r$/, ""));
-      buf = buf.slice(nl + 1);
-      nl = buf.indexOf("\n");
+    let start = 0;
+    for (let nl = chunk.indexOf("\n"); nl >= 0; nl = chunk.indexOf("\n", start)) {
+      if (!skipping) emit((buf + chunk.slice(start, nl)).slice(0, MAX_LINE_BYTES));
+      buf = "";
+      skipping = false;
+      start = nl + 1;
+    }
+    if (skipping) return;
+    buf += chunk.slice(start);
+    if (buf.length > MAX_LINE_BYTES) {
+      emit(buf.slice(0, MAX_LINE_BYTES));
+      buf = "";
+      skipping = true;
     }
   });
   const end = (): void => {
-    if (buf !== "") onLine(buf.replace(/\r$/, ""));
+    if (buf !== "") emit(buf);
     buf = "";
     resolve();
   };
@@ -302,15 +362,47 @@ function readLines(stream: Readable, onLine: (line: string) => void): Promise<vo
 
 /** Signals the whole process group: the command runs under `sh -c`, and pipelines or background jobs must die with it. */
 function killGroup(p: ChildProcess, signal: NodeJS.Signals): void {
-  if (p.pid === undefined) return;
+  if (p.pid !== undefined) killPgid(p.pid, signal);
+}
+
+function killPgid(pgid: number, signal: NodeJS.Signals | 0): boolean {
   try {
-    process.kill(-p.pid, signal);
+    process.kill(-pgid, signal);
+    return true;
   } catch {
-    // already gone
+    return false; // already gone
   }
 }
 
-function batchText(lines: readonly string[]): string {
+/**
+ * Whether process group `pgid` still exists and is the one spawned at `spawnedAt`: every member must have started no
+ * earlier than that (a reused pid would be older than our spawn record, or show `?`). Members are listed with ps, which
+ * also finds a group whose leader (`sh`) died while its pipeline or background jobs live on. Ages come from `etime`
+ * (time since start) rather than `lstart`: macOS ps is setuid and ignores TZ, so a printed wall time cannot be parsed
+ * reliably.
+ */
+async function isOurGroup(pgid: number, spawnedAt: number): Promise<boolean> {
+  const p = Bun.spawn(["ps", "-A", "-o", "pgid=", "-o", "etime="], { stdout: "pipe", stderr: "ignore" });
+  const out = await new Response(p.stdout).text();
+  await p.exited;
+  const now = Date.now();
+  const starts = out
+    .split("\n")
+    .map((l) => /^\s*(\d+)\s+(\S+)\s*$/.exec(l))
+    .filter((m): m is RegExpExecArray => m !== null && Number(m[1]) === pgid)
+    .map((m) => now - elapsedMs(m[2] as string));
+  return starts.length > 0 && starts.every((t) => t >= spawnedAt - SPAWN_CLOCK_SLACK_MS);
+}
+
+/** ps `etime`, `[[dd-]hh:]mm:ss`, in ms; NaN for anything else (`?`), which then never counts as ours. */
+function elapsedMs(etime: string): number {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime);
+  if (!m) return Number.NaN;
+  const [days, hours, minutes, seconds] = [m[1], m[2], m[3], m[4]].map((v) => Number(v ?? 0)) as [number, number, number, number];
+  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+}
+
+function batchText(lines: readonly string[], dropped = 0): string {
   const out: string[] = [];
   let bytes = 0;
   for (const raw of lines) {
@@ -319,42 +411,72 @@ function batchText(lines: readonly string[]): string {
     out.push(line);
     bytes += line.length + 1;
   }
-  const more = lines.length - out.length;
+  const more = lines.length - out.length + dropped;
   return more > 0 ? `${out.join("\n")}\n(+${more} more lines)` : out.join("\n");
 }
 
-function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "command" }>): Runner {
+/** Kills the process group a previous daemon left running (it died without stopping its runners), then forgets it. */
+async function reapOrphan(ctx: RunnerCtx, saved: Watch): Promise<void> {
+  const { pgid, spawnedAt } = saved;
+  if (pgid === undefined) return;
+  if (spawnedAt !== undefined && (await isOurGroup(pgid, spawnedAt))) {
+    killPgid(pgid, "SIGTERM");
+    const deadline = Date.now() + ctx.timing.killGraceMs;
+    while (killPgid(pgid, 0) && Date.now() < deadline) await Bun.sleep(20);
+    killPgid(pgid, "SIGKILL");
+    ctx.log({ ev: "orphan-killed", pgid });
+  }
+  await ctx.update((w) => (w.pgid === pgid ? withoutGroup(w) : w));
+}
+
+const withoutGroup = (w: Watch): Watch => {
+  const { pgid: _pgid, spawnedAt: _spawnedAt, ...rest } = w;
+  return rest;
+};
+
+function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "command" }>, saved: Watch): Runner {
   const filter = src.filter === undefined ? undefined : new RegExp(src.filter);
   let stopped = false;
   let child: ChildProcess | undefined;
   let finished: Promise<void> = Promise.resolve();
+  /** At most MAX_BATCH_LINES matching lines wait for the next event; the rest are only counted. */
   let pending: string[] = [];
+  let dropped = 0;
   let tail: string[] = [];
   let flushTimer: Timer | undefined;
   let backoffTimer: Timer | undefined;
+  let startedAt = 0;
 
   const flush = async (): Promise<void> => {
     clearTimeout(flushTimer);
     flushTimer = undefined;
     if (pending.length === 0 || stopped) return;
-    const lines = pending;
+    const text = batchText(pending, dropped);
     pending = [];
-    await ctx.event(batchText(lines));
+    dropped = 0;
+    await ctx.event(text);
   };
 
   const onLine = (line: string): void => {
-    tail.push(line);
+    tail.push(line.length > MAX_BATCH_BYTES ? `${line.slice(0, MAX_BATCH_BYTES)}…` : line);
     if (tail.length > TAIL_LINES) tail.shift();
     if (filter && !filter.test(line)) return;
-    pending.push(line);
+    if (pending.length < MAX_BATCH_LINES) pending.push(line);
+    else dropped++;
     flushTimer ??= setTimeout(() => void flush(), ctx.timing.coalesceMs);
   };
 
   const spawnOnce = (): void => {
     tail = [];
+    startedAt = ctx.deps.now();
+    // Wall clock, not deps.now: it is compared with process ages ps reports.
+    const spawnedAt = Date.now();
     const p = spawn("sh", ["-c", src.command], { cwd: src.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     child = p;
     ctx.log({ ev: "spawned", pid: p.pid });
+    const pgid = p.pid;
+    // detached: the command leads its own process group, so its pid is the group id.
+    if (pgid !== undefined) void ctx.update((w) => ({ ...w, pgid, spawnedAt }));
     const outcome = Promise.withResolvers<{ code: number | null; signal: string | null; error?: string }>();
     p.once("exit", (code, signal) => outcome.resolve({ code, signal }));
     p.once("error", (e) => outcome.resolve({ code: null, signal: null, error: errorText(e) }));
@@ -365,6 +487,7 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
       await Promise.race([drained, Bun.sleep(200)]);
       killGroup(p, "SIGKILL");
       child = undefined;
+      if (pgid !== undefined) await ctx.update((w) => (w.pgid === pgid ? withoutGroup(w) : w));
       if (!stopped) await exited(r.code, r.signal, r.error);
     })();
   };
@@ -376,7 +499,11 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
       return;
     }
     const exit = error ?? signal ?? String(code);
-    const before = await ctx.update((w) => w);
+    const delays = ctx.timing.backoffMs;
+    // A run that outlasted the longest backoff was healthy: this crash starts a fresh count, so rare crashes over a
+    // persistent watch's 7 days do not add up to "kept crashing".
+    const healthy = ctx.deps.now() - startedAt > (delays.at(-1) ?? 0);
+    const before = await ctx.update((w) => (healthy && w.restarts > 0 ? { ...w, restarts: 0 } : w));
     if (!before || stopped) return;
     if (before.restarts >= MAX_RESTARTS) {
       await ctx.finish("stopped", `kept crashing (exit ${exit})`, `kept crashing (exit ${exit}); stopped`);
@@ -384,7 +511,6 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
     }
     const w = await ctx.update((w) => ({ ...w, restarts: w.restarts + 1 }));
     const n = w?.restarts ?? before.restarts + 1;
-    const delays = ctx.timing.backoffMs;
     const delay = delays[Math.min(n, delays.length) - 1] ?? 0;
     ctx.log({ ev: "restarted", exit, restart: n, delayMs: delay });
     backoffTimer = setTimeout(() => {
@@ -393,12 +519,18 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
     }, delay);
   };
 
-  spawnOnce();
+  finished = reapOrphan(ctx, saved)
+    .catch((e) => ctx.log({ ev: "error", detail: `cannot check the previous process group: ${errorText(e)}` }))
+    .then(() => {
+      if (!stopped) spawnOnce();
+    });
   return {
     async stop() {
       stopped = true;
       clearTimeout(flushTimer);
       clearTimeout(backoffTimer);
+      // `stopped` is set, so nothing spawns from here on: the child (if any) is the last one; with none, `finished`
+      // is the orphan check still in flight.
       const p = child;
       if (p) killGroup(p, "SIGTERM");
       const hard = p ? setTimeout(() => killGroup(p, "SIGKILL"), ctx.timing.killGraceMs) : undefined;
@@ -408,13 +540,45 @@ function commandRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "comman
   };
 }
 
+/** A file's stat, or for a directory the newest mtime, total size and entry count beneath it (bounded walk). */
 const snapshot = (path: string): Checkpoint => {
+  let s: Stats;
   try {
-    const s = statSync(path);
-    return { exists: true, mtimeMs: s.mtimeMs, size: s.size };
+    s = statSync(path);
   } catch {
     return { exists: false };
   }
+  if (!s.isDirectory()) return { exists: true, mtimeMs: s.mtimeMs, size: s.size };
+  let mtimeMs = s.mtimeMs;
+  let size = 0;
+  let count = 0;
+  const walk = (dir: string, depth: number): void => {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return; // unreadable or removed mid-walk
+    }
+    for (const name of names) {
+      if (count >= DIR_MAX_ENTRIES) return;
+      const p = join(dir, name);
+      let e: Stats;
+      try {
+        e = lstatSync(p);
+      } catch {
+        continue;
+      }
+      count++;
+      mtimeMs = Math.max(mtimeMs, e.mtimeMs);
+      if (e.isDirectory()) {
+        if (depth < DIR_MAX_DEPTH) walk(p, depth + 1);
+      } else {
+        size += e.size;
+      }
+    }
+  };
+  walk(path, 1);
+  return { exists: true, mtimeMs, size, count };
 };
 
 /**
@@ -444,7 +608,7 @@ function fileRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "file" }>,
       await ctx.update((w) => ({ ...w, checkpoint: cur }));
       return false;
     }
-    if (last.exists === cur.exists && last.mtimeMs === cur.mtimeMs && last.size === cur.size) return false;
+    if (last.exists === cur.exists && last.mtimeMs === cur.mtimeMs && last.size === cur.size && last.count === cur.count) return false;
     const kind = !last.exists ? "created" : !cur.exists ? "deleted" : "modified";
     if (kinds.at(-1) !== kind) kinds.push(kind);
     last = cur;
@@ -491,10 +655,12 @@ function checksRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "checks"
   });
 }
 
+/** herdr reports a lane that finished its turn unwatched as `done`; like the harness, that counts as idle. */
 function paneRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "pane" }>): Runner {
   return poll(ctx, ctx.timing.panePollMs, async () => {
     const status = await ctx.deps.paneStatus(src.pane);
-    if (status !== src.status && status !== "gone") return false;
+    const hit = src.status === "idle" ? status === "idle" || status === "done" : status === src.status;
+    if (!hit && status !== "gone") return false;
     await ctx.finish("done", `pane ${status}`, `pane ${src.pane} is ${status}`);
     return true;
   });
