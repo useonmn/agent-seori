@@ -78,4 +78,49 @@ describe("seori msg", () => {
     const w = new World();
     expect(await run(["msg", "list"], w.deps())).toEqual({ code: 0, out: "EMPTY" });
   });
+
+  test("with the lead extension consuming: DRAFTED, REPLACED, drafts, drop, flush and --now", async () => {
+    const { w, d, root, fake } = setup();
+    w.consumerLock(root, "alive");
+    const drafted = await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "first try"], d);
+    const draft = /^DRAFTED ([0-9a-f]{8}) /.exec(drafted.out)?.[1];
+    expect(drafted).toEqual({ code: 0, out: `DRAFTED ${draft} fake:c1:1: goes out when your turn ends` });
+    expect(await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "second try"], d)).toEqual({ code: 0, out: `REPLACED ${draft}` });
+    const notice = (await run(["msg", "send", "--to", "fake:c9:t1", "--text", "heads up"], d)).out;
+    const noticeDraft = /^DRAFTED ([0-9a-f]{8}) fake:c9:t1: goes out when your turn ends$/.exec(notice)?.[1];
+    expect(noticeDraft).toBeDefined();
+    expect(await run(["msg", "send", "--replace", noticeDraft!, "--text", "heads up!"], d)).toEqual({ code: 0, out: `REPLACED ${noticeDraft}` });
+    expect((await run(["msg", "list"], d)).out.split("\n")[0]).toStartWith("fake:c1:1  drafted  ");
+    expect((await run(["msg", "drafts"], d)).out).toBe(`${draft}  0m  reply fake:c1:1  "second try"\n${noticeDraft}  0m  notice fake:c9:t1  "heads up!"`);
+    expect(fake.sent()).toEqual([]);
+
+    // --now: the one-line acknowledgement goes out at once.
+    expect(await run(["msg", "send", "--reply-to", "fake:c1:2", "--text", "on it", "--now"], d)).toEqual({ code: 0, out: "SENT fake:c1:2 message=1" });
+
+    await expect(main(["msg", "drop", noticeDraft!], d)).rejects.toThrow(/--why/);
+    expect(await run(["msg", "drop", noticeDraft!, "--why", "not needed"], d)).toEqual({ code: 0, out: `DROPPED ${noticeDraft}` });
+    expect(await run(["msg", "flush"], d)).toEqual({ code: 0, out: `SENT ${draft} fake:c1:1 message=2` });
+    expect(fake.sent().map((r) => [r.replyTo, r.text])).toEqual([["2", "on it"], ["1", "second try"]]);
+    expect(await run(["msg", "flush"], d)).toEqual({ code: 0, out: "EMPTY" });
+    expect(await run(["msg", "drafts"], d)).toEqual({ code: 0, out: "EMPTY" });
+  });
+
+  test("flush exits 3 when a draft is HELD and 1 when one failed (it stays open)", async () => {
+    const { w, d, root, fake } = setup();
+    w.consumerLock(root, "alive");
+    const a = /^DRAFTED (\w+)/.exec((await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "one"], d)).out)![1];
+    writeFileSync(fake.sendModePath, "timeout");
+    const held = await run(["msg", "flush"], d);
+    expect(held.code).toBe(3);
+    expect(held.out).toBe(`HELD ${a} fake:c1:1: the messenger may or may not have it; check the chat, it is not sent again`);
+    writeFileSync(fake.sendModePath, "ok");
+    // An unknown messenger is refused before anything is drafted.
+    await expect(main(["msg", "send", "--to", "nope:c1", "--text", "x"], d)).rejects.toThrow('no messenger "nope"');
+    const c = /^DRAFTED (\w+)/.exec((await run(["msg", "send", "--reply-to", "fake:c1:2", "--text", "two"], d)).out)![1];
+    w.messengers(root, [{ source: "other", owner: "u1" }]);
+    const failed = await run(["msg", "flush"], d);
+    expect(failed.code).toBe(1);
+    expect(failed.out).toBe(`FAILED ${c} fake:c1:2: no messenger "fake" in messengers.json; the draft stays open: flush again, or drop it`);
+    expect((await run(["msg", "drafts"], d)).out).toStartWith(`${c}  `);
+  });
 });

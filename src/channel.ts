@@ -1,6 +1,8 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
-import { lockFile } from "./store.ts";
+import { Outbox } from "./outbox.ts";
+import { lockFile, pidAlive } from "./store.ts";
 
 // The lead channel: what the lead is told without a pane message. Messenger messages: `seori daemon` stores one here
 // before it acknowledges it upstream; extensions/lead-channel.ts delivers it into the lead's omp session; it is closed
@@ -68,6 +70,8 @@ export type IdState = {
   /** A send-uncertain, or a `sending` not settled by a later replied/send-failed: the reply may be in the chat. */
   readonly uncertain: boolean;
   readonly gaveUp: boolean;
+  /** An open draft in the outbox (src/outbox.ts) replies to it: answered as far as delivery and duty alerts go. */
+  readonly drafted: boolean;
   readonly alerted: readonly string[];
 };
 
@@ -179,6 +183,7 @@ export class Channel {
   /** One pass over the ledger grouped by id: the lead extension and duty call this every tick, for all history. */
   states(): IdState[] {
     type Acc = { deliveries: number; lastDeliveredAt?: number; entered: boolean; replied: boolean; closed: boolean; sendUncertain: boolean; inFlight: boolean; gaveUp: boolean; alerted: string[] };
+    const drafted = new Outbox(this.root).draftedIds();
     const byId = new Map<string, Acc>();
     for (const e of this.ledger()) {
       let a = byId.get(e.id);
@@ -220,7 +225,7 @@ export class Channel {
     }
     return this.inbound().map((row) => {
       const a = byId.get(row.id);
-      if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: false, uncertain: false, gaveUp: false, alerted: [] };
+      if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: false, uncertain: false, gaveUp: false, drafted: drafted.has(row.id), alerted: [] };
       return {
         row,
         deliveries: a.deliveries,
@@ -230,6 +235,7 @@ export class Channel {
         closed: a.closed,
         uncertain: a.sendUncertain || a.inFlight,
         gaveUp: a.gaveUp,
+        drafted: drafted.has(row.id),
         alerted: a.alerted,
       };
     });
@@ -242,6 +248,21 @@ export class Channel {
 
   lockConsumer(now: number): (() => void) | undefined {
     return lockFile(this.consumerLockPath, now);
+  }
+
+  /**
+   * No lead extension is consuming: its lock is missing or held by a dead pid on this host. A lock from another host,
+   * or one that cannot be read, cannot be judged here, so it counts as consuming rather than raising a false alarm.
+   */
+  consumerOffline(): boolean {
+    let raw: string;
+    try {
+      raw = readFileSync(this.consumerLockPath, "utf8");
+    } catch {
+      return true;
+    }
+    const lock = (() => { try { return JSON.parse(raw) as { pid?: unknown; host?: unknown }; } catch { return {}; } })();
+    return lock.host === hostname() && typeof lock.pid === "number" && !pidAlive(lock.pid);
   }
 
   /** Held by `seori msg send --reply-to` across check → send → record, so two replies to one id can't both go out. */

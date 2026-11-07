@@ -3,6 +3,9 @@
 // in the ledger. The ledger is the only persistent state: a restarted omp, or a /new, /resume or /fork, carries every
 // open id over (src/lead-delivery.ts decides when and how).
 //
+// It also releases the lead's reply drafts (src/outbox.ts): a flush after a turn ends with no continuation, held when
+// omp's advisor steers a continuation (src/release.ts decides when).
+//
 // Env (passed by `seori up` through `herdr agent start --env`): SEORI_HOME (the extension is inert without it) and
 // SEORI_CMD (how the lead runs seori, quoted into the message; default `seori`).
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -10,6 +13,8 @@ import { readFileSync, watch, type FSWatcher } from "node:fs";
 import { basename } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { DeliverySchedule, renderDelivery, seenWatchIds, type Trigger } from "../src/lead-delivery.ts";
+import { draftsIn, flushLine, msgDepsFor, msgFlush } from "../src/msg.ts";
+import { ReleaseScheduler } from "../src/release.ts";
 
 const CUSTOM_TYPE = "seori-inbound";
 /** New rows arriving together (a burst of messenger messages) become one delivery. */
@@ -53,6 +58,26 @@ export default function leadChannel(pi: ExtensionAPI) {
     if (ctx?.hasUI) ctx.ui.notify(message, type);
     else pi.logger.warn(message);
   };
+
+  // The flush runs in this process with the deps the CLI uses; nothing it does is thrown into omp.
+  const drafts = new ReleaseScheduler(
+    (fn, ms) => {
+      const c = ctx;
+      if (!c) return () => {};
+      const t = c.setTimeout(fn, ms);
+      return () => c.clearTimer(t);
+    },
+    Date.now,
+    async (window) => {
+      if (!draftsIn(home, window).length) return;
+      for (const o of await msgFlush(home, msgDepsFor(home), window)) {
+        const line = `seori lead channel: ${flushLine(o)}`;
+        if (o.status === "SENT") pi.logger.debug(line);
+        else say(line, "warning");
+      }
+    },
+    (e) => say(`seori lead channel: releasing reply drafts failed: ${e instanceof Error ? e.message : String(e)}`, "warning"),
+  );
 
   /** One consumer per home, so two omps on the same home never both deliver (review-C F7). */
   const holdLock = (now: number): boolean => {
@@ -111,6 +136,7 @@ export default function leadChannel(pi: ExtensionAPI) {
     ctx = c;
     active = c.agent.kind === "main";
     if (!active) return;
+    drafts.armed();
     try {
       watcher ??= watch(channel.dir, (_event, file) => {
         if (file === null || file === basename(channel.inboundPath)) scanSoon();
@@ -126,10 +152,17 @@ export default function leadChannel(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (_e, c) => arm(c, { kind: "session_start" }));
-  pi.on("session_switch", (_e, c) => arm(c, { kind: "session_switch" }));
+  pi.on("session_switch", (_e, c) => {
+    drafts.cancel(); // the next agent_end in the new session releases them; duty tells the lead about old ones
+    arm(c, { kind: "session_switch" });
+  });
+  pi.on("message_start", (e) => {
+    if (active) drafts.message(e.message);
+  });
 
   pi.on("message_end", (e, c) => {
     if (!active) return;
+    drafts.message(e.message);
     // Read through `prop`: the message union is omp's, and only these fields matter here.
     if (prop(e.message, "role") !== "custom" || prop(e.message, "customType") !== CUSTOM_TYPE) return;
     const raw = prop(prop(e.message, "details"), "ids");
@@ -144,9 +177,16 @@ export default function leadChannel(pi: ExtensionAPI) {
     for (const id of seenWatchIds(channel.states(), ids, idle)) channel.appendLedger({ id, ev: "closed", at, why: "seen" });
   });
 
+  pi.on("agent_start", () => {
+    if (active) drafts.agentStart();
+  });
+
   pi.on("agent_end", (e, c) => {
-    if (!active || e.willContinue) return; // a scheduled continuation is not the end of the turn
+    if (!active) return;
     ctx = c;
+    // Only the consumer-lock holder releases drafts: a second omp on this home must not flush the real lead's mid-turn drafts.
+    drafts.agentEnd(e, holdLock(Date.now()));
+    if (e.willContinue) return; // a scheduled continuation is not the end of the turn
     const last = e.messages.findLast((m) => prop(m, "role") === "assistant");
     const stopReason = prop(last, "stopReason");
     evaluate({ kind: "agent_end", stopReason: typeof stopReason === "string" ? stopReason : "none" });
@@ -161,6 +201,7 @@ export default function leadChannel(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", (_e, c) => {
     active = false;
+    drafts.cancel();
     watcher?.close();
     watcher = undefined;
     if (ticker) c.clearTimer(ticker);

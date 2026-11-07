@@ -119,13 +119,17 @@ describe("lanes", () => {
     const d = { ...w.deps(), model: "m1" };
     w.heartbeat(d.store.root, 0); // the daemon's first heartbeat, which up waits for before it starts the duty loop
     const prev = process.env["SEORI_HERDR_SESSION"];
+    const prevConfig = process.env["PI_CONFIG_FILES"];
     process.env["SEORI_HERDR_SESSION"] = "iso";
+    delete process.env["PI_CONFIG_FILES"];
     let out: string;
     try {
       out = await captureLog(() => main(["up", "--cwd", d.store.root], d));
     } finally {
       if (prev === undefined) delete process.env["SEORI_HERDR_SESSION"];
       else process.env["SEORI_HERDR_SESSION"] = prev;
+      if (prevConfig === undefined) delete process.env["PI_CONFIG_FILES"];
+      else process.env["PI_CONFIG_FILES"] = prevConfig;
     }
     const { lead, duty } = d.store.roles();
     const prompts = join(d.store.root, "prompts");
@@ -138,7 +142,14 @@ describe("lanes", () => {
     expect(w.panes.get(duty!)!.started).toEqual({ name: `duty-${duty!.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "duty.md"), "--model", "m1"] });
     // herdr agent start has no --env: the extension's environment is set on the lead's workspace shell.
     const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
-    expect(create.slice(-6)).toEqual(["--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso"]);
+    // Only the lead's omp gets PI_CONFIG_FILES: advisor.syncBacklog strict, so the agent-end review ends before agent_end.
+    const leadConfig = join(prompts, "lead-omp.yml");
+    expect(create.slice(-8)).toEqual([
+      "--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso", "--env", `PI_CONFIG_FILES=${leadConfig}`,
+    ]);
+    expect(readFileSync(leadConfig, "utf8")).toBe("advisor:\n  syncBacklog: strict\n");
+    const others = w.calls.filter((c) => !(c.argv[0] === "workspace" && c.argv[1] === "create"));
+    expect(others.some((c) => c.argv.some((arg) => arg.startsWith("PI_CONFIG_FILES=")))).toBe(false);
     // The daemon starts first, so the duty loop's first tick finds its heartbeat instead of reporting an outage.
     expect(w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "run").map((c) => [c.argv[2], c.argv[3]])).toEqual([
       ["w1:p6", `sh -c 'while :; do seori daemon; s=$?; case "$s" in 130|143) exit "$s";; esac; sleep 1; done'`],
@@ -146,6 +157,22 @@ describe("lanes", () => {
       ["w1:p5", "seori loop"],
     ]);
     expect(out).toBe(`UP lead=${lead} duty=${duty} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root}`);
+  });
+
+  test("up appends the lead's omp config to a PI_CONFIG_FILES already in the environment", async () => {
+    const w = new World();
+    const d = w.deps();
+    w.heartbeat(d.store.root, 0);
+    const prev = process.env["PI_CONFIG_FILES"];
+    process.env["PI_CONFIG_FILES"] = "/etc/omp/a.yml";
+    try {
+      await captureLog(() => main(["up", "--cwd", d.store.root], d));
+    } finally {
+      if (prev === undefined) delete process.env["PI_CONFIG_FILES"];
+      else process.env["PI_CONFIG_FILES"] = prev;
+    }
+    const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
+    expect(create.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml:${join(d.store.root, "prompts", "lead-omp.yml")}`);
   });
 
   test("start refuses the role names lead and duty as lane keys before it writes or opens anything", async () => {

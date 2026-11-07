@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { cpus, freemem, hostname, loadavg, totalmem } from "node:os";
+import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
+import { Outbox } from "./outbox.ts";
 import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
-import { KEY_RE, pidAlive, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
+import { KEY_RE, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
 import { loadConfig } from "./config.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
@@ -544,10 +545,10 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     // An unwritable lead dir must not stop lane and inbox duty (a broken messengers.json is told to the lead, not thrown).
     events.push({ action: "channel-failed", detail: failureDetail(e) });
   }
-  // The done window, ceilings and stalls, the host guard and progress posts: each its own module, each guarded so one
-  // failing never stops the others.
+  // Stuck reply drafts, the done window, ceilings and stalls, the host guard and progress posts: each its own module,
+  // each guarded so one failing never stops the others.
   const ticks: [string, (d: Deps) => Promise<DutyEvent[]>][] = [
-    ["autoclose", autoCloseTick], ["supervise", superviseTick], ["guard", guardTick], ["progress", progressTick],
+    ["drafts", draftsTick], ["autoclose", autoCloseTick], ["supervise", superviseTick], ["guard", guardTick], ["progress", progressTick],
   ];
   for (const [name, tick] of ticks) {
     try {
@@ -576,7 +577,47 @@ export const ALERT_TEXT = {
 type AlertWhy = keyof typeof ALERT_TEXT;
 
 /** `lead/duty-alerts.json`: alert state that is not per message id, so an outage or a breakage is told once, not every tick. */
-type DutyAlerts = { daemonDownSince?: number; configBrokenSince?: number; messengerFailing?: Record<string, number> };
+type DutyAlerts = { daemonDownSince?: number; configBrokenSince?: number; messengerFailing?: Record<string, number>; draftsTold?: string[] };
+
+/** An open reply draft this old was not released at a turn end (a crashed turn, a failed flush): the lead is told. */
+export const DRAFTS_ALERT_MS = 5 * 60_000;
+
+/**
+ * Tells the lead once per draft about open outbox drafts older than DRAFTS_ALERT_MS. Leftovers are not flushed on
+ * their own: the turn that drafted them may have crashed half-done, so the lead decides whether they go out. Told
+ * drafts are kept in duty-alerts.json only while they stay open.
+ */
+async function draftsTick(d: Deps): Promise<DutyEvent[]> {
+  const open = new Outbox(d.store.root).open();
+  const state = readJsonFile<DutyAlerts>(dutyAlertsPath(d.store.root)) ?? {};
+  const told = (state.draftsTold ?? []).filter((id) => open.some((o) => o.draft === id));
+  const due = open.filter((o) => !told.includes(o.draft) && d.now() - o.at > DRAFTS_ALERT_MS).map((o) => o.draft);
+  const events: DutyEvent[] = [];
+  if (due.length) {
+    let delivered = true;
+    try {
+      await tellLead(d, `[DRAFTS] ${due.length} reply draft(s) not sent: ${due.join(", ")}; send them with ${d.seoriCmd} msg flush or drop them with ${d.seoriCmd} msg drop <draft> --why '...'`, "duty");
+    } catch (e) {
+      // As daemonAlert: an uncertain delivery is held with the lead told, so those drafts count as told.
+      if (!(e instanceof DeliveryUncertain)) {
+        delivered = false;
+        events.push({ action: "drafts-alert-failed", detail: failureDetail(e) });
+      }
+    }
+    if (delivered) {
+      told.push(...due);
+      events.push({ action: "drafts-alerted", detail: due.join(", ") });
+    }
+  }
+  const before = state.draftsTold ?? [];
+  if (told.length !== before.length || told.some((id, i) => before[i] !== id)) {
+    // Re-read: another alert may have saved its own field in between.
+    const latest = readJsonFile<DutyAlerts>(dutyAlertsPath(d.store.root)) ?? {};
+    delete latest.draftsTold;
+    saveDutyAlerts(d.store.root, told.length ? { ...latest, draftsTold: told } : latest);
+  }
+  return events;
+}
 
 /** A messenger whose receive has failed for this long (bad token, another consumer, a platform outage) is told to the lead. */
 export const MESSENGER_FAILING_ALERT_MS = 3 * 60_000;
@@ -598,21 +639,6 @@ const readJsonFile = <T>(path: string): T | undefined => {
     return undefined;
   }
 };
-
-/**
- * No lead extension is consuming: its lock is missing or held by a dead pid on this host. A lock from another host,
- * or one that cannot be read, cannot be judged here, so it counts as consuming rather than raising a false alarm.
- */
-function consumerOffline(lockPath: string): boolean {
-  let raw: string;
-  try {
-    raw = readFileSync(lockPath, "utf8");
-  } catch {
-    return true;
-  }
-  const lock = (() => { try { return JSON.parse(raw) as { pid?: unknown; host?: unknown }; } catch { return {}; } })();
-  return lock.host === hostname() && typeof lock.pid === "number" && !pidAlive(lock.pid);
-}
 
 /**
  * Messenger alerts, only when a messenger is configured (or messengers.json is there but broken): a broken config and a
@@ -642,9 +668,11 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   const waiting = open.filter((s) => !s.uncertain && !s.gaveUp);
   const waited = (at: number | undefined): boolean => at !== undefined && now - at > ALERT_AFTER_MS;
   const due: [IdState & { readonly row: MessengerRow }, AlertWhy][] = [];
+  // A drafted id still waits while no lead is consuming: only the lead extension sends drafts, so the owner is told.
   const offline = waiting.filter((s) => !s.alerted.includes("lead-offline") && waited(s.row.at));
-  if (offline.length && consumerOffline(channel.consumerLockPath)) due.push(...offline.map((s): [typeof s, AlertWhy] => [s, "lead-offline"]));
-  const stuck = waiting.filter((s) => !s.alerted.includes("lead-blocked") && waited(s.lastDeliveredAt));
+  if (offline.length && channel.consumerOffline()) due.push(...offline.map((s): [typeof s, AlertWhy] => [s, "lead-offline"]));
+  // A live lead's drafted id is answered: its reply goes out when the turn ends (duty's [DRAFTS] alert covers a stuck one).
+  const stuck = waiting.filter((s) => !s.drafted && !s.alerted.includes("lead-blocked") && waited(s.lastDeliveredAt));
   const lead = d.store.roles().lead;
   if (stuck.length && lead) {
     try {
@@ -653,7 +681,7 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
       events.push({ pane: lead, action: "lead-status-failed", detail: failureDetail(e) });
     }
   }
-  for (const s of open) if (s.gaveUp && !s.alerted.includes("gave-up")) due.push([s, "gave-up"]);
+  for (const s of open) if (s.gaveUp && !s.drafted && !s.alerted.includes("gave-up")) due.push([s, "gave-up"]);
 
   for (const [s, why] of due) {
     const { id, source, chat, thread } = s.row;

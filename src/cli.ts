@@ -11,7 +11,7 @@ import { shq } from "./herdr.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
-import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "./msg.ts";
+import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList, msgSend, parseTo } from "./msg.ts";
 import type { Role } from "./store.ts";
 import { parsePr } from "./harness.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
@@ -67,8 +67,14 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori heavy <label> -- <cmd...>              run a heavy command when load is low and a heavy slot is free
   seori status
   seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
-  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
-                                              answer messenger messages (one reply per id) or send a notice
+  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
+                                              answer messenger messages (one reply per id) or send a notice; while the
+                                              lead extension runs it is drafted and goes out when the lead's turn ends
+                                              (--now: send at once); a second send to the same ids replaces the draft
+  seori msg send --replace DRAFT --text T      change the text of an open draft (reply or notice)
+  seori msg drafts                             open drafts: draft  age  reply IDS|notice SOURCE:CHAT  text
+  seori msg drop <draft> --why T               discard an open draft; its ids are open again
+  seori msg flush                              send every open draft now, oldest first
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
@@ -83,6 +89,7 @@ send, report and ready exit 3 and print HELD <target> when the delivery may or m
 it is held and never resent, so do not send it again: check the pane, then seori inbox ack or seori inbox resend it.
 QUEUED (exit 0) means it waits in the pane's inbox.
 msg send exits 3 with HELD when the messenger may or may not have the reply: check the chat, then pass --again.
+msg flush prints SENT, HELD or FAILED per draft; it exits 1 if a draft failed (it stays open), else 3 if one is HELD.
 A second reply to an id is refused (exit 2) unless --again is given.
 SEORI_MODEL=M passes --model M to every omp seori starts (lead, duty, lanes) and is the reviewer's default model.
 watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), else for the lead; refusals exit 2.
@@ -93,7 +100,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -154,12 +161,29 @@ export const LEAD_EXTENSION = join(import.meta.dir, "..", "extensions", "lead-ch
 export const daemonLoop = (seoriCmd: string): string =>
   `while :; do ${seoriCmd} daemon; s=$?; case "$s" in 130|143) exit "$s";; esac; sleep 1; done`;
 
+/**
+ * Writes `$SEORI_HOME/prompts/lead-omp.yml` (omp settings for the lead only) and returns the PI_CONFIG_FILES value
+ * that loads it: appended with ':' to a PI_CONFIG_FILES already in the environment, so it overlays those too.
+ */
+function leadOmpConfig(root: string): string {
+  const dir = join(root, "prompts");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "lead-omp.yml");
+  writeFileSync(path, "advisor:\n  syncBacklog: strict\n");
+  const inherited = process.env["PI_CONFIG_FILES"];
+  return inherited ? `${inherited}:${path}` : path;
+}
+
 async function up(d: Deps, cwd: string): Promise<void> {
   await requireOmpIntegration(d);
   const env = { SEORI_HOME: d.store.root };
   const session = process.env["SEORI_HERDR_SESSION"];
-  // The extension reads its home and how to run seori from the environment of the shell omp starts in.
-  const leadEnv = { ...env, SEORI_CMD: d.seoriCmd, ...(session ? { SEORI_HERDR_SESSION: session } : {}) };
+  // The extension reads its home and how to run seori from the environment of the shell omp starts in. The lead's omp
+  // also gets PI_CONFIG_FILES with advisor.syncBacklog: strict, so the advisor's agent-end review finishes before
+  // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets it.
+  const leadEnv = {
+    ...env, SEORI_CMD: d.seoriCmd, ...(session ? { SEORI_HERDR_SESSION: session } : {}), PI_CONFIG_FILES: leadOmpConfig(d.store.root),
+  };
   const lead = await d.herdr.createWorkspace("seori", cwd, leadEnv);
   await startAgent(d, "lead", lead.paneId, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", lead.paneId);
@@ -228,23 +252,29 @@ async function daemon(root: string): Promise<number> {
   return 128 + osConstants.signals[caught];
 }
 
-function msgDeps(d: Deps): MsgDeps {
-  const root = d.store.root;
-  return { adapterFor: (c) => adapterFor(c, root), configs: loadMessengers(root), now: d.now };
-}
-
 async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
   const root = d.store.root;
   if (sub === "send") {
     const replyTo = a.flags.get("reply-to")?.flatMap((v) => v.split(",")).map((id) => id.trim()).filter(Boolean);
     const to = one(a, "to");
+    const replace = one(a, "replace");
     const r = await msgSend(root, {
       ...(replyTo ? { replyTo } : {}),
       ...(to !== undefined ? { to: parseTo(to) } : {}),
+      ...(replace !== undefined ? { replace } : {}),
       text: await textOf(a),
       again: one(a, "again") === "true",
-    }, msgDeps(d));
+      sendNow: one(a, "now") === "true",
+    }, msgDepsFor(root, d.now));
     const what = r.ids.length ? r.ids.join(",") : to!;
+    if (r.status === "DRAFTED") {
+      console.log(`DRAFTED ${r.draft} ${what}: goes out when your turn ends`);
+      return 0;
+    }
+    if (r.status === "REPLACED") {
+      console.log(`REPLACED ${r.draft}`);
+      return 0;
+    }
     if (r.status === "SENT") {
       console.log(`SENT ${what} message=${r.messageId}`);
       return 0;
@@ -259,6 +289,22 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     msgClose(root, id, need(one(a, "why"), "--why"), d.now());
     console.log(`CLOSED ${id}`);
     return 0;
+  }
+  if (sub === "drafts") {
+    const lines = msgDrafts(root, d.now());
+    console.log(lines.length ? lines.join("\n") : "EMPTY");
+    return 0;
+  }
+  if (sub === "drop") {
+    const draft = need(a.pos[2], "draft id");
+    msgDrop(root, draft, need(one(a, "why"), "--why"), d.now());
+    console.log(`DROPPED ${draft}`);
+    return 0;
+  }
+  if (sub === "flush") {
+    const outcomes = await msgFlush(root, msgDepsFor(root, d.now));
+    console.log(outcomes.length ? outcomes.map(flushLine).join("\n") : "EMPTY");
+    return outcomes.some((o) => o.status === "FAILED") ? 1 : outcomes.some((o) => o.status === "HELD") ? 3 : 0;
   }
   if (sub === "list") {
     const lines = msgList(root, { all: one(a, "all") === "true" }, d.now());
