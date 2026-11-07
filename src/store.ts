@@ -126,6 +126,46 @@ function lockStale(path: string, content: string, now: number): boolean {
   return now - at > INBOX_LOCK_STALE_MS;
 }
 
+/**
+ * Takes the lock at `path` (created O_EXCL, holding pid, host and time) and returns its release, or undefined while
+ * another process holds it. A lock whose pid is dead on this host, or one from another host (or unreadable) older than
+ * INBOX_LOCK_STALE_MS, is taken over: it is renamed aside first, and when what was renamed is not the lock judged stale
+ * (another process took it over in between), it is put back and the lock counts as held.
+ */
+export function lockFile(path: string, now: number): (() => void) | undefined {
+  const mine = JSON.stringify({ pid: process.pid, host: hostname(), at: now });
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      writeFileSync(path, mine, { flag: "wx" });
+      return () => {
+        if (readOrUndefined(path) === mine) rmSync(path, { force: true });
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    const seen = readOrUndefined(path);
+    if (seen === undefined) continue;
+    if (!lockStale(path, seen, now)) return undefined;
+    const aside = `${path}.${process.pid}.stale`;
+    try {
+      renameSync(path, aside);
+    } catch {
+      continue;
+    }
+    if (readOrUndefined(aside) !== seen) {
+      try {
+        linkSync(aside, path);
+      } catch {
+        // a third process holds the lock now; either way it is not ours
+      }
+      rmSync(aside, { force: true });
+      return undefined;
+    }
+    rmSync(aside, { force: true });
+  }
+  return undefined;
+}
+
 export class Store {
   constructor(readonly root: string = process.env["SEORI_HOME"] ?? join(homedir(), ".seori")) {
     for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "duty"]) mkdirSync(join(root, d), { recursive: true });
@@ -191,45 +231,9 @@ export class Store {
     writeFileSync(this.inboxPath(paneId), msgs.map((m) => JSON.stringify(m) + "\n").join(""));
   }
 
-  /**
-   * Takes the pane's inbox lock (`<inbox>.lock`, created O_EXCL, holding pid, host and time) and returns its release,
-   * or undefined while another flush holds it. A lock whose pid is dead on this host, or one from another host (or
-   * unreadable) older than INBOX_LOCK_STALE_MS, is taken over: it is renamed aside first, and when what was renamed is not the lock judged stale (another
-   * process took it over in between), it is put back and the lock counts as held.
-   */
+  /** The pane's inbox lock (`<inbox>.lock`): one flush per pane at a time, across processes. See lockFile. */
   lockInbox(paneId: string, now: number): (() => void) | undefined {
-    const path = `${this.inboxPath(paneId)}.lock`;
-    const mine = JSON.stringify({ pid: process.pid, host: hostname(), at: now });
-    for (let tries = 0; tries < 2; tries++) {
-      try {
-        writeFileSync(path, mine, { flag: "wx" });
-        return () => {
-          if (readOrUndefined(path) === mine) rmSync(path, { force: true });
-        };
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      }
-      const seen = readOrUndefined(path);
-      if (seen === undefined) continue;
-      if (!lockStale(path, seen, now)) return undefined;
-      const aside = `${path}.${process.pid}.stale`;
-      try {
-        renameSync(path, aside);
-      } catch {
-        continue;
-      }
-      if (readOrUndefined(aside) !== seen) {
-        try {
-          linkSync(aside, path);
-        } catch {
-          // a third process holds the lock now; either way it is not ours
-        }
-        rmSync(aside, { force: true });
-        return undefined;
-      }
-      rmSync(aside, { force: true });
-    }
-    return undefined;
+    return lockFile(`${this.inboxPath(paneId)}.lock`, now);
   }
 
   inboxPanes(): string[] {
