@@ -137,7 +137,7 @@ How a message travels:
 3. The lead answers with `seori msg send --reply-to <id> --text '...'`, or `seori msg close <id> --why '...'` when no answer is needed. Only a reply the messenger accepted, or a close, ends an id. A second reply to the same id is refused; a reply that may or may not have arrived (a timeout after sending) is recorded and not retried until you check the chat and pass `--again`.
 4. An id that is still unanswered is delivered again, up to 3 deliveries in total; after that it is given up.
 
-The duty loop watches the channel when a messenger is configured. It tells the lead once when `messengers.json` cannot be read (the daemon cannot start on it) and once when the daemon's heartbeat is older than 90 seconds. It tells you in the chat, once per message, when the lead is offline (no lead omp consuming) or blocked on a question for more than 2 minutes, or when it gave up on a message after 3 tries. A message whose reply may already have arrived (send-uncertain), or that was given up, gets no offline or blocked notice: it is never delivered again.
+The duty loop watches the channel when a messenger is configured. It tells the lead once when `messengers.json` cannot be read (the daemon cannot start on it) and once when the daemon's heartbeat is older than 90 seconds. It tells you in the chat, once per message, when the lead is offline (no lead omp consuming) or stuck for more than 2 minutes (herdr reports it blocked: a question in its terminal, or a turn that ended in a model error), or when it gave up on a message after 3 tries. A message whose reply may already have arrived (send-uncertain), or that was given up, gets no offline or stuck notice: it is never delivered again.
 
 ## State
 
@@ -164,7 +164,7 @@ bun test         # unit tests against a fake herdr and gh; no model is called
 bun run typecheck
 ```
 
-The end-to-end tests in `test/e2e.test.ts` need a real herdr with the omp integration installed, omp on PATH, and `SEORI_E2E_OMP=1`. They call a real model, so they cost money. Without those they are skipped.
+The end-to-end tests in `test/e2e.test.ts` (lanes and the hourly loop) and `test/e2e-channel.test.ts` (the messenger channel: idle, busy, burst, lead restart, `/new`, subagents, Esc, a model outage and recovery, a permanent outage ending in gave-up, daemon crash and config change) need a real herdr with the omp integration installed, omp on PATH, and `SEORI_E2E_OMP=1`. They call a real model, so they cost money; without those they are skipped. The channel suite takes about 18 minutes; `SEORI_E2E_ONLY=1,2,3` runs a subset (scenario 8, the outage, takes about 9 minutes on its own).
 
 ## Telemetry
 

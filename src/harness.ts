@@ -502,7 +502,9 @@ export const ALERT_AFTER_MS = 2 * 60_000;
 
 export const ALERT_TEXT = {
   "lead-offline": "seori: the lead is offline; your message is kept and will be answered when it is back.",
-  "lead-blocked": "seori: the lead is waiting on a question in its terminal; your message is queued.",
+  // herdr reports `blocked` both for a question in the terminal and after a turn that ended in a provider error, so the
+  // text names both; the extension keeps redelivering in the error case.
+  "lead-blocked": "seori: the lead is stuck (a question in its terminal, or its model is failing); your message is queued and will be retried.",
   "gave-up": "seori: the lead could not answer this after 3 tries; please check the terminal.",
 } as const;
 type AlertWhy = keyof typeof ALERT_TEXT;
