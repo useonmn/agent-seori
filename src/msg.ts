@@ -45,9 +45,15 @@ export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Prom
   if (!o.text.trim()) throw new Refusal("refusing to send an empty message");
 
   if (o.to) {
-    // A notice is not an answer to anything, so it neither needs nor touches the ledger.
-    const { messageId } = await adapterFor(d, o.to.source).send({ chat: o.to.chat, ...(o.to.thread ? { thread: o.to.thread } : {}) }, o.text);
-    return { status: "SENT", messageId, ids: [] };
+    // A notice is not an answer to anything, so it neither needs nor touches the ledger. An uncertain send is HELD
+    // like a reply (exit 3): it may have arrived, so the caller checks the chat instead of sending it twice.
+    try {
+      const { messageId } = await adapterFor(d, o.to.source).send({ chat: o.to.chat, ...(o.to.thread ? { thread: o.to.thread } : {}) }, o.text);
+      return { status: "SENT", messageId, ids: [] };
+    } catch (e) {
+      if (e instanceof SendUncertain) return { status: "HELD", ids: [] };
+      throw e;
+    }
   }
 
   const ids = [...new Set(o.replyTo)];

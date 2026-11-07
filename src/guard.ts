@@ -1,0 +1,211 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { loadConfig, type GuardThresholds, type SeoriConfig } from "./config.ts";
+import { tellLead, type Deps, type DutyEvent } from "./harness.ts";
+import { DeliveryUncertain, HerdrError } from "./herdr.ts";
+
+// The host guard: one reading of the machine (load, memory, disk, panes) that holds new lanes (`seori can-launch`)
+// and tells the lead once when the host crosses a threshold and once when it recovers (the duty tick's guardTick).
+
+/**
+ * One reading of the host. `loadPct` is the 1-minute load per core in percent (100 = every core busy). Disk is the free
+ * space on $SEORI_HOME's volume. A figure that could not be read is undefined, with the reason in `unreadable`; it is
+ * never guessed as 0 or as fine.
+ */
+export type HostSample = {
+  readonly loadPct: number;
+  readonly memFreePct: number;
+  readonly diskFreeGb?: number;
+  readonly panes?: number;
+  readonly unreadable: readonly string[];
+};
+
+const KB_PER_GB = 1024 * 1024;
+
+/** First line of a failed command's output, short enough for one alert line. */
+function why(stderr: string, stdout: string): string {
+  const first = (stderr.trim() || stdout.trim()).split("\n")[0] ?? "";
+  return first.length > 120 ? `${first.slice(0, 120)}...` : first || "no output";
+}
+
+/** Available kilobytes from `df -k -P <path>`: the last line's fourth column (POSIX format keeps one line per volume). */
+export function parseDfAvailableKb(stdout: string): number | undefined {
+  const last = stdout.trim().split("\n").at(-1)?.trim().split(/\s+/);
+  const kb = Number(last?.[3]);
+  return last && last.length >= 6 && Number.isFinite(kb) && kb >= 0 ? kb : undefined;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** The number of panes in `herdr pane list` JSON (`{"result":{"panes":[...]}}`), or undefined when it is not that shape. */
+export function parsePaneCount(stdout: string): number | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  const result = isObj(parsed) ? parsed["result"] : undefined;
+  const panes = isObj(result) ? result["panes"] : undefined;
+  return Array.isArray(panes) ? panes.length : undefined;
+}
+
+/**
+ * Reads the host: load and memory from Deps.host, free disk of $SEORI_HOME's volume from `df -k -P`, and the live pane
+ * count from `herdr pane list` (in seori's herdr session when SEORI_HERDR_SESSION is set, as Herdr does).
+ */
+export async function sampleHost(d: Deps): Promise<HostSample> {
+  const host = d.host();
+  const unreadable: string[] = [];
+
+  let diskFreeGb: number | undefined;
+  const df = await d.exec("df", ["-k", "-P", d.store.root]);
+  const kb = df.code === 0 ? parseDfAvailableKb(df.stdout) : undefined;
+  if (kb === undefined) unreadable.push(`disk free unreadable (df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)})`);
+  else diskFreeGb = kb / KB_PER_GB;
+
+  let panes: number | undefined;
+  const session = process.env["SEORI_HERDR_SESSION"];
+  const pl = await d.exec("herdr", [...(session ? ["--session", session] : []), "pane", "list"]);
+  panes = pl.code === 0 ? parsePaneCount(pl.stdout) : undefined;
+  if (panes === undefined) unreadable.push(`panes unreadable (herdr pane list: ${pl.code === 0 ? "unexpected output" : why(pl.stderr, pl.stdout)})`);
+
+  return {
+    loadPct: host.cores > 0 ? Math.round((host.load1 / host.cores) * 100) : 0,
+    memFreePct: host.memFreePct,
+    ...(diskFreeGb !== undefined ? { diskFreeGb } : {}),
+    ...(panes !== undefined ? { panes } : {}),
+    unreadable,
+  };
+}
+
+const gb = (n: number): string => `${Math.floor(n)} GB`;
+
+/**
+ * Why a new lane must wait: free memory, free disk or the pane count past its threshold. A figure that could not be
+ * read holds nothing (as dori, which counts unknown memory as free): a flaky `df` or herdr call must not stop all work.
+ * `seori guard` still prints it.
+ * CPU load never holds a launch: it moves too fast to plan around (heavy commands wait for it instead, see heavy.ts).
+ */
+export function holdReasons(s: HostSample, t: GuardThresholds): string[] {
+  const r: string[] = [];
+  if (s.memFreePct < t.memFreeMinPct) r.push(`memory free ${s.memFreePct}% < ${t.memFreeMinPct}%`);
+  if (s.diskFreeGb !== undefined && s.diskFreeGb < t.diskFreeMinGb) r.push(`disk free ${gb(s.diskFreeGb)} < ${t.diskFreeMinGb} GB`);
+  if (s.panes !== undefined && s.panes > t.panesMax) r.push(`panes ${s.panes} > ${t.panesMax}`);
+  return r;
+}
+
+/** `seori can-launch`: ok when nothing holds a new lane (see holdReasons). */
+export async function canLaunch(d: Deps, config: SeoriConfig): Promise<{ ok: boolean; reasons: string[] }> {
+  const reasons = holdReasons(await sampleHost(d), config.guard);
+  return { ok: reasons.length === 0, reasons };
+}
+
+/** The line `seori can-launch` prints: `CAN_LAUNCH` (exit 0) or `HOLD <reason> | <reason>` (exit 4). */
+export const canLaunchLine = (r: { ok: boolean; reasons: readonly string[] }): string => (r.ok ? "CAN_LAUNCH" : `HOLD ${r.reasons.join(" | ")}`);
+
+/** One line with every figure, e.g. `load 40% per core, memory free 52%, disk free 120 GB, panes 7`. */
+export function hostLine(s: HostSample): string {
+  return [
+    `load ${s.loadPct}% per core`,
+    `memory free ${s.memFreePct}%`,
+    `disk free ${s.diskFreeGb === undefined ? "unknown" : gb(s.diskFreeGb)}`,
+    `panes ${s.panes ?? "unknown"}`,
+  ].join(", ");
+}
+
+/** `$SEORI_HOME/duty/guard.json`: what the lead was last told, so a crossing is told once, not every tick. */
+export type GuardState = {
+  readonly alerting: boolean;
+  /** Load crossed loadAlertPct and has not yet fallen under loadOkPct. */
+  readonly loadHigh: boolean;
+  readonly since: number;
+  readonly reasons: readonly string[];
+};
+
+export const guardStatePath = (root: string): string => join(root, "duty", "guard.json");
+
+function saveGuardState(root: string, s: GuardState): void {
+  const path = guardStatePath(root);
+  mkdirSync(join(root, "duty"), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(s, null, 2)}\n`);
+  renameSync(tmp, path);
+}
+
+export function readGuardState(root: string): GuardState | undefined {
+  let s: unknown;
+  try {
+    s = JSON.parse(readFileSync(guardStatePath(root), "utf8"));
+  } catch {
+    return undefined; // no file yet, or a damaged one: start from "not alerting"
+  }
+  if (!isObj(s) || typeof s["alerting"] !== "boolean") return undefined;
+  const reasons = s["reasons"];
+  return {
+    alerting: s["alerting"],
+    loadHigh: s["loadHigh"] === true,
+    since: typeof s["since"] === "number" ? s["since"] : 0,
+    reasons: Array.isArray(reasons) ? reasons.map(String) : [],
+  };
+}
+
+/**
+ * The guard's verdict on a reading. Load alerts above loadAlertPct and, once high, stays high until it falls under
+ * loadOkPct, so a load hovering at the threshold does not flap. Memory, disk and panes alert as in holdReasons; an
+ * unreadable figure never alerts.
+ */
+export function guardVerdict(s: HostSample, t: GuardThresholds, wasLoadHigh: boolean): { loadHigh: boolean; reasons: string[] } {
+  const loadHigh = wasLoadHigh ? s.loadPct >= t.loadOkPct : s.loadPct > t.loadAlertPct;
+  const load = loadHigh ? [wasLoadHigh && s.loadPct <= t.loadAlertPct ? `load ${s.loadPct}% per core, not yet under ${t.loadOkPct}%` : `load ${s.loadPct}% per core > ${t.loadAlertPct}%`] : [];
+  return { loadHigh, reasons: [...load, ...holdReasons(s, t)] };
+}
+
+/** `seori guard`: the current reading and verdict, read-only (`HOST ...`, then `HOST_GUARD ALERT <reasons>` or `HOST_GUARD OK`). */
+export async function guardLines(d: Deps, config: SeoriConfig): Promise<string[]> {
+  const s = await sampleHost(d);
+  const v = guardVerdict(s, config.guard, readGuardState(d.store.root)?.loadHigh ?? false);
+  return [`HOST ${hostLine(s)}`, v.reasons.length ? `HOST_GUARD ALERT ${v.reasons.join(" | ")}` : "HOST_GUARD OK"];
+}
+
+/**
+ * Duty: tells the lead `[HOST-GUARD ALERT] <reasons>` when the host crosses a threshold and `[HOST-GUARD CLEAR] <figures>`
+ * when every threshold is fine again, once per crossing. A failed delivery is reported as an event; the message stays
+ * in the lead's inbox for the next flush and is not told again. A broken config.json is a `guard-failed` event.
+ */
+export async function guardTick(d: Deps): Promise<DutyEvent[]> {
+  let config: SeoriConfig;
+  try {
+    config = loadConfig(d.store.root);
+  } catch (e) {
+    return [{ action: "guard-failed", detail: e instanceof Error ? e.message : String(e) }];
+  }
+  const s = await sampleHost(d);
+  const prev = readGuardState(d.store.root) ?? { alerting: false, loadHigh: false, since: 0, reasons: [] };
+  const v = guardVerdict(s, config.guard, prev.loadHigh);
+  // An alert is only cleared by figures read as fine: a figure that could not be read this time (herdr restarting, a
+  // flaky df) keeps the alert as it was rather than sending a false CLEAR followed by a second ALERT.
+  if (prev.alerting && v.reasons.length === 0 && s.unreadable.length > 0) {
+    saveGuardState(d.store.root, { ...prev, loadHigh: v.loadHigh });
+    return [];
+  }
+  const alerting = v.reasons.length > 0;
+  const now = d.now();
+  const next: GuardState = { alerting, loadHigh: v.loadHigh, since: alerting === prev.alerting ? prev.since : now, reasons: v.reasons };
+  if (alerting === prev.alerting) {
+    saveGuardState(d.store.root, next);
+    return [];
+  }
+  const text = alerting ? `[HOST-GUARD ALERT] ${v.reasons.join(" | ")}` : `[HOST-GUARD CLEAR] ${hostLine(s)}`;
+  const events: DutyEvent[] = [{ action: alerting ? "guard-alert" : "guard-clear", detail: alerting ? v.reasons.join(" | ") : hostLine(s) }];
+  // Saved first: tellLead puts the message in the lead's inbox before it tries the pane, so whatever happens next it
+  // is kept there for duty's next flush, and telling it again would only say it twice.
+  saveGuardState(d.store.root, next);
+  try {
+    await tellLead(d, text, "duty");
+  } catch (e) {
+    const detail = e instanceof DeliveryUncertain ? "delivery uncertain" : e instanceof HerdrError ? why(e.result.stderr, e.result.stdout) : e instanceof Error ? e.message : String(e);
+    events.push({ action: "guard-delivery-failed", detail: `${events[0]!.action} kept in the lead inbox: ${detail}` });
+  }
+  return events;
+}

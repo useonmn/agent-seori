@@ -126,11 +126,18 @@ export class SlackAdapter implements MessengerAdapter {
   private readonly now: () => number;
   private readonly pingIntervalMs: number;
   private readonly helloTimeoutMs: number;
+  private readonly pairing: boolean;
+  private readonly cursorRoot: string;
 
   constructor(
     private readonly config: MessengerConfig,
     private readonly root: string,
-    deps: { env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+    /**
+     * `pairing`: owner pairing (src/pair.ts) only, never the daemon. Accepts a new live direct message from any non-bot
+     * sender instead of the configured owner (no history catch-up, no edits), so `seori msg pair` can learn the owner's id.
+     * `cursorRoot`: where the cursor lives instead of `root` (pairing points it at a temp dir).
+     */
+    deps: { env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number; pairing?: boolean; cursorRoot?: string } = {},
   ) {
     this.source = config.source;
     const base = config.options?.["apiBase"];
@@ -144,6 +151,8 @@ export class SlackAdapter implements MessengerAdapter {
     this.env = deps.env ?? process.env;
     this.sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
     this.now = deps.now ?? Date.now;
+    this.pairing = deps.pairing === true;
+    this.cursorRoot = deps.cursorRoot ?? root;
   }
 
   private botToken(): string {
@@ -196,7 +205,7 @@ export class SlackAdapter implements MessengerAdapter {
   async receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
     const botToken = this.botToken();
     const appToken = this.appToken();
-    const file = CursorFile.for<Cursor>(this.root, this.source);
+    const file = CursorFile.for<Cursor>(this.cursorRoot, this.source);
     const saved = file.load();
     const cursor: Cursor = { channels: { ...(saved?.channels ?? {}) }, threads: { ...(saved?.threads ?? {}) } };
     const delivered = new Set<string>();
@@ -473,7 +482,9 @@ export class SlackAdapter implements MessengerAdapter {
     }
     const key = `${channel}:${ts}`;
     if (ctx.delivered.has(key)) return;
-    const owner = ev.user === this.config.owner && !ev.bot_id;
+    const owner = this.pairing
+      ? dm && !fromHistory && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
+      : ev.user === this.config.owner && !ev.bot_id;
     // Catch-up reads every message of a channel; outside DMs only those addressed to the bot are commands.
     const addressed = dm || !fromHistory || (ctx.botUser !== "" && (ev.text ?? "").includes(`<@${ctx.botUser}>`));
     const text = owner && addressed ? bodyText(ev) : "";
@@ -488,14 +499,15 @@ export class SlackAdapter implements MessengerAdapter {
     }
     this.track(channel, ev.thread_ts ?? ts, ts, ctx); // seori replies under this message: catch-up reads that thread
     const thread = dm ? ev.thread_ts : (ev.thread_ts ?? ts);
-    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from: this.config.owner, at: tsMs(ts), text }, key, ctx);
+    const from = this.pairing ? (ev.user as string) : this.config.owner;
+    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(ts), text }, key, ctx);
     this.advance(channel, ts, ctx);
   }
 
   private async handleEdit(ev: SlackMessage, channel: string, dm: boolean, ctx: Receiving): Promise<void> {
     const m = ev.message;
     const stamp = m?.edited?.ts;
-    if (!m?.ts || !stamp || m.bot_id || m.user !== this.config.owner) return; // unfurls also arrive as message_changed, without `edited`
+    if (this.pairing || !m?.ts || !stamp || m.bot_id || m.user !== this.config.owner) return; // unfurls also arrive as message_changed, without `edited`
     const key = `${channel}:${m.ts}:edit:${stamp}`;
     if (ctx.delivered.has(key)) return;
     const text = bodyText(m);

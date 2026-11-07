@@ -485,3 +485,26 @@ describe("DiscordAdapter send and check", () => {
     await expect(adapter(m, home(), { token: "nope" }).check()).rejects.toThrow(/rejected the bot token/);
   });
 });
+
+describe("DiscordAdapter pairing mode", () => {
+  test("passes a DM from any non-bot user with its real sender; server channels, bots and edits never pass; no catch-up runs", async () => {
+    const m = mock();
+    const root = home();
+    CursorFile.for<DiscordCursor>(root, "discord").save({ channels: { C7: "1" } });
+    m.history["C7"] = [msg("2", { channel_id: "C7", author: { id: "old" } })];
+    m.afterReady = [
+      ["MESSAGE_CREATE", msg("101", { channel_id: "G1", guild_id: "S1", author: { id: "7" } })],
+      ["MESSAGE_CREATE", msg("102", { channel_id: "D1", author: { id: "7", bot: true } })],
+      ["MESSAGE_UPDATE", msg("100", { channel_id: "D1", author: { id: "7" }, edited_timestamp: "2026-11-07T00:01:00.000Z" })],
+      ["MESSAGE_CREATE", msg("103", { channel_id: "D1", author: { id: "7" }, content: "pair me" })],
+    ];
+    const a = new DiscordAdapter({ source: "discord", owner: "", options: { apiBase: m.base, wsUrl: m.ws, timeoutMs: 200 } }, root, {
+      env: { SEORI_DISCORD_TOKEN: "T0K" },
+      sleep: async () => {},
+      pairing: true,
+    });
+    const got = await collect(a, 1);
+    expect(got).toEqual([{ id: "discord:D1:103", source: "discord", chat: "D1", from: "7", at: Date.parse("2026-11-07T00:00:00.000Z"), text: "pair me" }]);
+    expect(m.historyCalls).toEqual([]);
+  });
+});

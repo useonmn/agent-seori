@@ -524,3 +524,29 @@ describe("SlackAdapter check", () => {
     await expect(adapter(mock, home()).check()).rejects.toThrow(/rejected the bot token.*not_authed/);
   });
 });
+
+describe("SlackAdapter pairing mode", () => {
+  test("passes a live DM from any non-bot user with its real sender; channels, bots, the bot itself, edits and history never pass", async () => {
+    const mock = startMock();
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", dm("1700000000.000100", { user: "UBOT" })));
+      ws.send(envelope("e2", dm("1700000000.000200", { user: "UX", bot_id: "B1" })));
+      ws.send(envelope("e3", { type: "app_mention", channel: "C1", user: "UX", text: "<@UBOT> hi", ts: "1700000000.000300" }));
+      ws.send(envelope("e4", { type: "message", subtype: "message_changed", channel: "D1", channel_type: "im", message: { type: "message", user: "UX", text: "e", ts: "1700000000.000100", edited: { user: "UX", ts: "1700000000.000400" } }, ts: "1700000000.000401" }));
+      ws.send(envelope("e5", dm("1700000000.000500", { user: "UNEW" })));
+    };
+    const root = home();
+    // a known DM channel: its catch-up history (a stranger's old message) must not pair
+    writeCursor(root, { channels: { D9: "1600000000.000000" }, threads: {} });
+    mock.historyPage = () => ({ ok: true, messages: [{ type: "message", user: "UOLD", text: "old", ts: "1600000001.000000" }], has_more: false });
+    const a = new SlackAdapter({ source: "slack", owner: "", options: { apiBase: mock.apiBase } }, root, {
+      env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1", SEORI_SLACK_APP_TOKEN: "xapp-1" },
+      sleep: async () => {},
+      pairing: true,
+    });
+    const got = await collect(a, () => mock.acks.length >= 5 && mock.historyCalls.length >= 1);
+    expect(got).toEqual([{ id: "slack:D1:1700000000.000500", source: "slack", chat: "D1", from: "UNEW", at: 1700000000000, text: "hi 1700000000.000500" }]);
+    expect(mock.acks.length).toBe(5);
+    expect(mock.historyCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});

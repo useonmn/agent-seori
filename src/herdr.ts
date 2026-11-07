@@ -170,6 +170,41 @@ export class Herdr {
   }
 
   /**
+   * `pane read --source recent-unwrapped`: the last `lines` lines of the pane's terminal, soft-wrapped lines joined back
+   * into one, as plain text. herdr prints this raw, not as JSON.
+   */
+  async read(paneId: string, lines: number): Promise<string> {
+    const argv = ["pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines)];
+    const full = this.session ? ["--session", this.session, ...argv] : argv;
+    const res = await this.exec("herdr", full);
+    if (res.code !== 0) throw new HerdrError(full, res);
+    return res.stdout;
+  }
+
+  /** `pane send-keys`: presses keys in a pane, by herdr's key names (`esc` is its canonical Escape). */
+  async sendKeys(paneId: string, ...keys: string[]): Promise<void> {
+    await this.call(["pane", "send-keys", paneId, ...keys]);
+  }
+
+  /**
+   * The session file of the agent in a pane, from `pane get`'s `agent_session` (herdr's omp integration reports omp's
+   * session jsonl as `{ kind: "path", value }`). Undefined when the pane is gone, has no agent session or reports
+   * another kind.
+   */
+  async agentSessionPath(paneId: string): Promise<string | undefined> {
+    let pane: Record<string, unknown> | undefined;
+    try {
+      pane = (await this.call(["pane", "get", paneId]))["pane"] as Record<string, unknown> | undefined;
+    } catch (e) {
+      if (e instanceof HerdrError && /not.?found/i.test(e.message)) return undefined;
+      throw e;
+    }
+    const session = pane?.["agent_session"] as Record<string, unknown> | null | undefined;
+    if (session?.["kind"] !== "path" || typeof session["value"] !== "string" || !session["value"]) return undefined;
+    return session["value"];
+  }
+
+  /**
    * Delivers one message to the agent in a pane as a single argv element: nothing in it is ever expanded by a shell.
    * Returns false, having typed nothing, when the pane turns out to have no running agent: text typed into a bare
    * shell runs as a command (#66), so the caller keeps the message queued. Throws DeliveryUncertain when the

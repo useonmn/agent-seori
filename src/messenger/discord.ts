@@ -34,6 +34,8 @@ type Attachment = { filename?: string; content_type?: string; size?: number; url
 type Message = {
   id: string;
   channel_id: string;
+  /** Set on gateway messages from a server channel; absent in direct messages. */
+  guild_id?: string;
   type?: number;
   content?: string;
   timestamp?: string;
@@ -86,11 +88,17 @@ export class DiscordAdapter implements MessengerAdapter {
   private identifyUrl: string | undefined;
   /** Catch-up runs after the first READY/RESUMED of a process and after every READY, until one pass completes. */
   private catchupPending = true;
+  private readonly pairing: boolean;
 
   constructor(
     config: MessengerConfig,
     private readonly root: string,
-    deps: { env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+    /**
+     * `pairing`: owner pairing (src/pair.ts) only, never the daemon. Accepts a new live direct message from any non-bot
+     * sender instead of the configured owner (no REST catch-up, no edits), so `seori msg pair` can learn the owner's id.
+     * `cursorRoot`: where the cursor lives instead of `root` (pairing points it at a temp dir).
+     */
+    deps: { env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number; pairing?: boolean; cursorRoot?: string } = {},
   ) {
     this.source = config.source;
     this.owner = config.owner;
@@ -102,7 +110,8 @@ export class DiscordAdapter implements MessengerAdapter {
     this.env = deps.env ?? process.env;
     this.sleepFn = deps.sleep ?? ((ms) => Bun.sleep(ms));
     this.now = deps.now ?? Date.now;
-    this.cursor = CursorFile.for<DiscordCursor>(root, config.source);
+    this.pairing = deps.pairing === true;
+    this.cursor = CursorFile.for<DiscordCursor>(deps.cursorRoot ?? root, config.source);
   }
 
   private token(): string {
@@ -394,12 +403,15 @@ export class DiscordAdapter implements MessengerAdapter {
     if (committed !== undefined && snowflakeCmp(m.id, committed) <= 0) return;
     const id = messageId(this.source, chat, m.id);
     if (this.delivered.has(id)) return;
-    const owner = m.author?.id === this.owner && m.author.bot !== true;
+    const owner = this.pairing
+      ? m.guild_id === undefined && typeof m.author?.id === "string" && m.author.id !== "" && m.author.bot !== true
+      : m.author?.id === this.owner && m.author.bot !== true;
     if (owner && (m.type === undefined || m.type === 0 || m.type === 19)) {
       const text = this.body(m);
       if (text) {
         const at = Date.parse(m.timestamp ?? "");
-        await onMessage({ id, source: this.source, chat, from: this.owner, at: Number.isFinite(at) ? at : this.now(), text });
+        const from = this.pairing ? (m.author?.id as string) : this.owner;
+        await onMessage({ id, source: this.source, chat, from, at: Number.isFinite(at) ? at : this.now(), text });
         this.remember(id);
       }
     }
@@ -411,7 +423,7 @@ export class DiscordAdapter implements MessengerAdapter {
   }
 
   private async edited(m: Message, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
-    if (typeof m?.id !== "string" || typeof m.channel_id !== "string" || !m.edited_timestamp || m.author?.id !== this.owner || m.author.bot === true) return;
+    if (this.pairing || typeof m?.id !== "string" || typeof m.channel_id !== "string" || !m.edited_timestamp || m.author?.id !== this.owner || m.author.bot === true) return;
     const editedAt = Date.parse(m.edited_timestamp);
     const stamp = Number.isFinite(editedAt) ? String(editedAt) : m.edited_timestamp;
     const id = editId(this.source, m.channel_id, m.id, stamp);
@@ -424,7 +436,7 @@ export class DiscordAdapter implements MessengerAdapter {
 
   /** Every tracked channel from its committed message id, oldest first, a page of 100 at a time. */
   private async catchup(onMessage: (m: InboundMessage) => Promise<void>, signal: AbortSignal): Promise<void> {
-    if (!this.catchupPending) return;
+    if (!this.catchupPending || this.pairing) return;
     const token = this.token();
     for (const chat of Object.keys(this.state.channels)) {
       for (;;) {

@@ -30,14 +30,18 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> => {
 export class FakeAdapter implements MessengerAdapter {
   readonly source = "fake";
   readonly dir: string;
+  private readonly offsetDir: string;
   private readonly pollMs: number;
   private readonly now: () => number;
 
-  constructor(root: string, options: { pollMs?: number; now?: () => number } = {}) {
+  /** `cursorRoot`: where the offset file lives instead of `root` (`seori msg pair` points it at a temp dir). */
+  constructor(root: string, options: { pollMs?: number; now?: () => number; cursorRoot?: string } = {}) {
     this.dir = fakeDir(root);
+    this.offsetDir = fakeDir(options.cursorRoot ?? root);
     this.pollMs = options.pollMs ?? 500;
     this.now = options.now ?? Date.now;
     mkdirSync(this.dir, { recursive: true });
+    if (this.offsetDir !== this.dir) mkdirSync(this.offsetDir, { recursive: true });
   }
 
   get inPath(): string {
@@ -45,7 +49,7 @@ export class FakeAdapter implements MessengerAdapter {
   }
 
   get offsetPath(): string {
-    return join(this.dir, "offset");
+    return join(this.offsetDir, "offset");
   }
 
   get outPath(): string {

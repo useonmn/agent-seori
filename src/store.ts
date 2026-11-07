@@ -2,7 +2,18 @@ import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, write
 import { homedir, hostname, uptime } from "node:os";
 import { join } from "node:path";
 
-export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
+/**
+ * working/waiting: the lane runs. ready: it sent READY (a done claim). paused: the owner said wait (seori pause; its goal
+ * is paused and duty leaves it alone until seori resume). done: closed. lost: its pane went away without READY.
+ */
+export type LaneStatus = "working" | "waiting" | "ready" | "paused" | "done" | "lost";
+
+/** Per-lane ceilings; null switches one off. Reaching one blocks the lane (a report to the lead), it is never killed. */
+export type Ceilings = { wallMinutes: number | null; tokens: number | null; costUsd: number | null };
+
+export type LaneLogKind =
+  | "start" | "report" | "ready" | "nudge" | "done" | "lost"
+  | "object" | "pause" | "resume" | "blocked" | "stalled" | "posted";
 
 export type Lane = {
   key: string;
@@ -15,7 +26,20 @@ export type Lane = {
   lastActivityAt: number;
   nudges: number;
   final?: { text: string; evidence: string[]; at: number };
-  log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
+  /** The `Done =` line from `seori start --done`: signals seori reads back live before the lane may close (src/signals.ts). */
+  done?: string;
+  /** The lead channel id of the owner's message this lane works on (e.g. `telegram:42:5`); progress posts thread under it. */
+  thread?: string;
+  /** The lead's last objection to a READY claim; a new READY clears it. */
+  objection?: { at: number; reasons: string[] };
+  /** The status a paused lane returns to on resume. */
+  pausedFrom?: LaneStatus;
+  ceilings?: Ceilings;
+  /** Once-per-change alert marks (ceiling reached, stalled, ...): key -> when it was raised. */
+  alerts?: Record<string, number>;
+  /** The last report posted to `thread`, and when. */
+  posted?: { at: number; text: string };
+  log: { at: number; kind: LaneLogKind; text: string }[];
 };
 
 export type Role = "lead" | "duty";

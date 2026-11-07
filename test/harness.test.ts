@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
-import { defaultSeoriCmd, done, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { agentName, defaultSeoriCmd, done, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { ompJson, World } from "./fake.ts";
 
 function setup() {
@@ -33,6 +33,16 @@ describe("seori command for agents and loop panes", () => {
     expect(cmd).toStartWith("SEORI_HOME='/h o' SEORI_HERDR_SESSION='iso' SEORI_MODEL='anthropic/claude-haiku-5-5' bun ");
     expect(defaultSeoriCmd("/h", {})).toStartWith("SEORI_HOME='/h' bun ");
   });
+});
+
+test("agent names are valid for herdr: uppercase pane ids stay unique, long keys are cut to 32 characters", () => {
+  const valid = /^[a-z][a-z0-9_-]{0,31}$/;
+  expect(agentName("lead", "w1:p2")).toBe("lead-w1p2");
+  expect(agentName("smoke", "wC:p2")).toBe("smoke-w_cp2");
+  expect(agentName("smoke", "wC:p2")).not.toBe(agentName("smoke", "wc:p2"));
+  const long = agentName("a".repeat(41), "wAB:p12");
+  expect(long).toMatch(valid);
+  expect(long.endsWith("-w_a_bp12")).toBe(true);
 });
 
 describe("lanes", () => {
@@ -442,6 +452,16 @@ describe("duty loop", () => {
     expect(w.calls.filter((c) => c.argv[1] === "prompt" && (c.argv[2] === blocked.paneId || c.argv[2] === waiting.paneId))).toEqual([]);
   });
 
+  test("a report from a paused lane is forwarded but never ends the pause", async () => {
+    const { d, lead, brief } = setup();
+    await startLane(d, "held", brief, { workspace: "w1" });
+    const lane = d.store.lane("held")!;
+    d.store.saveLane({ ...lane, status: "paused", pausedFrom: "working" });
+    await report(d, "held", "WAITING: ci", "waiting");
+    expect(d.store.lane("held")).toMatchObject({ status: "paused", pausedFrom: "working" });
+    expect(lead.received.at(-1)).toContain("[REPORT held WAITING] WAITING: ci");
+  });
+
   test("a vanished pane is reported LOST", async () => {
     const { w, d, lead, brief } = setup();
     const lane = await startLane(d, "busy", brief, { workspace: "w1" });
@@ -453,8 +473,24 @@ describe("duty loop", () => {
 
 describe("review + merge gate", () => {
   const head = "a".repeat(40);
-  function gh(w: World, checks: unknown[]) {
+  function gh(w: World, checks: unknown[], opts: { fixWithoutTest?: boolean } = {}) {
+    // A one-commit PR at `head` for verify-pr: a feature commit, or a fix with no test and no "No test:" line.
+    const files = [{ filename: "src/a.ts", status: "modified" }];
+    const commit = {
+      sha: head, parents: [{ sha: "b".repeat(40) }], files,
+      commit: { message: opts.fixWithoutTest ? "fix: a" : "feat: a", author: { name: "me", email: "me@x" }, committer: { name: "me", email: "me@x" } },
+    };
+    const api: Record<string, unknown> = {
+      "repos/o/r/pulls/7": { body: "", head: { sha: head }, commits: 1 },
+      "repos/o/r/pulls/7/commits?per_page=100&page=1": [{ sha: head }],
+      [`repos/o/r/commits/${head}?per_page=100&page=1`]: commit,
+      "repos/o/r/pulls/7/files?per_page=100&page=1": files,
+    };
     w.gh = (argv) => {
+      if (argv[0] === "api") {
+        const v = api[String(argv[3])];
+        return v === undefined ? { code: 1, stdout: "HTTP 404" } : { code: 0, stdout: JSON.stringify(v) };
+      }
       if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head }) };
       if (argv[1] === "checks") return { code: 0, stdout: JSON.stringify(checks) };
       if (argv[1] === "merge") return { code: 0, stdout: "" };
@@ -477,6 +513,8 @@ describe("review + merge gate", () => {
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("test=fail");
     gh(w, [{ name: "test", bucket: "skipping" }]);
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("every check was skipped");
+    gh(w, [{ name: "test", bucket: "pass" }], { fixWithoutTest: true });
+    await expect(mergeGate(d, "o/r#7")).rejects.toThrow("verify-pr failed");
     gh(w, [{ name: "test", bucket: "pass" }, { name: "docs", bucket: "skipping" }]);
     expect(await mergeGate(d, "o/r#7")).toBe(`MERGED o/r#7 head=${head}`);
     expect(w.calls.at(-1)!.argv).toContain("--match-head-commit");

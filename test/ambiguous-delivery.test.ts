@@ -56,7 +56,7 @@ describe("typed fallback whose Enter failed (#89 A)", () => {
     expect(await dutyTick(d)).toEqual([{ pane: "w1:p1", action: "flushed" }]);
     expect(count("w1:p1", "pane", "send-text")).toBe(1);
     expect(count("w1:p1", "pane", "send-keys")).toBe(4);
-    expect(w.calls.at(-1)!.argv).toEqual(["pane", "send-keys", "w1:p1", "enter"]);
+    expect(w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] !== "list").at(-1)!.argv).toEqual(["pane", "send-keys", "w1:p1", "enter"]);
     expect(lead.received).toEqual(["IMPORTANT MESSAGE"]);
     expect(d.store.queued("w1:p1")).toEqual([]);
 

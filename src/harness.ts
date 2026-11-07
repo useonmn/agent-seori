@@ -6,7 +6,15 @@ import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
-import { KEY_RE, pidAlive, reservedKey, Store, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
+import { KEY_RE, pidAlive, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
+import { loadConfig } from "./config.ts";
+import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
+import { guardTick } from "./guard.ts";
+import { progressTick } from "./progress.ts";
+import { superviseTick } from "./supervision.ts";
+import { checkSignals, parseDone } from "./signals.ts";
+import { LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
+import { verifyPr } from "./verify-pr.ts";
 
 export { KEY_RE, reservedKey };
 
@@ -14,6 +22,8 @@ export const NUDGE_MINUTES = [10, 20, 40] as const;
 const PROMPTS = join(import.meta.dir, "..", "prompts");
 const CLI = resolve(import.meta.dir, "cli.ts");
 const FOOTER_RE = /(^|\n)## Lane rules \(added by seori for lane [\s\S]*$/;
+/** The lessons block renderLessons puts at the top of a brief: the heading, one `- ` line per lesson, a blank line. */
+const LESSONS_RE = new RegExp(`^${LESSONS_HEADING}\\n(?:- .*\\n)*\\n`);
 
 export type Deps = {
   readonly store: Store;
@@ -65,9 +75,19 @@ export async function requireOmpIntegration(d: Deps): Promise<void> {
   if (!(await d.herdr.ompIntegration())) throw new Refusal(INTEGRATION_MISSING);
 }
 
-/** Starts omp in a pane via `herdr agent start`, named `<label>-<pane id>` so names stay unique across live agents. */
+/** Starts omp in a pane via `herdr agent start`, named after the label and pane so names stay unique across live agents. */
 export async function startAgent(d: Deps, label: string, paneId: string, args: readonly string[] = []): Promise<void> {
-  await d.herdr.agentStart(`${label}-${paneId.replaceAll(":", "")}`, paneId, [...args, ...(d.model ? ["--model", d.model] : [])]);
+  await d.herdr.agentStart(agentName(label, paneId), paneId, [...args, ...(d.model ? ["--model", d.model] : [])]);
+}
+
+/**
+ * herdr agent names: a lowercase letter first, then lowercase letters, digits, '-' or '_', at most 32 characters. Pane
+ * ids may carry uppercase letters (`wC:p2`), so an uppercase letter becomes `_` plus its lowercase (unique, unlike plain
+ * lowercasing), and the label is cut so the pane part, which makes the name unique among live agents, always fits.
+ */
+export function agentName(label: string, paneId: string): string {
+  const pane = paneId.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`).replace(/[^a-z0-9_-]/g, "");
+  return `${label.slice(0, Math.max(1, 31 - pane.length))}-${pane}`;
 }
 
 const sysctlMemoryLevel = (): string => execFileSync("sysctl", ["-n", "kern.memorystatus_level"], { encoding: "utf8", timeout: 2000 });
@@ -325,25 +345,37 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
 
 // ---------- lanes ----------
 
+/**
+ * Opens a lane: a herdr tab running omp in goal mode on the brief. `done` is the lane's Done line (src/signals.ts),
+ * checked before anything opens; with it, seori closes the lane on its own after READY (src/done-flow.ts). `thread`
+ * is the lead channel id progress posts thread under; `ceilings` override the configured supervision defaults.
+ */
 export async function startLane(
   d: Deps,
   key: string,
   briefFile: string,
-  opts: { cwd?: string; workspace?: string } = {},
+  opts: { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
   const existing = d.store.lane(key);
   if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.paneId}`);
+  // Stored without a leading `Done =`, which the footer adds back.
+  const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
+  if (opts.done !== undefined) parseDone(opts.done);
+  if (opts.thread !== undefined && !opts.thread.trim()) throw new Refusal("--thread needs a lead channel id");
   await requireOmpIntegration(d);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
-  const footer = prompt("lane-footer.md", { key, seori: d.seoriCmd });
-  // The lead may pass briefs/<key>.md itself (e.g. on a retry): drop any footer seori already added,
-  // whatever the path, so the brief always carries exactly one.
-  const source = readFileSync(briefFile, "utf8").replace(FOOTER_RE, "").trimEnd();
-  await Bun.write(briefPath, `${source}\n\n${footer}`);
+  const closeAfterMin = doneLine === undefined ? 0 : loadConfig(d.store.root).closeAfterMin;
+  const footer = prompt("lane-footer.md", { key, seori: d.seoriCmd, close_rule: closeRule(d.seoriCmd, key, doneLine, closeAfterMin) });
+  const lessons = lessonsForRepo(d.store.root, cwd);
+  for (const line of lessonWarnings(lessons.problems)) process.stderr.write(`${line}\n`);
+  // The lead may pass briefs/<key>.md itself (e.g. on a retry): drop the lessons block and the footer seori already
+  // added, whatever the path, so the brief always carries exactly one of each.
+  const source = readFileSync(briefFile, "utf8").replace(LESSONS_RE, "").replace(FOOTER_RE, "").trimEnd();
+  await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
   const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
   const env = { SEORI_LANE: key, SEORI_HOME: d.store.root };
@@ -365,6 +397,9 @@ export async function startLane(
   const lane: Lane = {
     key, paneId: pane.paneId, tabId: pane.tabId, brief: briefPath, cwd,
     status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
+    ...(doneLine !== undefined ? { done: doneLine } : {}),
+    ...(opts.thread !== undefined ? { thread: opts.thread.trim() } : {}),
+    ...(opts.ceilings ? { ceilings: opts.ceilings } : {}),
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
@@ -385,34 +420,53 @@ export async function report(d: Deps, key: string, text: string, status?: "worki
   lane.log.push({ at: now, kind: "report", text });
   lane.lastActivityAt = now;
   lane.nudges = 0;
-  if (status) lane.status = status;
+  // Activity never ends a pause (only seori resume does): a paused lane woken by a watch or a message may report, but
+  // its status stays paused so duty keeps leaving it alone and resume still works.
+  if (status && lane.status !== "paused") lane.status = status;
   d.store.saveLane(lane);
   return settled(tellLead(d, `[REPORT ${key}${status === "waiting" ? " WAITING" : ""}] ${text}`, key));
 }
 
+/**
+ * Records the lane's final answer (its done claim) and tells the lead. A new READY clears an earlier objection. A
+ * lane with a Done line is also told when it closes: closeAfterMin after this claim, unless the lead objects.
+ */
 export async function ready(d: Deps, key: string, text: string, evidence: readonly string[]): Promise<SendResult | undefined> {
   if (evidence.length === 0) throw new Refusal("READY needs at least one --evidence link (a PR, a receipt, a file)");
   if (!text.trim()) throw new Refusal("READY needs the final answer text");
   const lane = openLane(d, key);
+  const closeAfterMin = lane.done === undefined ? undefined : loadConfig(d.store.root).closeAfterMin;
   const now = d.now();
   lane.status = "ready";
   lane.final = { text, evidence: [...evidence], at: now };
   lane.lastActivityAt = now;
+  delete lane.objection;
   lane.log.push({ at: now, kind: "ready", text });
   d.store.saveLane(lane);
-  return settled(tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}`, key));
+  const claim = closeAfterMin === undefined ? "" : `\n${claimLeadLine(d.seoriCmd, key, closeAfterMin)}`;
+  const result = await settled(tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}${claim}`, key));
+  if (closeAfterMin !== undefined) await send(d, key, claimText(closeAfterMin), "lead");
+  return result;
 }
 
+/**
+ * The lead closes a READY lane. A lane with a Done line closes only when checkSignals finds nothing: every signal
+ * reads back live and no tracked work is uncommitted or on no remote; otherwise the refusal lists the reasons.
+ */
 export async function done(d: Deps, key: string): Promise<void> {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   const st = await d.herdr.status(lane.paneId);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
-  if (st !== "gone") await d.herdr.close(lane.paneId);
-  lane.status = "done";
-  lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
-  d.store.saveLane(lane);
+  if (lane.done !== undefined) {
+    const failures = await checkSignals(d, lane);
+    if (failures.length) throw new Refusal(`lane ${key} is not done:\n${failures.map((f) => `- ${f}`).join("\n")}`);
+  }
+  // The lead may have objected, paused it or a new READY may have come in while its pane and signals were read.
+  const fresh = sameClaim(d, lane);
+  if (!fresh) throw new Refusal(`lane ${key} changed while it was being checked (now ${d.store.lane(key)?.status ?? "gone"}); run done again`);
+  await closeLane(d, fresh, lane.done === undefined ? "closed by lead" : "closed by lead: every Done signal read back live");
 }
 
 // ---------- duty loop ----------
@@ -489,6 +543,18 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   } catch (e) {
     // An unwritable lead dir must not stop lane and inbox duty (a broken messengers.json is told to the lead, not thrown).
     events.push({ action: "channel-failed", detail: failureDetail(e) });
+  }
+  // The done window, ceilings and stalls, the host guard and progress posts: each its own module, each guarded so one
+  // failing never stops the others.
+  const ticks: [string, (d: Deps) => Promise<DutyEvent[]>][] = [
+    ["autoclose", autoCloseTick], ["supervise", superviseTick], ["guard", guardTick], ["progress", progressTick],
+  ];
+  for (const [name, tick] of ticks) {
+    try {
+      events.push(...(await tick(d)));
+    } catch (e) {
+      events.push({ action: `${name}-failed`, detail: failureDetail(e) });
+    }
   }
   return events;
 }
@@ -807,6 +873,9 @@ async function gateRefusal(d: Deps, pr: PrRef, sha: string): Promise<string | un
   const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
   if (bad.length > 0) return `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`;
   if (!checks.some((c) => c.bucket === "pass")) return "every check was skipped";
+  // Commit identities and the fix-needs-a-test rule (src/verify-pr.ts); `gh pr merge --match-head-commit` still pins the head.
+  const verified = await verifyPr(d, pr, loadConfig(d.store.root));
+  if (!verified.ok) return `verify-pr failed:\n${verified.lines.join("\n")}`;
   return undefined;
 }
 

@@ -37,6 +37,13 @@ export type TelegramDeps = {
   env?: Record<string, string | undefined>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /**
+   * Owner pairing (src/pair.ts) only, never the daemon: accept a new direct message from any non-bot sender instead of
+   * the configured owner, so `seori msg pair` can learn the owner's id. Edits and group messages are still skipped.
+   */
+  pairing?: boolean;
+  /** Where the cursor lives instead of `root` (`seori msg pair` points it at a temp dir so the daemon's cursor is untouched). */
+  cursorRoot?: string;
 };
 
 /** Thrown out of receive(): retrying cannot help, the owner has to change something. */
@@ -51,6 +58,7 @@ export class TelegramAdapter implements MessengerAdapter {
   private readonly env: Record<string, string | undefined>;
   private readonly sleepFn: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly pairing: boolean;
 
   constructor(config: MessengerConfig, private readonly root: string, deps: TelegramDeps = {}) {
     this.source = config.source;
@@ -58,10 +66,11 @@ export class TelegramAdapter implements MessengerAdapter {
     const opts = config.options ?? {};
     this.apiBase = typeof opts["apiBase"] === "string" ? opts["apiBase"].replace(/\/+$/, "") : "https://api.telegram.org";
     this.pollTimeoutSec = typeof opts["pollTimeoutSec"] === "number" ? opts["pollTimeoutSec"] : 25;
-    this.cursor = CursorFile.for<Cursor>(root, config.source);
+    this.cursor = CursorFile.for<Cursor>(deps.cursorRoot ?? root, config.source);
     this.env = deps.env ?? process.env;
     this.sleepFn = deps.sleep ?? ((ms) => Bun.sleep(ms));
     this.now = deps.now ?? Date.now;
+    this.pairing = deps.pairing === true;
   }
 
   private token(): string {
@@ -159,9 +168,15 @@ export class TelegramAdapter implements MessengerAdapter {
   private inbound(update: Update): InboundMessage | undefined {
     const edited = update.edited_message !== undefined;
     const msg = update.edited_message ?? update.message;
-    if (!msg?.from || msg.from.is_bot || String(msg.from.id) !== this.owner) return undefined;
-    if (msg.chat.type === "channel") return undefined;
-    if (msg.chat.type === "private" && String(msg.chat.id) !== this.owner) return undefined;
+    if (!msg?.from || msg.from.is_bot) return undefined;
+    if (this.pairing) {
+      // Pairing: a new direct message from anyone; the owner is whoever pair accepts.
+      if (edited || msg.chat.type !== "private" || msg.chat.id !== msg.from.id) return undefined;
+    } else {
+      if (String(msg.from.id) !== this.owner) return undefined;
+      if (msg.chat.type === "channel") return undefined;
+      if (msg.chat.type === "private" && String(msg.chat.id) !== this.owner) return undefined;
+    }
     const lines = attachments(msg);
     const body = msg.text ?? msg.caption ?? "";
     if (!body && lines.length === 0) return undefined;

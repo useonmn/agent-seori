@@ -175,6 +175,15 @@ describe("msg send --to", () => {
     await expect(msgSend(root, { to: { source: "slack", chat: "c" }, text: "x" }, d)).rejects.toThrow('no messenger "slack"');
   });
 
+  test("a notice that may have reached the messenger is HELD, not a crash; a definite failure still throws", async () => {
+    const { root, channel, d, setMode } = setup();
+    setMode("uncertain");
+    expect(await msgSend(root, { to: parseTo("tg:c5"), text: "heads up" }, d)).toEqual({ status: "HELD", ids: [] });
+    setMode("error");
+    await expect(msgSend(root, { to: parseTo("tg:c5"), text: "heads up" }, d)).rejects.toThrow("403 forbidden");
+    expect(channel.ledger()).toEqual([]);
+  });
+
   test("parseTo", () => {
     expect(parseTo("fake:c1")).toEqual({ source: "fake", chat: "c1" });
     expect(parseTo("fake:c1:a:b")).toEqual({ source: "fake", chat: "c1", thread: "a:b" });

@@ -8,12 +8,15 @@ import { Store, type HostLoad } from "../src/store.ts";
 
 /**
  * `agent` is the agent name `pane get` reports (default "pi"), `pgid` the foreground process group `pane process-info`
- * reports (default 101). `started` records the name and omp args of a `herdr agent start` into this pane.
+ * reports (default 101). `started` records the name and omp args of a `herdr agent start` into this pane. `screen` is
+ * what `pane read` shows (its last `--lines` lines), `session` the omp session path `pane get` reports as
+ * `agent_session`, and `onPrompt` runs after each `agent prompt` reached the pane (to change the screen, say).
  */
 type Pane = {
   status: AgentStatus; received: string[]; ran: string[];
   foreground?: string | { name: string; argv: string[] }[] | undefined; agent?: string; pgid?: number;
   started?: { name: string; args: string[] };
+  screen?: string[]; session?: string; onPrompt?: (text: string) => void;
 };
 
 /** omp's `--mode json` output for a run whose final assistant message is `text`. */
@@ -129,7 +132,12 @@ export class World {
       const n = (this.gets.get(id!) ?? 0) + 1;
       this.gets.set(id!, n);
       this.getHook.get(id!)?.(n);
-      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: pane.status } });
+      const agentSession = pane.session ? { agent_session: { agent: "omp", kind: "path", source: "herdr:omp", value: pane.session } } : {};
+      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: pane.status, ...agentSession } });
+    }
+    if (group === "pane" && verb === "read") {
+      const lines = Number(argv[argv.indexOf("--lines") + 1]);
+      return { code: 0, stdout: (pane.screen ?? []).slice(-lines).join("\n") + "\n", stderr: "" };
     }
     if (group === "pane" && verb === "run") { pane.ran.push(String(argv[3])); return ok({}); }
     if (group === "pane" && verb === "send-text") { pane.received.push(String(argv[3])); return ok({}); }
@@ -141,6 +149,7 @@ export class World {
       const fail = this.promptFails.get(id!);
       if (fail) return { code: 1, stdout: "", stderr: fail };
       pane.received.push(String(argv[3]));
+      pane.onPrompt?.(String(argv[3]));
       return ok({});
     }
     if (group === "pane" && verb === "close") { this.panes.delete(id!); return ok({}); }

@@ -17,7 +17,8 @@ function setup(opts: { lead?: boolean; exec?: (inner: Exec) => Exec } = {}) {
   writeFileSync(brief, "Do the thing.");
   const add = (id: string, o: Parameters<typeof backlogAdd>[3] = {}) => backlogAdd(d, id, brief, { cwd: d.store.root, ...o });
   const tick = (o: Parameters<typeof loopTick>[1] = {}) => loopTick(d, { force: true, ...o });
-  const destructive = () => w.calls.filter((c) => c.argv.join(" ").match(/pane close|pr merge|push/));
+  // Commands that change state, not prompt text that merely mentions pushing (the nudge asks the lane to push its work).
+  const destructive = () => w.calls.filter((c) => /^(pane close|pr merge)\b/.test(c.argv.join(" ")) || (c.cmd === "git" && c.argv.includes("push")));
   return { w, d, lead, brief, add, tick, destructive };
 }
 

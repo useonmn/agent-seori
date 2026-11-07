@@ -13,6 +13,18 @@ import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "./msg.ts";
 import type { Role } from "./store.ts";
+import { parsePr } from "./harness.ts";
+import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
+import { canLaunch, canLaunchLine, guardLines } from "./guard.ts";
+import { runHeavy } from "./heavy.ts";
+import { objectDone } from "./done-flow.ts";
+import { pauseLane, resumeLane, Unverified } from "./pause.ts";
+import { bootReport } from "./boot.ts";
+import { worklogAdd, worklogClose, worklogItemLine, worklogList, worklogListOutput, worklogNext, worklogNote } from "./worklog.ts";
+import { ConfigError, loadConfig } from "./config.ts";
+import { formatCheckpoints, formatCheckpointWrite, listCheckpoints, recordCheckpoint } from "./checkpoints.ts";
+import { addLesson, formatLessonAdded, formatLessonMarked, formatLessons, isLessonMark, listLessons, markLesson } from "./lessons.ts";
+import { verifyPr } from "./verify-pr.ts";
 import { ownerText, WATCH_USAGE, watchAdd, watchList, watchLog, watchRearm, watchStop } from "./watch/cli.ts";
 import { WatchRefusal } from "./watch/store.ts";
 
@@ -20,7 +32,10 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
 
   seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes
   seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
-  seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, brief + lane rules
+  seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, lessons + brief + lane rules
+              [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
+                                              Done line read back live before close; ID = lead channel id for progress posts;
+                                              ceilings block (report to lead); exits 4 with HOLD when the host is full
   seori report <key> --text T [--status working|waiting]
   seori ready <key> --text T --evidence LINK [--evidence LINK ...]
   seori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane's agent is idle
@@ -28,7 +43,8 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori inbox list <pane|role|key>             queued entries: index, state (queued|typed|held), sender, time, first 60 chars
   seori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
   seori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
-  seori duty [--once] [--interval SECONDS]     flush inboxes, nudge silent lanes, escalate, detect lost lanes
+  seori duty [--once] [--interval SECONDS]     flush inboxes, nudge silent lanes, escalate, detect lost lanes, close Done lanes,
+                                              ceilings and stalls, host guard, progress posts to the owner's thread
   seori duty stop [--text WHY] | resume | status   kill switch
   seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                               hourly: sync backlog, audit missed work, start the next item, ask decisions
@@ -37,8 +53,18 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
   seori backlog import <owner/repo> [--label seori] [--cwd DIR]   open labelled issues -> items
   seori review <owner/repo#N> [--model M]      fresh omp reviewer at the exact head -> receipt
-  seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
-  seori done <key>                             lead closes a READY lane
+  seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks + verify-pr -> squash merge
+  seori verify-pr <owner/repo#N>               commit identities (config repoIdentities) + fix-needs-a-test rule; exit 2 on FAIL
+  seori done <key> [--lesson T [--evidence P]] lead closes a READY lane (a Done line must read back live); optional lesson
+  seori object <key> --reason T [--reason T]   the lead objects to a READY claim: back to working with the reasons
+  seori pause <key> [--note T] | resume <key> [--note T]   pause/resume a lane's omp goal (exit 3 if unconfirmed)
+  seori checkpoint <key> --step ID --result T --evidence P [--remote-effect R ...] | checkpoints <key>
+  seori lesson add <key|--cwd DIR> --rule T --evidence P | lesson list [--cwd DIR] | lesson mark <id> --outcome O
+                                              O = helped|no-effect|harmful|encoded; new lanes get a repo's pending/helped lessons
+  seori worklog add <title> --source REF | next <id> <text> | note <id> <text> | close <id> --result T | list [--open]
+  seori boot                                   read-only check after a restart or compaction (exit 1 if something was unreadable)
+  seori can-launch | guard                     room for a lane? (exit 4 HOLD) | host reading and guard state
+  seori heavy <label> -- <cmd...>              run a heavy command when load is low and a heavy slot is free
   seori status
   seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
   seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
@@ -46,7 +72,10 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
-  seori msg check                              verify each configured messenger's credentials (prints who the bot is)
+  seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
+  seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
+                                              setup: print the sender of the next DM to the bot; --write makes them the owner;
+                                              --force re-pairs a configured Telegram owner (drops updates queued for the daemon)
 ${WATCH_USAGE}
 
 --text may be omitted to read the message from stdin.
@@ -60,24 +89,25 @@ watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), 
 watch stop, rearm and log take a name of that same owner's live watches (--for picks another owner) or any watch's id.
 up and start need herdr's omp integration (herdr integration install omp).`;
 
-type Args = { pos: string[]; flags: Map<string, string[]> };
+type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after a bare `--`, verbatim (seori heavy). */ rest: string[] };
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
   const flags = new Map<string, string[]>();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === "--") return { pos, flags, rest: argv.slice(i + 1) };
     if (!a.startsWith("--")) { pos.push(a); continue; }
     const name = a.slice(2);
     const next = argv[i + 1];
     const value = BOOLEAN_FLAGS.has(name) || next === undefined ? "true" : (i++, next);
     flags.set(name, [...(flags.get(name) ?? []), value]);
   }
-  return { pos, flags };
+  return { pos, flags, rest: [] };
 }
 
 const one = (a: Args, f: string): string | undefined => a.flags.get(f)?.at(-1);
@@ -219,7 +249,9 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
       console.log(`SENT ${what} message=${r.messageId}`);
       return 0;
     }
-    console.log(`HELD ${what}: the messenger may or may not have the reply; check the chat, then resend with --again`);
+    console.log(r.ids.length
+      ? `HELD ${what}: the messenger may or may not have the reply; check the chat, then resend with --again`
+      : `HELD ${what}: the messenger may or may not have the notice; check the chat before sending it again`);
     return 3;
   }
   if (sub === "close") {
@@ -234,8 +266,11 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     return 0;
   }
   if (sub === "check") {
-    const configs = loadMessengers(root);
-    if (configs.length === 0) throw new Refusal(`no messengers configured in ${root}/messengers.json`);
+    // `msg check <source>` works before pairing too, when messengers.json has no entry for it yet: only the token matters.
+    const only = a.pos[2];
+    const configured = loadMessengers(root);
+    const configs = only === undefined ? configured : [configured.find((c) => c.source === only) ?? { source: only, owner: "" }];
+    if (configs.length === 0) throw new Refusal(`no messengers configured in ${root}/messengers.json (or name one: seori msg check telegram)`);
     let failed = 0;
     for (const c of configs) {
       try {
@@ -246,6 +281,27 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
       }
     }
     return failed ? 1 : 0;
+  }
+  if (sub === "pair") {
+    const source = need(a.pos[2], "source (telegram, slack or discord)");
+    const minutes = one(a, "minutes");
+    const write = one(a, "write") === "true";
+    const stop = new AbortController();
+    const onInt = () => stop.abort();
+    process.once("SIGINT", onInt);
+    console.log(`PAIRING ${source}: send the bot any direct message now (waiting up to ${minutes ?? DEFAULT_PAIR_MINUTES} min)`);
+    try {
+      const found = await pairOwner(root, source, {
+        ...(minutes !== undefined ? { minutes: Number(minutes) } : {}),
+        write,
+        all: one(a, "all") === "true",
+        force: one(a, "force") === "true",
+      }, { now: d.now, onCandidate: (c) => console.log(candidateLine(c)), signal: stop.signal });
+      if (write && found[0]) console.log(pairedLine(root, source, found[0].id));
+      return found.length ? 0 : 1;
+    } finally {
+      process.off("SIGINT", onInt);
+    }
   }
   throw new Refusal(`unknown msg command ${sub}\n\n${USAGE}`);
 }
@@ -301,6 +357,43 @@ function status(d: Deps): void {
   }
 }
 
+/** A lane key that has a lane record (open or closed): checkpoints and lessons belong to a lane seori knows. */
+function laneKey(d: Deps, key: string): string {
+  if (!d.store.lane(key)) throw new Refusal(`no lane ${key}`);
+  return key;
+}
+
+function lesson(d: Deps, a: Args, sub: string | undefined): number {
+  const root = d.store.root;
+  if (sub === "add") {
+    const key = a.pos[2];
+    const cwd = one(a, "cwd");
+    if ((key === undefined) === (cwd === undefined)) throw new Refusal("lesson add takes a lane key or --cwd DIR (one of them)");
+    const lane = key === undefined ? undefined : d.store.lane(key);
+    if (key !== undefined && !lane) throw new Refusal(`no lane ${key}`);
+    const l = addLesson(root, {
+      cwd: lane?.cwd ?? resolve(cwd!),
+      rule: need(one(a, "rule"), "--rule"),
+      evidence: need(one(a, "evidence"), "--evidence"),
+      ...(key !== undefined ? { lane: key } : {}),
+    }, d.now());
+    console.log(formatLessonAdded(l));
+    return 0;
+  }
+  if (sub === "list") {
+    const cwd = one(a, "cwd");
+    console.log(formatLessons(listLessons(root, cwd === undefined ? undefined : resolve(cwd))).join("\n"));
+    return 0;
+  }
+  if (sub === "mark") {
+    const outcome = need(one(a, "outcome"), "--outcome");
+    if (!isLessonMark(outcome)) throw new Refusal("--outcome must be helped, no-effect, harmful or encoded");
+    console.log(formatLessonMarked(markLesson(root, need(a.pos[2], "lesson id"), outcome, d.now())));
+    return 0;
+  }
+  throw new Refusal(`unknown lesson command ${sub}\n\n${USAGE}`);
+}
+
 export async function main(argv: readonly string[], d: Deps = defaultDeps()): Promise<number> {
   const a = parse(argv);
   const [cmd, x] = a.pos;
@@ -317,8 +410,38 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return 0;
     }
     case "start": {
-      const lane = await startLane(d, need(x, "lane key"), need(one(a, "brief"), "--brief"), {
+      const key = need(x, "lane key");
+      const config = loadConfig(d.store.root);
+      // Nothing is read about the host before the omp integration check: without it no lane can start anyway.
+      await requireOmpIntegration(d);
+      if (one(a, "force") !== "true") {
+        const room = await canLaunch(d, config);
+        if (!room.ok) {
+          console.log(`${canLaunchLine(room)}\nlane ${key} not started; queue it (seori backlog add) or pass --force`);
+          return 4;
+        }
+      }
+      const ceilingFlag = (flag: string, fallback: number | null): number | null => {
+        const v = one(a, flag);
+        if (v === undefined) return fallback;
+        if (v === "none") return null;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) throw new Refusal(`--${flag} takes a nonnegative number or none`);
+        return n;
+      };
+      const defaults = config.supervision.defaults;
+      const anyCeiling = ["wall-minutes", "token-limit", "cost-limit"].some((f) => one(a, f) !== undefined);
+      const lane = await startLane(d, key, need(one(a, "brief"), "--brief"), {
         cwd: one(a, "cwd"), workspace: one(a, "workspace"),
+        ...(one(a, "done") !== undefined ? { done: one(a, "done")! } : {}),
+        ...(one(a, "thread") !== undefined ? { thread: one(a, "thread")! } : {}),
+        ...(anyCeiling ? {
+          ceilings: {
+            wallMinutes: ceilingFlag("wall-minutes", defaults.wallMinutes),
+            tokens: ceilingFlag("token-limit", defaults.tokens),
+            costUsd: ceilingFlag("cost-limit", defaults.costUsd),
+          },
+        } : {}),
       });
       console.log(`STARTED ${lane.key} pane=${lane.paneId} brief=${lane.brief}`);
       return 0;
@@ -472,10 +595,38 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "merge":
       console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true" }));
       return 0;
-    case "done":
-      await done(d, need(x, "lane key"));
-      console.log(`DONE ${x}`);
+    case "done": {
+      const key = need(x, "lane key");
+      await done(d, key);
+      console.log(`DONE ${key}`);
+      const rule = one(a, "lesson");
+      if (rule !== undefined) {
+        // A lesson never blocks the close (as dori): a bad one is a warning after DONE.
+        const lane = d.store.lane(key)!;
+        try {
+          console.log(formatLessonAdded(addLesson(d.store.root, {
+            cwd: lane.cwd, rule, evidence: one(a, "evidence") ?? lane.final?.evidence.join(" ") ?? lane.done ?? "closed lane", lane: key,
+          }, d.now())));
+        } catch (e) {
+          console.log(`LESSON_WARNING ${(e as Error).message}`);
+        }
+      }
       return 0;
+    }
+    case "pause":
+    case "resume": {
+      const key = need(x, "lane key");
+      const out = await (cmd === "pause" ? pauseLane : resumeLane)(d, key, one(a, "note"));
+      console.log(out.lines.join("\n"));
+      return 0;
+    }
+    case "object": {
+      const key = need(x, "lane key");
+      const reasons = a.flags.get("reason") ?? [];
+      const sent = await objectDone(d, key, reasons);
+      console.log(`OBJECTED ${key}`);
+      return deliveryOutcome(sent, key);
+    }
     case "status":
       status(d);
       return 0;
@@ -485,6 +636,67 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return msg(d, a, x);
     case "watch":
       return watch(d, a, x);
+    case "verify-pr": {
+      const r = await verifyPr(d, parsePr(need(x, "owner/repo#N")), loadConfig(d.store.root));
+      console.log(r.lines.join("\n"));
+      return r.ok ? 0 : 2;
+    }
+    case "lesson":
+      return lesson(d, a, x);
+    case "checkpoint": {
+      const key = laneKey(d, need(x, "lane key"));
+      const w = recordCheckpoint(d.store.root, key, {
+        step: need(one(a, "step"), "--step"),
+        result: need(one(a, "result"), "--result"),
+        evidence: a.flags.get("evidence") ?? [],
+        remoteEffects: a.flags.get("remote-effect") ?? [],
+      }, d.now());
+      console.log(formatCheckpointWrite(w));
+      return 0;
+    }
+    case "worklog": {
+      const root = d.store.root;
+      const now = d.now();
+      if (x === "list") {
+        const out = worklogListOutput(worklogList(root, { open: one(a, "open") === "true" }));
+        for (const w of out.stderr) console.error(w);
+        console.log(out.stdout);
+        return 0;
+      }
+      const rest = () => need(a.pos.slice(3).join(" ") || undefined, "text");
+      const item =
+        x === "add" ? worklogAdd(root, need(a.pos.slice(2).join(" ") || undefined, "title"), need(one(a, "source"), "--source"), now)
+        : x === "next" ? worklogNext(root, need(a.pos[2], "item id"), rest(), now)
+        : x === "note" ? worklogNote(root, need(a.pos[2], "item id"), rest(), now)
+        : x === "close" ? worklogClose(root, need(a.pos[2], "item id"), need(one(a, "result"), "--result"), now)
+        : undefined;
+      if (!item) throw new Refusal(`unknown worklog command ${x}\n\n${USAGE}`);
+      console.log(worklogItemLine(item));
+      return 0;
+    }
+    case "can-launch": {
+      const r = await canLaunch(d, loadConfig(d.store.root));
+      console.log(canLaunchLine(r));
+      return r.ok ? 0 : 4;
+    }
+    case "guard":
+      console.log((await guardLines(d, loadConfig(d.store.root))).join("\n"));
+      return 0;
+    case "heavy": {
+      const label = need(x, "label");
+      if (a.rest.length === 0) throw new Refusal(`seori heavy ${label} -- <cmd...>: give the command after --\n\n${USAGE}`);
+      return runHeavy(d.store.root, label, a.rest, { config: loadConfig(d.store.root) });
+    }
+    case "boot": {
+      const r = await bootReport(d);
+      console.log(r.lines.join("\n"));
+      return r.complete ? 0 : 1;
+    }
+    case "checkpoints": {
+      const key = laneKey(d, need(x, "lane key"));
+      console.log(formatCheckpoints(key, listCheckpoints(d.store.root, key)).join("\n"));
+      return 0;
+    }
     default:
       console.log(USAGE);
       return cmd === undefined || cmd === "help" || cmd === "--help" ? 0 : 64;
@@ -496,7 +708,11 @@ if (import.meta.main) {
   try {
     code = await main(process.argv.slice(2));
   } catch (e) {
-    if (!(e instanceof Refusal || e instanceof WatchRefusal)) throw e;
+    if (e instanceof Unverified) {
+      console.log(e.message);
+      process.exit(3);
+    }
+    if (!(e instanceof Refusal || e instanceof WatchRefusal || e instanceof ConfigError)) throw e;
     console.error(e.message);
     code = 2;
   }

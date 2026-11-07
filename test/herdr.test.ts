@@ -162,3 +162,30 @@ describe("interactiveShellInFront (#66: a suspended agent leaves its shell in fr
     expect(interactiveShellInFront(undefined)).toBe(true);
   });
 });
+
+describe("pane read, send-keys and the agent session path", () => {
+  test("read asks for recent-unwrapped lines in the session and returns herdr's raw text", async () => {
+    const r = recorder(() => ({ code: 0, stdout: " Goal mode paused.\n", stderr: "" }));
+    expect(await new Herdr(r.exec, "iso").read("w1:p2", 200)).toBe(" Goal mode paused.\n");
+    expect(r.calls).toEqual([["--session", "iso", "pane", "read", "w1:p2", "--source", "recent-unwrapped", "--lines", "200"]]);
+    const failing = recorder(() => fail("pane_not_found"));
+    expect(await new Herdr(failing.exec, "").read("w1:p2", 5).catch((e: unknown) => e)).toBeInstanceOf(HerdrError);
+  });
+
+  test("sendKeys passes herdr's key names", async () => {
+    const r = recorder();
+    await new Herdr(r.exec, "").sendKeys("w1:p2", "esc");
+    expect(r.calls).toEqual([["pane", "send-keys", "w1:p2", "esc"]]);
+  });
+
+  test("agentSessionPath: agent_session of kind path, else undefined; a gone pane is undefined", async () => {
+    const session = { agent: "omp", kind: "path", source: "herdr:omp", value: "/h/.omp/agent/sessions/x.jsonl" };
+    const get = (agent_session: unknown) => recorder(() => ok({ pane: { pane_id: "w1:p2", agent: "omp", agent_status: "idle", agent_session } }));
+    expect(await new Herdr(get(session).exec, "").agentSessionPath("w1:p2")).toBe("/h/.omp/agent/sessions/x.jsonl");
+    expect(await new Herdr(get({ ...session, kind: "id" }).exec, "").agentSessionPath("w1:p2")).toBeUndefined();
+    expect(await new Herdr(get(null).exec, "").agentSessionPath("w1:p2")).toBeUndefined();
+    expect(await new Herdr(get({ ...session, value: "" }).exec, "").agentSessionPath("w1:p2")).toBeUndefined();
+    expect(await new Herdr(recorder(() => fail("pane_not_found w1:p2")).exec, "").agentSessionPath("w1:p2")).toBeUndefined();
+    expect(await new Herdr(recorder(() => fail("boom")).exec, "").agentSessionPath("w1:p2").catch((e: unknown) => e)).toBeInstanceOf(HerdrError);
+  });
+});
