@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
@@ -136,4 +136,52 @@ describe("runDaemon", () => {
     await Bun.sleep(30); // proving the absence of further beats needs real time to pass
     expect(beat().at).toBe(stoppedAt);
   });
+
+  test("returns stopped when its signal aborts, and config-changed when messengers.json changes", async () => {
+    const root = home();
+    const d = start(root);
+    await until("heartbeat", () => existsSync(heartbeatPath(root)));
+    await d.stop();
+    expect(await d.done).toBe("stopped");
+
+    // Created after start (the README's natural order): the daemon must exit so the restart loop loads it.
+    rmSync(join(root, "messengers.json"));
+    const e = start(root);
+    await until("heartbeat", () => e.lines().length > 0);
+    writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: [{ source: "fake", owner: "u1" }] }));
+    expect(await e.done).toBe("config-changed");
+    expect(e.lines().at(-1)).toBe(`DAEMON ${join(root, "messengers.json")} changed; exiting so it is started again with the new config`);
+    expect(existsSync(daemonLockPath(root))).toBe(false);
+  });
+});
+
+describe("seori daemon process", () => {
+  const CLI = join(import.meta.dir, "..", "src", "cli.ts");
+  const LOOP = `while :; do bun ${CLI} daemon; s=$?; [ "$s" -ge 128 ] && exit "$s"; sleep 1; done`;
+  const pidOf = (root: string): number => (JSON.parse(readFileSync(heartbeatPath(root), "utf8")) as { pid: number }).pid;
+
+  test("SIGTERM to the daemon stops seori up's restart loop with a status of 128 or more", async () => {
+    const root = home();
+    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
+    process.kill(pidOf(root), "SIGTERM");
+    expect(await sh.exited).toBeGreaterThanOrEqual(128);
+    expect(existsSync(daemonLockPath(root))).toBe(false); // stopped cleanly before the re-raise
+  }, 15_000);
+
+  test("a changed messengers.json makes the restart loop start a new daemon", async () => {
+    const root = home();
+    const sh = Bun.spawn(["sh", "-c", LOOP], { env: { ...process.env, SEORI_HOME: root }, stdout: "ignore", stderr: "ignore" });
+    try {
+      await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
+      const first = pidOf(root);
+      writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: [{ source: "fake", owner: "u1" }] }));
+      await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
+      expect(sh.exitCode).toBeNull();
+      process.kill(pidOf(root), "SIGTERM");
+      expect(await sh.exited).toBeGreaterThanOrEqual(128);
+    } finally {
+      sh.kill("SIGKILL");
+    }
+  }, 30_000);
 });

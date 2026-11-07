@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Channel } from "./channel.ts";
 import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
@@ -7,7 +7,8 @@ import { lockFile } from "./store.ts";
 
 // `seori daemon`: receives every configured messenger and stores owner messages in the lead channel before the adapter
 // acknowledges them upstream. It never talks to omp; the lead extension delivers from the channel. One daemon per
-// $SEORI_HOME (daemon.lock), and a heartbeat file so duty can tell a dead daemon from a quiet messenger.
+// $SEORI_HOME (daemon.lock), and a heartbeat file so duty can tell a dead daemon from a quiet messenger. It reads
+// messengers.json once and exits when the file changes, so `seori up`'s restart loop starts it again on the new config.
 
 export const HEARTBEAT_MS = 5_000;
 export const RESTART_DELAY_MS = 5_000;
@@ -80,22 +81,45 @@ const writeHeartbeat = (root: string, at: number): void => {
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** Identifies one version of messengers.json (missing counts as a version), so an edit, creation or removal is seen. */
+const configStamp = (root: string): string => {
+  try {
+    const s = statSync(join(root, "messengers.json"));
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return "missing";
+  }
+};
+
+/** Why runDaemon returned: its signal aborted, or messengers.json changed and it must be started again to load it. */
+export type DaemonExit = "stopped" | "config-changed";
+
 /**
- * Runs until `signal` aborts. Throws at once if another live daemon holds the lock. Each messenger runs on its own
- * restart loop, so one adapter crashing (or being unsupported) never stops the others from storing messages.
+ * Runs until `signal` aborts or messengers.json changes (checked with every heartbeat). Throws at once if another live
+ * daemon holds the lock. Each messenger runs on its own restart loop, so one adapter crashing (or being unsupported)
+ * never stops the others from storing messages.
  */
-export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise<void> {
-  const signal = opts.signal ?? new AbortController().signal;
+export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise<DaemonExit> {
   const now = opts.now ?? Date.now;
   const adapterFor = opts.adapterFor ?? defaultAdapterFor;
   const restartDelayMs = opts.restartDelayMs ?? RESTART_DELAY_MS;
   const emit = opts.onEvent ?? ((e: DaemonEvent) => console.log(daemonLine(e)));
+  // Stamped before the read: an edit landing between the two is still seen as a change.
+  const stamp = configStamp(root);
   const messengers = loadMessengers(root);
 
   mkdirSync(daemonDir(root), { recursive: true });
   const lockPath = daemonLockPath(root);
   const release = lockFile(lockPath, now());
   if (!release) throw new Error(`another seori daemon is running for ${root}${holderPid(lockPath)}; stop it first`);
+
+  // The caller's signal, or a config change: either stops every messenger loop and the wait below.
+  const stop = new AbortController();
+  const signal = stop.signal;
+  const onAbort = () => stop.abort();
+  if (opts.signal?.aborted) stop.abort();
+  else opts.signal?.addEventListener("abort", onAbort, { once: true });
+  let exit: DaemonExit = "stopped";
 
   const channel = new Channel(root);
   writeHeartbeat(root, now());
@@ -104,6 +128,11 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
       writeHeartbeat(root, now());
     } catch (e) {
       emit({ ev: "error", source: "heartbeat", detail: errorText(e) });
+    }
+    if (!signal.aborted && configStamp(root) !== stamp) {
+      emit({ ev: "idle", detail: `${join(root, "messengers.json")} changed; exiting so it is started again with the new config` });
+      exit = "config-changed";
+      stop.abort();
     }
   }, opts.heartbeatMs ?? HEARTBEAT_MS);
 
@@ -146,6 +175,8 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     await Promise.all([...messengers.map(runOne), aborted.promise]);
   } finally {
     clearInterval(heartbeat);
+    opts.signal?.removeEventListener("abort", onAbort);
     release();
   }
+  return exit;
 }

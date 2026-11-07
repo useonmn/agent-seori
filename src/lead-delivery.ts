@@ -7,8 +7,11 @@ import { type IdState, type InboundRow, MAX_DELIVERIES } from "./channel.ts";
 //   session start or switch carries the open ids over;
 // - after an Esc, an idle `aside` is folded into the transcript without a turn, while an idle `followUp` with
 //   triggerTurn starts one, so an idle lead always gets `followUp` and only a busy lead gets `aside`;
-// - an aborted or failed turn, or a delivery that never showed up, gets redelivered after a short grace;
-// - nobody may be told twice what they already answered: replied, closed, send-uncertain and gave-up ids are final.
+// - an aborted or failed turn, or a delivery that never showed up, gets redelivered after a short grace; a compaction
+//   parks triggerTurn sends until it ends, so the grace is paused while one runs and counts from its end;
+// - nobody may be told twice what they already answered: replied, closed, send-uncertain and gave-up ids are final;
+// - an id is given up only after its last delivery had the longest backoff to be answered, so three quick failures
+//   (a provider outage, three Escs) do not use up the cap within a minute.
 
 /** How long a delivery may stay unseen, or an aborted turn may sit, before the id is delivered again. */
 export const GRACE_MS = 10_000;
@@ -44,16 +47,44 @@ export type Decision = {
 export class DeliverySchedule {
   private readonly mine = new Map<string, { at: number; entered: boolean }>();
   private lastEnd: { at: number; stopReason: string } | undefined;
+  private compacting = false;
+  private compactedAt = 0;
+  private carryOwed = false;
 
   noteDelivered(ids: readonly string[], now: number): void {
     for (const id of ids) this.mine.set(id, { at: now, entered: false });
   }
 
-  noteEntered(ids: readonly string[]): void {
+  /**
+   * The delivery message appeared in the conversation. Real entries (a step boundary, a triggerTurn) happen while
+   * the lead is busy; an idle entry is an aside folded in without a turn (Esc latch, plan mode), so it stays unentered
+   * and the grace redelivers it as followUp.
+   */
+  noteEntered(ids: readonly string[], idle: boolean): void {
+    if (idle) return;
     for (const id of ids) {
       const m = this.mine.get(id);
       if (m) m.entered = true;
     }
+  }
+
+  /**
+   * This session could not decide because another consumer holds the lock. The other consumer may have delivered ids
+   * this lead never saw, so the first decision after the lock is acquired carries every open id over, as a session
+   * start would; without it they would wait out the whole backoff.
+   */
+  noteLockMissed(): void {
+    this.carryOwed = true;
+  }
+
+  /**
+   * omp holds every triggerTurn send until a compaction ends, without a message_end, so a delivery is not dropped
+   * just because it stays unseen during one. If the end event never comes (a failed manual compaction emits none),
+   * only the grace stops; the backoff still redelivers.
+   */
+  noteCompaction(running: boolean, now: number): void {
+    if (this.compacting && !running) this.compactedAt = now;
+    this.compacting = running;
   }
 
   /** Records the trigger's effect on this session's memory, then decides. Call noteDelivered for what you deliver. */
@@ -61,9 +92,11 @@ export class DeliverySchedule {
     if (trigger.kind === "session_switch") {
       this.mine.clear();
       this.lastEnd = undefined;
+      this.noteCompaction(false, now);
     }
     if (trigger.kind === "agent_end") this.lastEnd = { at: now, stopReason: trigger.stopReason };
-    const carry = trigger.kind === "session_start" || trigger.kind === "session_switch";
+    const carry = this.carryOwed || trigger.kind === "session_start" || trigger.kind === "session_switch";
+    this.carryOwed = false;
     const deliver: { row: InboundRow; header: Header; attempt: number }[] = [];
     const giveUp: { id: string; attempts: number }[] = [];
     for (const s of states) {
@@ -74,9 +107,11 @@ export class DeliverySchedule {
       }
       const header = carry ? "carried" : this.retryDue(s, now, idle, trigger) ? "retry" : undefined;
       if (!header) continue;
-      // The cap is checked only when a redelivery is due, so the last delivery still gets its full chance to be answered.
-      if (s.deliveries >= MAX_DELIVERIES) giveUp.push({ id: s.row.id, attempts: s.deliveries });
-      else deliver.push({ row: s.row, header, attempt: s.deliveries + 1 });
+      // The cap is checked only when a redelivery is due, and the last delivery gets the longest backoff to be answered
+      // however it became due; until then the id waits, without a 4th delivery.
+      if (s.deliveries >= MAX_DELIVERIES) {
+        if (now - (s.lastDeliveredAt ?? 0) >= BACKOFF_MS.at(-1)!) giveUp.push({ id: s.row.id, attempts: s.deliveries });
+      } else deliver.push({ row: s.row, header, attempt: s.deliveries + 1 });
     }
     return { deliver, mode: idle ? "followUp" : "aside", giveUp };
   }
@@ -88,12 +123,12 @@ export class DeliverySchedule {
   private retryDue(s: IdState, now: number, idle: boolean, trigger: Trigger): boolean {
     if (!idle) return false;
     const mine = this.mine.get(s.row.id);
-    if (mine) {
+    if (mine && !this.compacting) {
       // An idle omp has drained what it was going to show; a delivery still unseen was dropped.
-      if (!mine.entered && now - mine.at >= GRACE_MS) return true;
+      if (!mine.entered && now - Math.max(mine.at, this.compactedAt) >= GRACE_MS) return true;
       // Esc, an error or a length stop ended the turn the message was in; it may never have been answered.
       const end = this.lastEnd;
-      if (end && end.stopReason !== "stop" && end.at >= mine.at && now - end.at >= GRACE_MS) return true;
+      if (end && end.stopReason !== "stop" && end.at >= mine.at && now - Math.max(end.at, this.compactedAt) >= GRACE_MS) return true;
     }
     // After the last delivery the longest backoff applies before it counts as given up.
     const wait = BACKOFF_MS[Math.min(s.deliveries, BACKOFF_MS.length) - 1]!;

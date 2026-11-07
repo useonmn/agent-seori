@@ -69,6 +69,7 @@ export default function leadChannel(pi: ExtensionAPI) {
       toldHeld = false;
       return true;
     }
+    schedule.noteLockMissed();
     if (!toldHeld) {
       say(`seori lead channel: another omp holds ${channel.consumerLockPath}; this session will not deliver messenger messages.`, "warning");
       toldHeld = true;
@@ -130,7 +131,7 @@ export default function leadChannel(pi: ExtensionAPI) {
     const raw = prop(prop(e.message, "details"), "ids");
     if (!Array.isArray(raw)) return;
     const ids = raw.filter((id): id is string => typeof id === "string");
-    schedule.noteEntered(ids);
+    schedule.noteEntered(ids, c.isIdle()); // the ledger records every entry; the schedule ignores idle folds
     const at = Date.now();
     const session = c.sessionManager.getSessionId();
     for (const id of ids) channel.appendLedger({ id, ev: "entered", at, session });
@@ -143,6 +144,13 @@ export default function leadChannel(pi: ExtensionAPI) {
     const stopReason = prop(last, "stopReason");
     evaluate({ kind: "agent_end", stopReason: typeof stopReason === "string" ? stopReason : "none" });
   });
+
+  // A compaction parks every triggerTurn send until it ends (see DeliverySchedule.noteCompaction). Manual: the
+  // summary hook starts it, the commit ends it. Automatic and idle: their own start and end events.
+  pi.on("session.compacting", () => schedule.noteCompaction(true, Date.now()));
+  pi.on("session_compact", () => schedule.noteCompaction(false, Date.now()));
+  pi.on("auto_compaction_start", () => schedule.noteCompaction(true, Date.now()));
+  pi.on("auto_compaction_end", () => schedule.noteCompaction(false, Date.now()));
 
   pi.on("session_shutdown", (_e, c) => {
     active = false;

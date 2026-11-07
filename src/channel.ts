@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { lockFile } from "./store.ts";
 
@@ -21,7 +21,10 @@ export type InboundRow = {
 /**
  * - delivered: the extension handed the id to omp (attempt counts from 1; mode is how).
  * - entered: the delivered message appeared in the lead's conversation.
+ * - sending: `seori msg send --reply-to` is about to call the messenger. Written first, so a process killed mid-send
+ *   leaves a trace: a `sending` with no later `replied` or `send-failed` counts as uncertain (see IdState.uncertain).
  * - replied: `seori msg send --reply-to` got a message id back from the messenger. Closes the id.
+ * - send-failed: the messenger definitely did not take the reply; settles the `sending` before it, the id stays open.
  * - closed: `seori msg close`. Closes the id.
  * - send-uncertain: a reply may or may not have reached the messenger; never retried automatically.
  * - gave-up: MAX_DELIVERIES deliveries without a reply or close; the extension stops redelivering.
@@ -30,7 +33,9 @@ export type InboundRow = {
 export type LedgerEvent =
   | { readonly id: string; readonly ev: "delivered"; readonly at: number; readonly attempt: number; readonly mode: "followUp" | "aside"; readonly session?: string }
   | { readonly id: string; readonly ev: "entered"; readonly at: number; readonly session?: string }
+  | { readonly id: string; readonly ev: "sending"; readonly at: number }
   | { readonly id: string; readonly ev: "replied"; readonly at: number; readonly messageId: string }
+  | { readonly id: string; readonly ev: "send-failed"; readonly at: number; readonly detail: string }
   | { readonly id: string; readonly ev: "closed"; readonly at: number; readonly why: string }
   | { readonly id: string; readonly ev: "send-uncertain"; readonly at: number; readonly detail: string }
   | { readonly id: string; readonly ev: "gave-up"; readonly at: number; readonly attempts: number }
@@ -45,6 +50,7 @@ export type IdState = {
   readonly entered: boolean;
   readonly replied: boolean;
   readonly closed: boolean;
+  /** A send-uncertain, or a `sending` not settled by a later replied/send-failed: the reply may be in the chat. */
   readonly uncertain: boolean;
   readonly gaveUp: boolean;
   readonly alerted: readonly string[];
@@ -84,16 +90,62 @@ export class Channel {
     return join(this.dir, "consumer.lock");
   }
 
-  /** Appends a row and fsyncs before returning, so the caller may then acknowledge upstream. False: id already stored. */
+  /** Ids of the rows in inbound.jsonl up to byte `scanned`, so appendInbound reads only what was appended since. */
+  private readonly stored = new Set<string>();
+  private scanned = 0;
+
+  /**
+   * Reads inbound.jsonl from `scanned` to its end and records the ids of its complete lines. True: the file ends in a
+   * torn line (a writer that died mid-row); that piece stays unscanned until a newline completes it.
+   */
+  private scanInbound(): boolean {
+    let size: number;
+    try {
+      size = statSync(this.inboundPath).size;
+    } catch {
+      return false;
+    }
+    if (size < this.scanned) {
+      this.stored.clear(); // replaced by hand: start over
+      this.scanned = 0;
+    }
+    if (size === this.scanned) return false;
+    const buf = Buffer.alloc(size - this.scanned);
+    let got = 0;
+    const fd = openSync(this.inboundPath, "r");
+    try {
+      for (let n = 1; n > 0 && got < buf.length; got += n) n = readSync(fd, buf, got, buf.length - got, this.scanned + got);
+    } finally {
+      closeSync(fd);
+    }
+    const end = buf.subarray(0, got).lastIndexOf(0x0a) + 1;
+    for (const line of buf.toString("utf8", 0, end).split("\n")) {
+      try {
+        const id = (JSON.parse(line) as Partial<InboundRow>).id;
+        if (typeof id === "string") this.stored.add(id);
+      } catch {
+        // blank, or the torn remains of a crashed write
+      }
+    }
+    this.scanned += end;
+    return end < got;
+  }
+
+  /**
+   * Appends a row and fsyncs before returning, so the caller may then acknowledge upstream. False: id already stored.
+   * After a torn tail the row starts on a new line; glued onto the torn bytes it would never parse, a silent loss.
+   */
   appendInbound(row: InboundRow): boolean {
-    if (this.inbound().some((r) => r.id === row.id)) return false;
+    const torn = this.scanInbound();
+    if (this.stored.has(row.id)) return false;
     const fd = openSync(this.inboundPath, "a");
     try {
-      writeSync(fd, `${JSON.stringify(row)}\n`);
+      writeSync(fd, `${torn ? "\n" : ""}${JSON.stringify(row)}\n`);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
+    this.scanInbound();
     return true;
   }
 
@@ -109,21 +161,61 @@ export class Channel {
     return readJsonl<LedgerEvent>(this.ledgerPath);
   }
 
+  /** One pass over the ledger grouped by id: the lead extension and duty call this every tick, for all history. */
   states(): IdState[] {
-    const events = this.ledger();
+    type Acc = { deliveries: number; lastDeliveredAt?: number; entered: boolean; replied: boolean; closed: boolean; sendUncertain: boolean; inFlight: boolean; gaveUp: boolean; alerted: string[] };
+    const byId = new Map<string, Acc>();
+    for (const e of this.ledger()) {
+      let a = byId.get(e.id);
+      if (!a) {
+        a = { deliveries: 0, entered: false, replied: false, closed: false, sendUncertain: false, inFlight: false, gaveUp: false, alerted: [] };
+        byId.set(e.id, a);
+      }
+      switch (e.ev) {
+        case "delivered":
+          a.deliveries++;
+          a.lastDeliveredAt = e.at;
+          break;
+        case "entered":
+          a.entered = true;
+          break;
+        case "sending":
+          a.inFlight = true;
+          break;
+        case "replied":
+          a.replied = true;
+          a.inFlight = false;
+          break;
+        case "send-failed":
+          a.inFlight = false;
+          break;
+        case "closed":
+          a.closed = true;
+          break;
+        case "send-uncertain":
+          a.sendUncertain = true;
+          break;
+        case "gave-up":
+          a.gaveUp = true;
+          break;
+        case "alerted":
+          a.alerted.push(e.why);
+          break;
+      }
+    }
     return this.inbound().map((row) => {
-      const mine = events.filter((e) => e.id === row.id);
-      const deliveries = mine.filter((e) => e.ev === "delivered");
+      const a = byId.get(row.id);
+      if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: false, uncertain: false, gaveUp: false, alerted: [] };
       return {
         row,
-        deliveries: deliveries.length,
-        ...(deliveries.length ? { lastDeliveredAt: deliveries.at(-1)!.at } : {}),
-        entered: mine.some((e) => e.ev === "entered"),
-        replied: mine.some((e) => e.ev === "replied"),
-        closed: mine.some((e) => e.ev === "closed"),
-        uncertain: mine.some((e) => e.ev === "send-uncertain"),
-        gaveUp: mine.some((e) => e.ev === "gave-up"),
-        alerted: mine.flatMap((e) => (e.ev === "alerted" ? [e.why] : [])),
+        deliveries: a.deliveries,
+        ...(a.lastDeliveredAt !== undefined ? { lastDeliveredAt: a.lastDeliveredAt } : {}),
+        entered: a.entered,
+        replied: a.replied,
+        closed: a.closed,
+        uncertain: a.sendUncertain || a.inFlight,
+        gaveUp: a.gaveUp,
+        alerted: a.alerted,
       };
     });
   }
@@ -135,5 +227,14 @@ export class Channel {
 
   lockConsumer(now: number): (() => void) | undefined {
     return lockFile(this.consumerLockPath, now);
+  }
+
+  /** Held by `seori msg send --reply-to` across check → send → record, so two replies to one id can't both go out. */
+  get replyLockPath(): string {
+    return join(this.dir, "reply.lock");
+  }
+
+  lockReply(now: number): (() => void) | undefined {
+    return lockFile(this.replyLockPath, now);
   }
 }

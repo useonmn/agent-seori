@@ -131,7 +131,7 @@ describe("lanes", () => {
     expect(create.slice(-6)).toEqual(["--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso"]);
     // The daemon starts first, so the duty loop's first tick finds its heartbeat instead of reporting an outage.
     expect(w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "run").map((c) => [c.argv[2], c.argv[3]])).toEqual([
-      ["w1:p6", "sh -c 'while :; do seori daemon; sleep 1; done'"],
+      ["w1:p6", `sh -c 'while :; do seori daemon; s=$?; [ "$s" -ge 128 ] && exit "$s"; sleep 1; done'`],
       ["w1:p4", "seori duty --interval 60"],
       ["w1:p5", "seori loop"],
     ]);

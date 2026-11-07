@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, type InboundRow } from "../src/channel.ts";
 import { Refusal } from "../src/harness.ts";
@@ -42,6 +42,8 @@ describe("msg send --reply-to", () => {
     expect(r).toEqual({ status: "SENT", messageId: "m1", ids: ["fake:c1:100", "fake:c1:101"] });
     expect(sent).toEqual([{ source: "fake", target: { chat: "c1", thread: "t9", replyTo: "100" }, text: "done" }]);
     expect(channel.ledger()).toEqual([
+      { id: "fake:c1:100", ev: "sending", at: T0 + 1000 },
+      { id: "fake:c1:101", ev: "sending", at: T0 + 1000 },
       { id: "fake:c1:100", ev: "replied", at: T0 + 1000, messageId: "m1" },
       { id: "fake:c1:101", ev: "replied", at: T0 + 1000, messageId: "m1" },
     ]);
@@ -70,6 +72,8 @@ describe("msg send --reply-to", () => {
     const r = await msgSend(root, { replyTo: ["fake:c1:100", "fake:c1:101"], text: "hi" }, d);
     expect(r).toEqual({ status: "HELD", ids: ["fake:c1:100", "fake:c1:101"] });
     expect(channel.ledger()).toEqual([
+      { id: "fake:c1:100", ev: "sending", at: T0 + 1000 },
+      { id: "fake:c1:101", ev: "sending", at: T0 + 1000 },
       { id: "fake:c1:100", ev: "send-uncertain", at: T0 + 1000, detail: "timed out after sending" },
       { id: "fake:c1:101", ev: "send-uncertain", at: T0 + 1000, detail: "timed out after sending" },
     ]);
@@ -79,13 +83,67 @@ describe("msg send --reply-to", () => {
     expect(await msgSend(root, { replyTo: ["fake:c1:101"], text: "hi", again: true }, d)).toMatchObject({ status: "SENT" });
   });
 
-  test("a definite send error records nothing and propagates", async () => {
-    const { root, channel, d, add, setMode } = setup();
+  test("a definite send error records send-failed, leaves the id open and propagates; a retry is allowed", async () => {
+    const { root, channel, sent, d, add, setMode } = setup();
     add("fake:c1:100");
     setMode("error");
     await expect(msgSend(root, { replyTo: ["fake:c1:100"], text: "hi" }, d)).rejects.toThrow("403 forbidden");
-    expect(channel.ledger()).toEqual([]);
+    expect(channel.ledger()).toEqual([
+      { id: "fake:c1:100", ev: "sending", at: T0 + 1000 },
+      { id: "fake:c1:100", ev: "send-failed", at: T0 + 1000, detail: "403 forbidden" },
+    ]);
     expect(channel.open()).toHaveLength(1);
+    expect(channel.open()[0]!.uncertain).toBe(false);
+    setMode("ok");
+    expect(await msgSend(root, { replyTo: ["fake:c1:100"], text: "hi" }, d)).toMatchObject({ status: "SENT" });
+    expect(sent).toHaveLength(2);
+  });
+
+  test("a send killed mid-flight (sending, nothing after) is uncertain: refused without --again, never redelivered", async () => {
+    const { root, channel, sent, d, add } = setup();
+    add("fake:c1:100");
+    channel.appendLedger({ id: "fake:c1:100", ev: "sending", at: T0 });
+    expect(channel.states()[0]!.uncertain).toBe(true);
+    await expect(msgSend(root, { replyTo: ["fake:c1:100"], text: "hi" }, d)).rejects.toThrow("UNCERTAIN fake:c1:100");
+    expect(sent).toEqual([]);
+    expect(msgList(root, {}, T0)[0]).toStartWith("fake:c1:100  uncertain  ");
+    expect(await msgSend(root, { replyTo: ["fake:c1:100"], text: "hi", again: true }, d)).toMatchObject({ status: "SENT" });
+  });
+
+  test("a held reply lock refuses BUSY before checking or sending", async () => {
+    const { root, channel, sent, d, add } = setup();
+    add("fake:c1:100");
+    // Another live process on this host (our parent shell's pid stands in) is mid-reply.
+    writeFileSync(channel.replyLockPath, JSON.stringify({ pid: process.ppid, host: hostname(), at: T0 }));
+    await expect(msgSend(root, { replyTo: ["fake:c1:100"], text: "hi" }, d)).rejects.toThrow("BUSY");
+    expect(sent).toEqual([]);
+    expect(channel.ledger()).toEqual([]);
+  });
+
+  test("two concurrent replies to one id: exactly one is sent", async () => {
+    const { root, channel, d, add } = setup();
+    add("fake:c1:100");
+    let calls = 0;
+    const gate = Promise.withResolvers<void>();
+    const slow: MsgDeps = {
+      ...d,
+      adapterFor: (c) => ({
+        source: c.source,
+        receive: async () => {},
+        send: async () => {
+          calls++;
+          await gate.promise;
+          return { messageId: "slow1" };
+        },
+      }),
+    };
+    const first = msgSend(root, { replyTo: ["fake:c1:100"], text: "a" }, slow);
+    await expect(msgSend(root, { replyTo: ["fake:c1:100"], text: "b" }, slow)).rejects.toThrow("BUSY");
+    gate.resolve();
+    expect(await first).toMatchObject({ status: "SENT", messageId: "slow1" });
+    await expect(msgSend(root, { replyTo: ["fake:c1:100"], text: "c" }, slow)).rejects.toThrow("ALREADY_REPLIED");
+    expect(calls).toBe(1);
+    expect(channel.ledger().filter((e) => e.ev === "replied")).toHaveLength(1);
   });
 
   test("refuses unknown ids, ids from different chats, and mixing --reply-to with --to", async () => {

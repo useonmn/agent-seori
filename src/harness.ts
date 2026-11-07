@@ -487,7 +487,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   try {
     await channelAlerts(d, events);
   } catch (e) {
-    // A broken messengers.json or ledger must not stop lane and inbox duty.
+    // An unwritable lead dir must not stop lane and inbox duty (a broken messengers.json is told to the lead, not thrown).
     events.push({ action: "channel-failed", detail: failureDetail(e) });
   }
   return events;
@@ -507,8 +507,18 @@ export const ALERT_TEXT = {
 } as const;
 type AlertWhy = keyof typeof ALERT_TEXT;
 
-/** `lead/duty-alerts.json`: alert state that is not per message id, so an outage is told once, not every tick. */
-type DutyAlerts = { daemonDownSince?: number };
+/** `lead/duty-alerts.json`: alert state that is not per message id, so an outage or a breakage is told once, not every tick. */
+type DutyAlerts = { daemonDownSince?: number; configBrokenSince?: number };
+
+const dutyAlertsPath = (root: string): string => join(root, "lead", "duty-alerts.json");
+
+const saveDutyAlerts = (root: string, next: DutyAlerts): void => {
+  const path = dutyAlertsPath(root);
+  mkdirSync(join(root, "lead"), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+  renameSync(tmp, path);
+};
 
 const readJsonFile = <T>(path: string): T | undefined => {
   try {
@@ -533,20 +543,34 @@ function consumerOffline(lockPath: string): boolean {
   return lock.host === hostname() && typeof lock.pid === "number" && !pidAlive(lock.pid);
 }
 
-/** Messenger alerts, only when a messenger is configured: daemon outage (to the lead), then per-id alerts (to the human). */
+/**
+ * Messenger alerts, only when a messenger is configured (or messengers.json is there but broken): a broken config and a
+ * daemon outage go to the lead, then per-id alerts go to the human. A broken config has no messenger to reply through,
+ * so it skips the per-id alerts, but the outage check still runs: the daemon cannot start on that file.
+ */
 async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
-  const messengers = loadMessengers(d.store.root);
-  if (messengers.length === 0) return;
+  let messengers: MessengerConfig[] = [];
+  let broken: string | undefined;
+  try {
+    messengers = loadMessengers(d.store.root);
+  } catch (e) {
+    broken = failureDetail(e);
+  }
+  await configAlert(d, broken, events);
+  if (messengers.length === 0 && broken === undefined) return;
   const channel = new Channel(d.store.root);
   const now = d.now();
-  await daemonAlert(d, channel, now, events);
+  await daemonAlert(d, now, events);
+  if (broken !== undefined) return;
 
   const open = channel.open();
+  // Send-uncertain and gave-up ids are final: they are never delivered again, so "kept" or "queued" would be false.
+  const waiting = open.filter((s) => !s.uncertain && !s.gaveUp);
   const waited = (at: number | undefined): boolean => at !== undefined && now - at > ALERT_AFTER_MS;
   const due: [IdState, AlertWhy][] = [];
-  const offline = open.filter((s) => !s.alerted.includes("lead-offline") && waited(s.row.at));
+  const offline = waiting.filter((s) => !s.alerted.includes("lead-offline") && waited(s.row.at));
   if (offline.length && consumerOffline(channel.consumerLockPath)) due.push(...offline.map((s): [IdState, AlertWhy] => [s, "lead-offline"]));
-  const stuck = open.filter((s) => !s.alerted.includes("lead-blocked") && waited(s.lastDeliveredAt));
+  const stuck = waiting.filter((s) => !s.alerted.includes("lead-blocked") && waited(s.lastDeliveredAt));
   const lead = d.store.roles().lead;
   if (stuck.length && lead) {
     try {
@@ -583,21 +607,39 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   }
 }
 
+/** Tells the lead once per breakage that messengers.json does not load; a file that loads again ends it. */
+async function configAlert(d: Deps, broken: string | undefined, events: DutyEvent[]): Promise<void> {
+  const state = readJsonFile<DutyAlerts>(dutyAlertsPath(d.store.root)) ?? {};
+  if (broken === undefined) {
+    if (state.configBrokenSince === undefined) return;
+    const { configBrokenSince, ...rest } = state;
+    saveDutyAlerts(d.store.root, rest);
+    events.push({ action: "config-fixed", detail: `broken ${Math.floor((d.now() - configBrokenSince) / 1000)} s` });
+    return;
+  }
+  if (state.configBrokenSince !== undefined) return;
+  try {
+    await tellLead(d, `[MESSENGER] messengers.json is invalid (${broken}); the daemon cannot start, so messenger messages are not received until it is fixed`, "duty");
+  } catch (e) {
+    // Same as daemonAlert: an uncertain delivery is recorded and held with the lead told, so the breakage counts as told.
+    if (!(e instanceof DeliveryUncertain)) {
+      events.push({ action: "config-alert-failed", detail: failureDetail(e) });
+      return;
+    }
+  }
+  saveDutyAlerts(d.store.root, { ...state, configBrokenSince: d.now() });
+  events.push({ action: "config-broken", detail: broken });
+}
+
 /** Tells the lead once per outage that the daemon is down (nothing is received meanwhile); a fresh heartbeat ends it. */
-async function daemonAlert(d: Deps, channel: Channel, now: number, events: DutyEvent[]): Promise<void> {
-  const statePath = join(channel.dir, "duty-alerts.json");
-  const state = readJsonFile<DutyAlerts>(statePath) ?? {};
-  const save = (next: DutyAlerts): void => {
-    const tmp = `${statePath}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
-    renameSync(tmp, statePath);
-  };
+async function daemonAlert(d: Deps, now: number, events: DutyEvent[]): Promise<void> {
+  const state = readJsonFile<DutyAlerts>(dutyAlertsPath(d.store.root)) ?? {};
   const beat = readJsonFile<{ at?: unknown }>(join(d.store.root, "messenger", "daemon.heartbeat"));
   const age = typeof beat?.at === "number" ? now - beat.at : undefined;
   if (age !== undefined && age <= HEARTBEAT_STALE_MS) {
     if (state.daemonDownSince === undefined) return;
     const { daemonDownSince, ...rest } = state;
-    save(rest);
+    saveDutyAlerts(d.store.root, rest);
     events.push({ action: "daemon-up", detail: `down ${Math.floor((now - daemonDownSince) / 1000)} s` });
     return;
   }
@@ -612,7 +654,7 @@ async function daemonAlert(d: Deps, channel: Channel, now: number, events: DutyE
       return;
     }
   }
-  save({ ...state, daemonDownSince: now });
+  saveDutyAlerts(d.store.root, { ...state, daemonDownSince: now });
   events.push({ action: "daemon-down", detail });
 }
 

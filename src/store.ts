@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync, linkSync, statSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, uptime } from "node:os";
 import { join } from "node:path";
 
 export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
@@ -112,6 +112,12 @@ export const pidAlive = (pid: number): boolean => {
   }
 };
 
+/**
+ * Slack for the boot time: os.uptime() has whole-second precision and an NTP step right after boot shifts the wall clock,
+ * so a lock is judged pre-boot only when it is clearly older than the boot.
+ */
+const BOOT_SLACK_MS = 60_000;
+
 /** An unreadable lock (a holder that died between create and write) is judged by the file's age. */
 function lockStale(path: string, content: string, now: number): boolean {
   let lock: { pid?: unknown; host?: unknown; at?: unknown } = {};
@@ -120,18 +126,30 @@ function lockStale(path: string, content: string, now: number): boolean {
   } catch {
     // fall through to the file's mtime
   }
+  const mtime = (): number => {
+    try {
+      return statSync(path).mtimeMs;
+    } catch {
+      return now;
+    }
+  };
   // On this host the pid decides: a live holder keeps its lock however long a herdr call takes, or a second flush
   // would deliver the same batch again. The age rule is only for locks from another host or locks that can't be read.
-  if (lock.host === hostname() && typeof lock.pid === "number") return !pidAlive(lock.pid);
-  const at = typeof lock.at === "number" ? lock.at : (() => { try { return statSync(path).mtimeMs; } catch { return now; } })();
+  // A lock written before this boot is stale whatever its pid says: after a reboot an unrelated process may own that
+  // pid, and long-lived locks (daemon, lead consumer) would otherwise stay held forever. The file's mtime is the wall
+  // clock it was written at; `at` is the caller's clock, which tests inject.
+  if (lock.host === hostname() && typeof lock.pid === "number")
+    return mtime() < Date.now() - uptime() * 1000 - BOOT_SLACK_MS || !pidAlive(lock.pid);
+  const at = typeof lock.at === "number" ? lock.at : mtime();
   return now - at > INBOX_LOCK_STALE_MS;
 }
 
 /**
  * Takes the lock at `path` (created O_EXCL, holding pid, host and time) and returns its release, or undefined while
- * another process holds it. A lock whose pid is dead on this host, or one from another host (or unreadable) older than
- * INBOX_LOCK_STALE_MS, is taken over: it is renamed aside first, and when what was renamed is not the lock judged stale
- * (another process took it over in between), it is put back and the lock counts as held.
+ * another process holds it. A lock whose pid is dead on this host or that was written before this boot, or one from
+ * another host (or unreadable) older than INBOX_LOCK_STALE_MS, is taken over: it is renamed aside first, and when what
+ * was renamed is not the lock judged stale (another process took it over in between), it is put back and the lock
+ * counts as held.
  */
 export function lockFile(path: string, now: number): (() => void) | undefined {
   const mine = JSON.stringify({ pid: process.pid, host: hostname(), at: now });

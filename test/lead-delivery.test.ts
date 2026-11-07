@@ -57,7 +57,7 @@ describe("DeliverySchedule", () => {
   test("a delivered id is not redelivered by a plain scan", () => {
     const s = new DeliverySchedule();
     s.noteDelivered(["a"], T0);
-    s.noteEntered(["a"]);
+    s.noteEntered(["a"], false);
     expect(s.decide([delivered("a", 1, T0)], T0 + BACKOFF_MS[0]! * 10, true, { kind: "scan" }).deliver).toEqual([]);
   });
 
@@ -77,8 +77,54 @@ describe("DeliverySchedule", () => {
     const three = [delivered("a", 3, T0)];
     expect(s.decide(three, T0 + 5 * 60_000 - 1, true, { kind: "timer" })).toMatchObject({ deliver: [], giveUp: [] });
     expect(s.decide(three, T0 + 5 * 60_000, true, { kind: "timer" })).toMatchObject({ deliver: [], giveUp: [{ id: "a", attempts: 3 }] });
-    // a restart with the cap already reached gives up instead of carrying over
-    expect(new DeliverySchedule().decide(three, T0 + 1, true, { kind: "session_start" })).toMatchObject({ deliver: [], giveUp: [{ id: "a", attempts: 3 }] });
+    // a restart with the cap reached neither carries it over nor gives up before the last backoff
+    expect(new DeliverySchedule().decide(three, T0 + 1, true, { kind: "session_start" })).toMatchObject({ deliver: [], giveUp: [] });
+    expect(new DeliverySchedule().decide(three, T0 + 5 * 60_000, true, { kind: "session_start" })).toMatchObject({ deliver: [], giveUp: [{ id: "a", attempts: 3 }] });
+  });
+
+  test("grace retries never give up before the last delivery had the longest backoff", () => {
+    // three turns failing 10 s apart (a provider outage) use up the deliveries, not the final chance
+    const s = new DeliverySchedule();
+    s.noteDelivered(["a"], T0);
+    s.noteEntered(["a"], false);
+    s.decide([delivered("a", 3, T0)], T0 + 1000, true, { kind: "agent_end", stopReason: "error" });
+    expect(s.decide([delivered("a", 3, T0)], T0 + 1000 + GRACE_MS, true, { kind: "timer" })).toMatchObject({ deliver: [], giveUp: [] });
+    expect(s.decide([delivered("a", 3, T0)], T0 + BACKOFF_MS.at(-1)!, true, { kind: "timer" })).toMatchObject({ deliver: [], giveUp: [{ id: "a", attempts: 3 }] });
+  });
+
+  test("the not-entered grace pauses while omp compacts and counts from the compaction's end", () => {
+    const s = new DeliverySchedule();
+    s.noteDelivered(["a"], T0);
+    s.noteCompaction(true, T0 + 1000);
+    const st = [delivered("a", 1, T0, { entered: false })];
+    expect(s.decide(st, T0 + 60_000, true, { kind: "timer" }).deliver).toEqual([]);
+    s.noteCompaction(false, T0 + 60_000);
+    expect(s.decide(st, T0 + 60_000 + GRACE_MS - 1, true, { kind: "timer" }).deliver).toEqual([]);
+    expect(ids(s.decide(st, T0 + 60_000 + GRACE_MS, true, { kind: "timer" }))).toEqual(["a:retry:2"]);
+    // the backoff still applies during a compaction, so a lost end event cannot stall an id for good
+    const stuck = new DeliverySchedule();
+    stuck.noteDelivered(["b"], T0);
+    stuck.noteCompaction(true, T0);
+    expect(ids(stuck.decide([delivered("b", 1, T0, { entered: false })], T0 + BACKOFF_MS[0]!, true, { kind: "timer" }))).toEqual(["b:retry:2"]);
+  });
+
+  test("an entry while idle (an aside folded without a turn) is redelivered after the grace", () => {
+    const s = new DeliverySchedule();
+    s.noteDelivered(["a"], T0);
+    s.noteEntered(["a"], true);
+    const st = [delivered("a", 1, T0)];
+    const d = s.decide(st, T0 + GRACE_MS, true, { kind: "timer" });
+    expect(ids(d)).toEqual(["a:retry:2"]);
+    expect(d.mode).toBe("followUp");
+  });
+
+  test("a missed consumer lock owes a carry-over to the first decision after it is acquired", () => {
+    const s = new DeliverySchedule();
+    s.noteLockMissed();
+    const st = [delivered("old", 1, T0)];
+    expect(ids(s.decide(st, T0 + 1000, true, { kind: "timer" }))).toEqual(["old:carried:2"]);
+    // owed once only
+    expect(s.decide(st, T0 + 2000, true, { kind: "timer" }).deliver).toEqual([]);
   });
 
   test("a delivery that never entered is redelivered after the grace once the lead is idle", () => {
@@ -88,27 +134,27 @@ describe("DeliverySchedule", () => {
     expect(s.decide(st, T0 + GRACE_MS - 1, true, { kind: "timer" }).deliver).toEqual([]);
     expect(s.decide(st, T0 + GRACE_MS, false, { kind: "timer" }).deliver).toEqual([]);
     expect(ids(s.decide(st, T0 + GRACE_MS, true, { kind: "scan" }))).toEqual(["a:retry:2"]);
-    s.noteEntered(["a"]);
+    s.noteEntered(["a"], false);
     expect(s.decide(st, T0 + GRACE_MS, true, { kind: "timer" }).deliver).toEqual([]);
   });
 
   test("a turn that ended without stop redelivers its ids after the grace; a stop does not", () => {
     const s = new DeliverySchedule();
     s.noteDelivered(["a"], T0);
-    s.noteEntered(["a"]);
+    s.noteEntered(["a"], false);
     const st = [delivered("a", 1, T0)];
     expect(s.decide(st, T0 + 1000, true, { kind: "agent_end", stopReason: "aborted" }).deliver).toEqual([]);
     expect(s.decide(st, T0 + 1000 + GRACE_MS - 1, true, { kind: "timer" }).deliver).toEqual([]);
     expect(ids(s.decide(st, T0 + 1000 + GRACE_MS, true, { kind: "timer" }))).toEqual(["a:retry:2"]);
     // once redelivered, the old abort no longer counts
     s.noteDelivered(["a"], T0 + 1000 + GRACE_MS);
-    s.noteEntered(["a"]);
+    s.noteEntered(["a"], false);
     const st2 = [delivered("a", 2, T0 + 1000 + GRACE_MS)];
     expect(s.decide(st2, T0 + 1000 + 3 * GRACE_MS, true, { kind: "timer" }).deliver).toEqual([]);
 
     const ok = new DeliverySchedule();
     ok.noteDelivered(["b"], T0);
-    ok.noteEntered(["b"]);
+    ok.noteEntered(["b"], false);
     ok.decide([delivered("b", 1, T0)], T0 + 1000, true, { kind: "agent_end", stopReason: "stop" });
     expect(ok.decide([delivered("b", 1, T0)], T0 + 1000 + GRACE_MS, true, { kind: "timer" }).deliver).toEqual([]);
   });
@@ -117,7 +163,7 @@ describe("DeliverySchedule", () => {
     const s = new DeliverySchedule();
     s.decide([], T0, true, { kind: "agent_end", stopReason: "aborted" });
     s.noteDelivered(["a"], T0 + 1);
-    s.noteEntered(["a"]);
+    s.noteEntered(["a"], false);
     expect(s.decide([delivered("a", 1, T0 + 1)], T0 + 1 + GRACE_MS, true, { kind: "timer" }).deliver).toEqual([]);
   });
 

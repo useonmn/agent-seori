@@ -4,7 +4,9 @@ import { SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTa
 
 // `seori msg ...`: the lead answers messenger messages. A reply closes its ids only after the messenger returned a
 // message id, so an id is never marked answered on a failed send; an uncertain send is recorded and refused afterwards
-// until a human checks the chat and passes --again, so the lead never double-replies on its own.
+// until a human checks the chat and passes --again, so the lead never double-replies on its own. A `sending` event goes
+// to the ledger before the messenger is called, so a reply killed mid-send (Esc, timeout, SIGTERM) is uncertain too, and
+// the reply lock keeps two concurrent sends from both passing the check.
 
 export type MsgDeps = {
   readonly adapterFor: (c: MessengerConfig) => MessengerAdapter;
@@ -51,6 +53,17 @@ export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Prom
   const ids = [...new Set(o.replyTo)];
   if (!ids.length) throw new Refusal("--reply-to needs at least one id");
   const channel = new Channel(root);
+  const release = channel.lockReply(d.now());
+  if (!release) throw new Refusal(`BUSY: another seori msg send is replying right now (${channel.replyLockPath}); nothing was sent, retry shortly`);
+  try {
+    return await replyLocked(channel, ids, o, d);
+  } finally {
+    release();
+  }
+}
+
+/** The reply under the reply lock: states are read only once it is held, so a concurrent reply is already recorded. */
+async function replyLocked(channel: Channel, ids: readonly string[], o: MsgSendOptions, d: MsgDeps): Promise<MsgSendResult> {
   const states = channel.states();
   const picked = ids.map((id) => {
     const s = states.find((x) => x.row.id === id);
@@ -77,14 +90,22 @@ export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Prom
   // The upstream message id part of `<source>:<chat>:<message id>`; chat ids may contain colons, so slice by known parts.
   const replyTo = first.row.id.slice(first.row.source.length + first.row.chat.length + 2);
   const target: SendTarget = { chat: first.row.chat, ...(first.row.thread ? { thread: first.row.thread } : {}), replyTo };
+  const adapter = adapterFor(d, first.row.source);
+  const startedAt = d.now();
+  for (const id of ids) channel.appendLedger({ id, ev: "sending", at: startedAt });
   try {
-    const { messageId } = await adapterFor(d, first.row.source).send(target, o.text);
+    const { messageId } = await adapter.send(target, o.text);
     const at = d.now();
     for (const id of ids) channel.appendLedger({ id, ev: "replied", at, messageId });
     return { status: "SENT", messageId, ids };
   } catch (e) {
-    if (!(e instanceof SendUncertain)) throw e; // definite failure: nothing reached the chat, nothing to record
     const at = d.now();
+    if (!(e instanceof SendUncertain)) {
+      // Definite failure: nothing reached the chat, so the ids stay open and the lead may simply try again.
+      const detail = e instanceof Error ? e.message : String(e);
+      for (const id of ids) channel.appendLedger({ id, ev: "send-failed", at, detail });
+      throw e;
+    }
     for (const id of ids) channel.appendLedger({ id, ev: "send-uncertain", at, detail: e.message });
     return { status: "HELD", ids };
   }

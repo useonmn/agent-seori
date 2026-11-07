@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { ALERT_TEXT, dutyTick } from "../src/harness.ts";
@@ -142,5 +142,45 @@ describe("duty channel alerts", () => {
     channel.appendLedger({ id: "slack:c9:m9", ev: "gave-up", at: w.clock, attempts: 3 });
     expect(await dutyTick(d)).toEqual([{ action: "alert-failed", detail: "slack:c9:m9 gave-up: no messenger configured for source slack" }]);
     expect(alerted()).toEqual([]);
+  });
+
+  test("send-uncertain and gave-up ids are final: no lead-offline or lead-blocked promise is sent for them", async () => {
+    const { w, d, root, lead, channel, advance, alerted } = setup();
+    channel.appendInbound({ id: "fake:c1:m2", kind: "messenger", source: "fake", chat: "c1", from: "u1", at: w.clock, text: "two" });
+    channel.appendLedger({ id: "fake:c1:m1", ev: "delivered", at: w.clock, attempt: 1, mode: "followUp" });
+    channel.appendLedger({ id: "fake:c1:m1", ev: "send-uncertain", at: w.clock, detail: "timed out" });
+    channel.appendLedger({ id: "fake:c1:m2", ev: "delivered", at: w.clock, attempt: 3, mode: "followUp" });
+    channel.appendLedger({ id: "fake:c1:m2", ev: "gave-up", at: w.clock, attempts: 3 });
+    w.consumerLock(root, "dead");
+    lead.status = "blocked";
+    advance(5 * MIN);
+    expect(await dutyTick(d)).toEqual([{ action: "alerted", detail: "fake:c1:m2 gave-up" }]);
+    expect(await dutyTick(d)).toEqual([]);
+    expect(w.notified.map((n) => n.text)).toEqual([ALERT_TEXT["gave-up"]]);
+    expect(alerted()).toEqual(["gave-up"]);
+  });
+
+  test("a broken messengers.json is told to the lead once per breakage, and the daemon outage is still told", async () => {
+    const { w, d, root, lead, channel, advance } = setup();
+    channel.appendLedger({ id: "fake:c1:m1", ev: "gave-up", at: w.clock, attempts: 3 });
+    writeFileSync(join(root, "messengers.json"), "{ not json");
+    advance(100_000, false); // the daemon cannot start on that file, so its heartbeat goes stale
+    expect((await dutyTick(d)).map((e) => e.action)).toEqual(["config-broken", "daemon-down"]);
+    expect(lead.received).toHaveLength(2);
+    expect(lead.received[0]).toStartWith("[MESSENGER] messengers.json is invalid (");
+    expect(lead.received[1]).toContain("seori daemon is down");
+    advance(MIN, false);
+    expect(await dutyTick(d)).toEqual([]);
+    expect(lead.received).toHaveLength(2);
+    expect(w.notified).toEqual([]); // no messenger to reply through while the file is broken
+
+    w.messengers(root, [FAKE]);
+    advance(MIN);
+    expect((await dutyTick(d)).map((e) => e.action)).toEqual(["config-fixed", "daemon-up", "alerted"]);
+    expect(w.notified.map((n) => n.text)).toEqual([ALERT_TEXT["gave-up"]]);
+
+    writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: "fake" }));
+    expect((await dutyTick(d)).map((e) => e.action)).toEqual(["config-broken"]);
+    expect(lead.received.at(-1)).toContain('"messengers" must be an array');
   });
 });

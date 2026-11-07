@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import {
   defaultDeps, done, dutyTick, inboxList, mergeGate, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
@@ -122,9 +123,10 @@ async function up(d: Deps, cwd: string): Promise<void> {
   const loop = await d.herdr.split(duty.paneId, cwd, env);
   const hourly = await d.herdr.split(loop.paneId, cwd, { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
   const daemon = await d.herdr.split(hourly.paneId, cwd, env);
-  // A crashed daemon is back within about a second; sh -c so the loop works whatever the pane's login shell is.
+  // A crashed daemon, or one that exited to load a changed messengers.json, is back within about a second. A daemon that
+  // died of a signal (Ctrl-C, kill) stops the loop. sh -c so the loop works whatever the pane's login shell is.
   const daemonStarted = d.now();
-  await d.herdr.run(daemon.paneId, `sh -c ${shq(`while :; do ${d.seoriCmd} daemon; sleep 1; done`)}`);
+  await d.herdr.run(daemon.paneId, `sh -c ${shq(`while :; do ${d.seoriCmd} daemon; s=$?; [ "$s" -ge 128 ] && exit "$s"; sleep 1; done`)}`);
   // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
   // daemon is up; a daemon that does not come up is reported here and left to duty's outage alert.
   if (!(await heartbeatSince(d.store.root, daemonStarted))) {
@@ -156,10 +158,10 @@ async function heartbeatSince(root: string, since: number): Promise<boolean> {
 
 /**
  * Runs the daemon until SIGINT or SIGTERM, then stops it cleanly (lock released, heartbeat stopped) and re-raises the
- * signal: the shell running `seori up`'s restart loop sees the daemon die of that signal and stops the loop too, so
- * Ctrl-C in the daemon pane stops it instead of restarting it.
+ * signal: the shell running `seori up`'s restart loop sees a status of 128 or more and stops the loop too, so Ctrl-C or
+ * `kill` stops the daemon instead of restarting it. Returns 0 when messengers.json changed, which the loop restarts.
  */
-async function daemon(root: string): Promise<void> {
+async function daemon(root: string): Promise<number> {
   const stop = new AbortController();
   let caught: NodeJS.Signals | undefined;
   const onSignal = (sig: NodeJS.Signals) => {
@@ -174,7 +176,10 @@ async function daemon(root: string): Promise<void> {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }
-  if (caught) process.kill(process.pid, caught);
+  if (!caught) return 0;
+  process.kill(process.pid, caught);
+  // If the re-raised signal is not delivered before main exits, the shell convention still reports it: 128 + number.
+  return 128 + osConstants.signals[caught];
 }
 
 function msgDeps(d: Deps): MsgDeps {
@@ -404,8 +409,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       status(d);
       return 0;
     case "daemon":
-      await daemon(d.store.root);
-      return 0;
+      return daemon(d.store.root);
     case "msg":
       return msg(d, a, x);
     default:
