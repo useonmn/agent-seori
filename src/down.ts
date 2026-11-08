@@ -66,6 +66,14 @@ export function running(root: string, name: Runner, pid: number = process.pid, n
   };
 }
 
+/** The runners whose record names a live pid: what `seori up` finds already running in a home. */
+export function liveRunners(root: string, alive: (pid: number) => boolean = pidAlive): Runner[] {
+  return RUNNERS.filter((name) => {
+    const pid = readPid(recordPath(root, name));
+    return pid !== undefined && alive(pid);
+  });
+}
+
 /** Waits `ms`, or less when `signal` aborts first. */
 export function sleepUnless(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();

@@ -207,7 +207,10 @@ describe("lanes", () => {
       "--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso", "--env", `PI_CONFIG_FILES=${agentConfig}${delimiter}${leadConfig}`,
     ]);
     expect(readFileSync(leadConfig, "utf8")).toBe("advisor:\n  syncBacklog: strict\n");
-    expect(readFileSync(agentConfig, "utf8")).toBe("startup:\n  setupWizard: false\n");
+    // A home other than ~/.seori keeps its agents' omp memory in itself.
+    expect(readFileSync(agentConfig, "utf8")).toBe(
+      `startup:\n  setupWizard: false\nmnemopi:\n  dbPath: ${JSON.stringify(join(d.store.root, "omp", "memories", "mnemopi.db"))}\n`,
+    );
     const dutyTab = w.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create")!.argv;
     expect(dutyTab.at(-1)).toBe(`PI_CONFIG_FILES=${agentConfig}`);
     const others = w.calls.filter((c) => c.argv !== create && c.argv !== dutyTab);
@@ -218,7 +221,9 @@ describe("lanes", () => {
       ["w1:p4", "seori duty --interval 60"],
       ["w1:p5", "seori loop"],
     ]);
-    expect(out).toBe(`UP lead=${lead} duty=${duty} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root}`);
+    expect(out).toBe(`UP lead=${lead} duty=${duty} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root} name=seori`);
+    expect(create.slice(0, 3)).toEqual(["workspace", "create", "--label"]);
+    expect(create[3]).toBe("seori");
     // Every pane gets seori's environment from herdr, so its commands need no shell env prefix (Windows panes have none).
     const splits = w.calls.filter((c) => (c.argv[0] === "tab" && c.argv[1] === "create") || (c.argv[0] === "pane" && c.argv[1] === "split"));
     expect(splits).toHaveLength(4);
@@ -255,7 +260,7 @@ describe("lanes", () => {
     }
     const tab = w.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create")!.argv;
     expect(tab.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}`);
-    expect(readFileSync(join(prompts, "agent-omp.yml"), "utf8")).toBe("startup:\n  setupWizard: false\n");
+    expect(readFileSync(join(prompts, "agent-omp.yml"), "utf8")).toStartWith("startup:\n  setupWizard: false\n");
   });
 
   test("start refuses the role names lead and duty as lane keys before it writes or opens anything", async () => {

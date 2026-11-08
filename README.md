@@ -490,6 +490,7 @@ Compared with omo's `monitor`: the same kinds of sources, coalescing, wake budge
 
 ```json
 {
+  "name": "seori",
   "repoIdentities": {},
   "closeAfterMin": 5,
   "progressEveryMin": 15,
@@ -502,6 +503,7 @@ Compared with omo's `monitor`: the same kinds of sources, coalescing, wake budge
 
 | field | default | meaning |
 |---|---|---|
+| `name` | `"seori"` | this instance's name: the label of the herdr workspace `seori up` opens (and of a lane's workspace when it has none to join). 1-40 letters (any script), digits, `.`, `_` or `-`, starting with a letter or digit. Give every instance on a PC its own; see [Several instances on one PC](#several-instances-on-one-pc) |
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: the Git identity a repo's commits must carry; verify-pr and the merge gate check the email. Repo keys match without case. A repo with no entry is not identity-checked |
 | `closeAfterMin` | `5` | minutes after READY that a lane with a Done line closes on its own, unless the lead objects |
 | `progressEveryMin` | `15` | a lane with `--thread` gets its newest report posted at most this often (minutes) |
@@ -523,7 +525,8 @@ A malformed field is an error naming it, never a silent default, so a typo canno
 - a file that is not valid JSON, or not a JSON object, is an error;
 - an unknown field at the top level or inside `supervision`, `supervision.defaults`, `guard` or `heavy` is an error naming the field and the known ones;
 - `repoIdentities`, `supervision`, `supervision.defaults`, `guard` and `heavy` must be objects, and each `repoIdentities` entry needs a nonempty `name` and `email`;
-- every number must be finite and not negative; a ceiling is such a number or `null`; `heavy.slots` must be a whole number of at least 1.
+- every number must be finite and not negative; a ceiling is such a number or `null`; `heavy.slots` must be a whole number of at least 1;
+- `name` must match the rule in the table.
 
 The commands that read the config (`start`, `ready` for a lane with a Done line, `merge`, `verify-pr`, `can-launch`, `guard`, `heavy`) exit 2 with the error. In the duty loop, each part that needs it reports it as an event (`autoclose-failed`, `supervise-failed`, `guard-failed`, `progress-failed`) and the rest of the pass goes on; `seori boot` shows `CONFIG invalid`. The file is read on every command and duty pass, so a change takes effect without a restart.
 
@@ -547,11 +550,46 @@ To uninstall, stop the `seori up` panes (Ctrl-C in the duty, loop and daemon pan
 
 JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, the host guard state (`duty/guard.json`) and the stall history (`duty/supervision.json`), `lead/` for the lead channel (stored messenger messages, watch events for the lead, their ledger, and the outbox of reply drafts), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `checkpoints/` for each lane's checkpoint journal (`<key>.jsonl`), `heavy/` for the heavy slot locks (`<n>.lock`), `lessons.jsonl`, `worklog.jsonl` and the `worklog.md` rendered from it, `config.json`, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
 
+## Several instances on one PC
+
+Each seori is one `$SEORI_HOME`. Its lanes, messages, daemon, loops, watches, worklog, secrets and messenger bot all live there, so two homes never see each other's state. To keep them apart in herdr and in omp too:
+
+- **Name.** `name` in the home's `config.json` is the label of its herdr workspace. The first instance needs nothing (the default is `seori`); give every other one its own name. `seori up` refuses to open a second workspace under a label that is already open.
+- **omp memory.** omp's mnemopi memory is one database for every omp on the PC. For every home other than `~/.seori`, seori points `mnemopi.dbPath` at `$SEORI_HOME/omp/memories/mnemopi.db` in the home's `prompts/agent-omp.yml`, so its lead, duty and lanes remember only what they learned themselves. `~/.seori` keeps omp's own database (and the memory it already has).
+- **Once per home.** `seori up` in a home whose lead pane, loops or daemon are already running prints `ALREADY UP name=... home=...; nothing opened` and exits 0, so an autostart script can simply run it at every logon. Stop one instance with `seori down` under that home's `SEORI_HOME`; the others keep running.
+
+To add a second instance (here called `seori-two` in `C:\seori-two`; on macOS/Linux use `export SEORI_HOME=~/seori-two`):
+
+1. Make the home and name it:
+   ```powershell
+   $env:SEORI_HOME = "C:\seori-two"
+   New-Item -ItemType Directory $env:SEORI_HOME
+   '{ "name": "seori-two" }' | Set-Content "$env:SEORI_HOME\config.json"
+   ```
+   On Windows, make the folder private like `install.ps1` does for `~\.seori`: `icacls $env:SEORI_HOME /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"`.
+2. Give it its own bot. Create a new bot or app for it ([messengers.md](skills/seori-mode/references/messengers.md)): one bot cannot serve two daemons. Write its tokens into `$env:SEORI_HOME\secrets.json`, then, in the same shell, `seori msg check <source>` and `seori msg pair <source> --write`. Do not set `SEORI_*_TOKEN` variables for your whole account: they override every home's `secrets.json`.
+3. Start it: `seori up --cwd C:\src` in that shell. The workspace `seori-two` opens next to `seori`.
+4. Autostart. Run a script at logon that waits for herdr and then runs `seori up` with the home set; a second run is harmless:
+   ```powershell
+   # C:\seori-two\autostart.ps1
+   $env:SEORI_HOME = "C:\seori-two"
+   for ($i = 0; $i -lt 90; $i++) { herdr workspace list *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 2 }
+   Set-Location C:\src
+   seori up --cwd C:\src *>> "$env:SEORI_HOME\autostart.log"
+   ```
+   ```powershell
+   Register-ScheduledTask -TaskName "seori-two Autostart" -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) `
+     -Action (New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\seori-two\autostart.ps1"')
+   ```
+   On macOS/Linux, run the same two lines (`export SEORI_HOME=...; seori up --cwd ...`) from a login item or a systemd user unit once herdr is up.
+
+Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell you use for that instance. Panes that seori opens already have it.
+
 ## Environment
 
 | variable | meaning |
 |---|---|
-| `SEORI_HOME` | state directory, default `~/.seori` |
+| `SEORI_HOME` | state directory, default `~/.seori`; one per instance ([Several instances on one PC](#several-instances-on-one-pc)) |
 | `SEORI_AGENT_CMD` | the reviewer's omp command, default `omp` (lead, duty and lanes always start through `herdr agent start --kind omp`) |
 | `SEORI_MODEL` | model for every omp seori starts (`--model`), and the reviewer's default model; unset = omp's default |
 | `SEORI_CMD` | how the agents and loop panes call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <path>/src/cli.ts` (on Windows `bun "<path>/src/cli.ts"`, with those variables set on the pane) |
@@ -561,7 +599,7 @@ JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inb
 | `SEORI_MAX_STARTS` | default for `seori loop --max-starts` (2) |
 | `SEORI_MAX_LOAD` | default for `seori loop --max-load` |
 | `SEORI_LANE` | set by seori in a lane's pane; the default sender of `seori send` and the default owner of `seori watch add` |
-| `PI_CONFIG_FILES` | omp settings files; seori appends `$SEORI_HOME/prompts/agent-omp.yml` (`startup.setupWizard: false`) for the lead, duty and lane omp, so an omp whose setup version is behind still starts at its prompt instead of the onboarding wizard (log in to a provider with `omp login` first), and `$SEORI_HOME/prompts/lead-omp.yml` (`advisor.syncBacklog: strict`) for the lead's omp only |
+| `PI_CONFIG_FILES` | omp settings files; seori appends `$SEORI_HOME/prompts/agent-omp.yml` (`startup.setupWizard: false`) for the lead, duty and lane omp, so an omp whose setup version is behind still starts at its prompt instead of the onboarding wizard (log in to a provider with `omp login` first), and `$SEORI_HOME/prompts/lead-omp.yml` (`advisor.syncBacklog: strict`) for the lead's omp only. In a home other than `~/.seori`, `agent-omp.yml` also sets `mnemopi.dbPath` to `$SEORI_HOME/omp/memories/mnemopi.db` |
 | `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` |
 
 ## Testing

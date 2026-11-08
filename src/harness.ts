@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { cpus, freemem, loadavg, totalmem } from "node:os";
+import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Outbox } from "./outbox.ts";
@@ -77,8 +77,28 @@ export function paneEnv(home: string, env: Record<string, string | undefined> = 
  */
 export const AGENT_OMP_CONFIG = "startup:\n  setupWizard: false\n";
 
+/** The home seori uses when SEORI_HOME is unset: the first instance on a PC. */
+export const DEFAULT_HOME = join(homedir(), ".seori");
+
+const sameDir = (a: string, b: string): boolean =>
+  process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
+
+/** Where the agents of a home other than DEFAULT_HOME keep their omp memory (mnemopi's SQLite DB and its banks). */
+export const ompMemoryDb = (root: string): string => join(root, "omp", "memories", "mnemopi.db");
+
 /**
- * Writes `$SEORI_HOME/prompts/agent-omp.yml` (AGENT_OMP_CONFIG) and returns the PI_CONFIG_FILES value that loads it after
+ * agent-omp.yml for a home. omp's mnemopi memory is one DB for every omp on the PC (its banks sit next to that DB), so
+ * two seori instances would recall each other's memories. Every home but DEFAULT_HOME points `mnemopi.dbPath` into
+ * itself; DEFAULT_HOME keeps omp's own DB, so the first instance keeps the memory it has. JSON quoting is valid YAML
+ * and keeps a Windows path's backslashes.
+ */
+export function agentOmpConfig(root: string, defaultHome: string = DEFAULT_HOME): string {
+  if (sameDir(root, defaultHome)) return AGENT_OMP_CONFIG;
+  return `${AGENT_OMP_CONFIG}mnemopi:\n  dbPath: ${JSON.stringify(ompMemoryDb(root))}\n`;
+}
+
+/**
+ * Writes `$SEORI_HOME/prompts/agent-omp.yml` (agentOmpConfig) and returns the PI_CONFIG_FILES value that loads it after
  * the files already in `inherited`, then `extra` (the lead's own file). seori's own files in `inherited` are dropped: a
  * lane started from the lead's shell inherits the lead's value and must not load the lead's settings.
  */
@@ -86,7 +106,7 @@ export function agentOmpConfigFiles(root: string, extra: readonly string[] = [],
   const dir = join(root, "prompts");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "agent-omp.yml");
-  writeFileSync(path, AGENT_OMP_CONFIG);
+  writeFileSync(path, agentOmpConfig(root));
   const kept = (inherited ?? "").split(delimiter).filter((file) => file && dirname(file) !== dir);
   return [...kept, path, ...extra].join(delimiter);
 }
@@ -418,7 +438,7 @@ export async function startLane(
   const env = { SEORI_LANE: key, ...paneEnv(d.store.root), PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) };
   const pane = workspace
     ? await d.herdr.createTab(key, cwd, workspace, env)
-    : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace("seori", cwd)).workspaceId, env);
+    : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace(loadConfig(d.store.root).name, cwd)).workspaceId, env);
   try {
     await startAgent(d, key, pane.paneId);
     await agentSessionReported(d, pane.paneId);

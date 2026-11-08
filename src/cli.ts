@@ -7,13 +7,13 @@ import {
   startAgent, startLane, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
-import { down, DOWN_GROUPS, running, sleepUnless } from "./down.ts";
+import { down, DOWN_GROUPS, liveRunners, running, sleepUnless } from "./down.ts";
 import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList, msgSend, parseTo } from "./msg.ts";
-import type { Role } from "./store.ts";
+import { pidAlive, type Role } from "./store.ts";
 import { parsePr } from "./harness.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
 import { canLaunch, canLaunchLine, guardLines } from "./guard.ts";
@@ -22,7 +22,7 @@ import { objectDone } from "./done-flow.ts";
 import { pauseLane, resumeLane, Unverified } from "./pause.ts";
 import { bootReport } from "./boot.ts";
 import { worklogAdd, worklogClose, worklogItemLine, worklogList, worklogListOutput, worklogNext, worklogNote } from "./worklog.ts";
-import { ConfigError, loadConfig } from "./config.ts";
+import { ConfigError, configPath, loadConfig } from "./config.ts";
 import { formatCheckpoints, formatCheckpointWrite, listCheckpoints, recordCheckpoint } from "./checkpoints.ts";
 import { addLesson, formatLessonAdded, formatLessonMarked, formatLessons, isLessonMark, listLessons, markLesson } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
@@ -31,7 +31,7 @@ import { WatchRefusal } from "./watch/store.ts";
 
 const USAGE = `seori - a proactive multi-session harness on herdr + omp
 
-  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes
+  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes (once per home)
   seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, lessons + brief + lane rules
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
@@ -219,8 +219,42 @@ function leadOmpConfig(root: string): string {
   return agentOmpConfigFiles(root, [path]);
 }
 
+/**
+ * What `seori up` finds before it opens anything, so an autostart script can call it every logon. This home is up when
+ * one of its loops or its daemon is alive, or its lead pane is: then the ALREADY UP line is returned and nothing opens.
+ * Otherwise a workspace that already has this home's name belongs to someone else (another home with the same name, or
+ * a workspace left from this home's loops that are gone): opening a second one under that label is refused. Undefined:
+ * up may open.
+ */
+export async function upCheck(d: Deps, name: string, alive: (pid: number) => boolean = pidAlive): Promise<string | undefined> {
+  const root = d.store.root;
+  const runners = liveRunners(root, alive);
+  const named = (await d.herdr.workspaces()).filter((w) => w.label === name);
+  const lead = d.store.roles().lead;
+  // herdr pane ids are `<workspace>:p<n>`. The lead counts only inside a workspace with this home's name: herdr ids start
+  // over after a herdr restart, and an old id can then name another instance's pane.
+  const leadLive = lead !== undefined && named.some((w) => w.workspaceId === lead.split(":")[0]) && (await d.herdr.status(lead)) !== "gone";
+  if (runners.length > 0 || leadLive) {
+    const hint = leadLive ? "" : "; the lead pane is gone: run seori down, then seori up, to open a new set";
+    return `ALREADY UP name=${name} home=${root} lead=${leadLive ? lead : "gone"} running=${runners.join(",") || "none"}; nothing opened${hint}`;
+  }
+  if (named.length > 0) {
+    throw new Refusal(
+      `a herdr workspace labelled "${name}" (${named.map((w) => w.workspaceId).join(", ")}) is open, but this home (${root}) has no live lead, ` +
+        `loop or daemon in it. Close that workspace if it is a leftover of this home, or give this home its own name in ${configPath(root)}`,
+    );
+  }
+  return undefined;
+}
+
 async function up(d: Deps, cwd: string): Promise<void> {
   await requireOmpIntegration(d);
+  const name = loadConfig(d.store.root).name;
+  const already = await upCheck(d, name);
+  if (already) {
+    console.log(already);
+    return;
+  }
   // Every pane gets seori's environment from herdr (--env), so its commands need no shell-specific env prefix.
   const env = paneEnv(d.store.root);
   // The extension reads its home and how to run seori from the environment of the shell omp starts in. The lead's omp
@@ -228,7 +262,7 @@ async function up(d: Deps, cwd: string): Promise<void> {
   // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets that file;
   // the lead, duty and lanes all get agent-omp.yml (no setup wizard in an agent pane).
   const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, PI_CONFIG_FILES: leadOmpConfig(d.store.root) };
-  const lead = await d.herdr.createWorkspace("seori", cwd, leadEnv);
+  const lead = await d.herdr.createWorkspace(name, cwd, leadEnv);
   await startAgent(d, "lead", lead.paneId, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", lead.paneId);
   const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, { ...env, PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) });
@@ -250,7 +284,7 @@ async function up(d: Deps, cwd: string): Promise<void> {
   await d.herdr.run(loop.paneId, `${d.seoriCmd} duty --interval 60`);
   await d.herdr.run(hourly.paneId, `${d.seoriCmd} loop`);
   console.log(
-    `UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} daemon=${daemon.paneId} home=${d.store.root}`,
+    `UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} daemon=${daemon.paneId} home=${d.store.root} name=${name}`,
   );
 }
 
@@ -794,7 +828,14 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "uninstall": {
       // Its loops and daemon run from this checkout: stop them before their command goes away.
       console.log((await down(d.store.root, DOWN_GROUPS["all"]!)).lines.join("\n"));
-      const lines = await uninstall({ skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, purge: a.flags.has("purge") });
+      const name = (() => {
+        try {
+          return loadConfig(d.store.root).name;
+        } catch {
+          return undefined; // a broken config.json must not stop an uninstall
+        }
+      })();
+      const lines = await uninstall({ skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, name, purge: a.flags.has("purge") });
       for (const line of lines) console.log(line);
       return 0;
     }

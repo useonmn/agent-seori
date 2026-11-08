@@ -38,6 +38,8 @@ export function ompJson(text: string, opts: { stopReason?: string; provider?: st
 
 export class World {
   panes = new Map<string, Pane>();
+  /** what `workspace list` reports; `workspace create` adds its workspace (always w1) with the label it was given */
+  workspaces: { workspace_id: string; label: string }[] = [];
   calls: { cmd: string; argv: readonly string[] }[] = [];
   clock = 1_000_000;
   host: HostLoad = { load1: 1, cores: 8, memFreePct: 50 };
@@ -128,7 +130,9 @@ export class World {
       const procs = typeof fg === "string" ? [{ name: fg, argv: [fg] }] : fg;
       return ok({ process_info: { pane_id: argv[3], shell_pid: 100, foreground_process_group_id: target.pgid ?? 101, foreground_processes: procs.map((x, i) => ({ ...x, pid: 101 + i })) } });
     }
+    if (group === "workspace" && verb === "list") return ok({ type: "workspace_list", workspaces: this.workspaces });
     if ((group === "tab" || group === "workspace") && verb === "create") {
+      if (group === "workspace") this.workspaces.push({ workspace_id: "w1", label: String(argv[argv.indexOf("--label") + 1]) });
       const pane = `w1:p${++this.next}`;
       this.addPane(pane, "shell");
       return ok({ root_pane: { pane_id: pane, tab_id: `w1:t${this.next}`, workspace_id: "w1" } });

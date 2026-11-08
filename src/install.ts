@@ -71,7 +71,7 @@ export function installSkill(
  * duty omp panes `seori up` opened keep running: the returned lines say to close that workspace.
  */
 export async function uninstall(
-  opts: { src?: string; skillsDir?: string; home: string; purge: boolean; unlink?: (src: string) => Promise<string> },
+  opts: { src?: string; skillsDir?: string; home: string; name?: string; purge: boolean; unlink?: (src: string) => Promise<string> },
 ): Promise<string[]> {
   const src = opts.src ?? SEORI_SRC;
   const out: string[] = [];
@@ -97,7 +97,7 @@ export async function uninstall(
     rmSync(opts.home, { recursive: true, force: true });
     out.push(`removed ${opts.home}`);
   } else if (existsSync(opts.home)) out.push(`kept ${opts.home} (secrets, messages, lanes); remove it with seori uninstall --purge`);
-  out.push("Close the seori workspace in herdr to end the lead and duty omp (seori down stopped its loops and daemon).");
+  out.push(`Close the ${opts.name ?? "seori"} workspace in herdr to end the lead and duty omp (seori down stopped its loops and daemon).`);
   return out;
 }
 

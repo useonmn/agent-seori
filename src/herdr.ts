@@ -145,6 +145,15 @@ export class Herdr {
     return toPaneRef(r["root_pane"]);
   }
 
+  /** `workspace list`: every open workspace's id and label. */
+  async workspaces(): Promise<{ workspaceId: string; label: string }[]> {
+    const list = (await this.call(["workspace", "list"]))["workspaces"];
+    return (Array.isArray(list) ? (list as Record<string, unknown>[]) : []).map((w) => ({
+      workspaceId: String(w["workspace_id"] ?? ""),
+      label: String(w["label"] ?? ""),
+    }));
+  }
+
   async createTab(label: string, cwd: string, workspaceId?: string, env: Record<string, string> = {}): Promise<PaneRef> {
     const argv = ["tab", "create", "--label", label, "--cwd", cwd, "--no-focus"];
     if (workspaceId) argv.push("--workspace", workspaceId);

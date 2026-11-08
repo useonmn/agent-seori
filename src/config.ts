@@ -21,6 +21,11 @@ export type GuardThresholds = {
 };
 
 export type SeoriConfig = {
+  /**
+   * This instance's name: the label of the herdr workspace `seori up` opens and of a lane's fallback workspace. Each
+   * seori on a PC has its own $SEORI_HOME and its own name, so herdr never shows two instances under one label.
+   */
+  readonly name: string;
   /** Expected Git identity per `owner/repo` (keys match without case), checked by verify-pr and the merge gate. */
   readonly repoIdentities: Readonly<Record<string, RepoIdentity>>;
   /** A READY lane with a Done line closes on its own this long after the claim unless the lead objects. */
@@ -39,7 +44,14 @@ export type SeoriConfig = {
   readonly heavy: { readonly slots: number; readonly maxLoadPct: number };
 };
 
+/** The name of an instance whose config.json sets none: the first seori on a PC keeps the label it always had. */
+export const DEFAULT_NAME = "seori";
+
+/** Letters (any script), digits, `.`, `_` and `-`, starting with a letter or digit: a herdr label that needs no quoting. */
+const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,39}$/u;
+
 export const DEFAULT_CONFIG: SeoriConfig = {
+  name: DEFAULT_NAME,
   repoIdentities: {},
   closeAfterMin: 5,
   progressEveryMin: 15,
@@ -85,8 +97,13 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy"], path);
+  only(raw, ["name", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy"], path);
   const D = DEFAULT_CONFIG;
+
+  const name = raw["name"] ?? D.name;
+  if (typeof name !== "string" || !NAME_RE.test(name)) {
+    throw new ConfigError(`${path}: name must be 1-40 letters, digits, ".", "_" or "-", starting with a letter or digit`);
+  }
 
   const repoIdentities: Record<string, RepoIdentity> = {};
   if (raw["repoIdentities"] !== undefined) {
@@ -117,6 +134,7 @@ export function loadConfig(root: string): SeoriConfig {
   if (!Number.isInteger(slots) || slots < 1) throw new ConfigError(`${path} heavy.slots must be a whole number of at least 1`);
 
   return {
+    name,
     repoIdentities,
     closeAfterMin: num(raw, "closeAfterMin", path, D.closeAfterMin),
     progressEveryMin: num(raw, "progressEveryMin", path, D.progressEveryMin),

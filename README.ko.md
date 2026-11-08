@@ -490,6 +490,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 
 ```json
 {
+  "name": "seori",
   "repoIdentities": {},
   "closeAfterMin": 5,
   "progressEveryMin": 15,
@@ -502,6 +503,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 
 | 필드 | 기본값 | 뜻 |
 |---|---|---|
+| `name` | `"seori"` | 이 인스턴스의 이름. `seori up`이 여는 herdr 워크스페이스의 라벨이고, 들어갈 워크스페이스가 없는 레인이 새로 여는 워크스페이스의 라벨이기도 합니다. 1-40자의 글자(어떤 문자든), 숫자, `.`, `_`, `-`이고 글자나 숫자로 시작해야 합니다. 한 PC의 인스턴스마다 다른 이름을 주세요. [한 PC에서 여러 인스턴스 돌리기](#한-pc에서-여러-인스턴스-돌리기) 참고 |
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: 그 저장소 커밋에 있어야 할 Git 신원. verify-pr과 머지 관문이 이메일을 확인합니다. 저장소 이름은 대소문자를 무시하고 맞춥니다. 항목이 없는 저장소는 신원을 확인하지 않습니다 |
 | `closeAfterMin` | `5` | Done 줄이 있는 레인이 READY 뒤 몇 분 지나면 저절로 닫히는지(리드가 반대하지 않으면) |
 | `progressEveryMin` | `15` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지 |
@@ -524,6 +526,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 - 맨 위나 `supervision`, `supervision.defaults`, `guard`, `heavy` 안에 모르는 필드가 있으면, 그 필드와 아는 필드 목록을 담은 오류입니다.
 - `repoIdentities`, `supervision`, `supervision.defaults`, `guard`, `heavy`는 객체여야 하고, `repoIdentities` 항목마다 비어 있지 않은 `name`과 `email`이 있어야 합니다.
 - 숫자는 모두 유한하고 음수가 아니어야 합니다. 한도는 그런 숫자이거나 `null`입니다. `heavy.slots`는 1 이상의 정수여야 합니다.
+- `name`은 표에 적힌 규칙을 따라야 합니다.
 
 설정을 읽는 명령(`start`, Done 줄이 있는 레인의 `ready`, `merge`, `verify-pr`, `can-launch`, `guard`, `heavy`)은 오류를 출력하고 종료 코드 2로 끝납니다. 듀티 루프에서는 설정이 필요한 부분마다 이벤트(`autoclose-failed`, `supervise-failed`, `guard-failed`, `progress-failed`)로 알리고 나머지는 계속 돕니다. `seori boot`에는 `CONFIG invalid`로 나옵니다. 설정은 명령과 듀티 차례마다 새로 읽으므로, 바꾸면 재시작 없이 바로 적용됩니다.
 
@@ -547,11 +550,46 @@ herdr, omp, gh를 설치하지는 않습니다. `secrets.json`, `messengers.json
 
 모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON과 JSONL 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일과 자원 감시 상태(`duty/guard.json`), 멈춤 판단용 변경 기록(`duty/supervision.json`)이 있는 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록, 답 초안의 outbox), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, 레인마다의 체크포인트 기록(`<key>.jsonl`)용 `checkpoints/`, 무거운 작업 자리 잠금(`<n>.lock`)용 `heavy/`, `lessons.jsonl`, `worklog.jsonl`과 거기서 만든 `worklog.md`, `config.json`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
 
+## 한 PC에서 여러 인스턴스 돌리기
+
+seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프, 감시, 작업 기록, 비밀 정보, 메신저 봇이 모두 그 안에 있으니 두 홈은 서로의 상태를 보지 않습니다. herdr와 omp에서도 서로 섞이지 않게 하려면:
+
+- **이름.** 홈의 `config.json`에 있는 `name`이 그 홈의 herdr 워크스페이스 라벨입니다. 첫 인스턴스는 아무것도 안 해도 됩니다(기본값 `seori`). 다른 인스턴스에는 각자 다른 이름을 주세요. 이미 열린 라벨로 워크스페이스를 하나 더 열려고 하면 `seori up`이 거절합니다.
+- **omp 기억.** omp의 mnemopi 기억은 PC의 모든 omp가 같이 쓰는 DB 하나입니다. `~/.seori`가 아닌 홈에서는 seori가 그 홈의 `prompts/agent-omp.yml`에 `mnemopi.dbPath`를 `$SEORI_HOME/omp/memories/mnemopi.db`로 적어서, 그 인스턴스의 리드, 듀티, 레인이 자기가 배운 것만 기억하게 합니다. `~/.seori`는 omp 기본 DB(와 이미 쌓인 기억)를 그대로 씁니다.
+- **홈마다 한 번만.** 리드 창, 루프, 데몬 가운데 하나라도 이미 돌고 있는 홈에서 `seori up`을 실행하면 `ALREADY UP name=... home=...; nothing opened`를 출력하고 0으로 끝납니다. 그래서 자동 시작 스크립트는 로그온할 때마다 그냥 `seori up`을 부르면 됩니다. 한 인스턴스만 멈추려면 그 홈의 `SEORI_HOME`으로 `seori down`을 실행하세요. 다른 인스턴스는 계속 돕니다.
+
+두 번째 인스턴스를 더하는 방법(여기서는 `C:\seori-two`에 `seori-two`라는 이름. macOS/Linux는 `export SEORI_HOME=~/seori-two`):
+
+1. 홈을 만들고 이름을 줍니다:
+   ```powershell
+   $env:SEORI_HOME = "C:\seori-two"
+   New-Item -ItemType Directory $env:SEORI_HOME
+   '{ "name": "seori-two" }' | Set-Content "$env:SEORI_HOME\config.json"
+   ```
+   Windows에서는 `install.ps1`이 `~\.seori`에 하듯 폴더를 내 계정 전용으로 만드세요: `icacls $env:SEORI_HOME /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"`.
+2. 봇을 따로 만듭니다. 새 봇이나 앱을 만들고([messengers.md](skills/seori-mode/references/messengers.md)), 봇 하나로 데몬 두 개를 섬길 수는 없습니다. 토큰은 `$env:SEORI_HOME\secrets.json`에 적고, 같은 셸에서 `seori msg check <source>`, `seori msg pair <source> --write`를 실행합니다. 계정 전체에 `SEORI_*_TOKEN` 변수를 두지 마세요. 모든 홈의 `secrets.json`보다 먼저 쓰입니다.
+3. 그 셸에서 `seori up --cwd C:\src`로 띄웁니다. `seori` 옆에 `seori-two` 워크스페이스가 열립니다.
+4. 자동 시작. 로그온할 때 herdr를 기다렸다가 홈을 정하고 `seori up`을 실행하는 스크립트를 돌립니다. 두 번 돌아도 괜찮습니다:
+   ```powershell
+   # C:\seori-two\autostart.ps1
+   $env:SEORI_HOME = "C:\seori-two"
+   for ($i = 0; $i -lt 90; $i++) { herdr workspace list *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 2 }
+   Set-Location C:\src
+   seori up --cwd C:\src *>> "$env:SEORI_HOME\autostart.log"
+   ```
+   ```powershell
+   Register-ScheduledTask -TaskName "seori-two Autostart" -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) `
+     -Action (New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\seori-two\autostart.ps1"')
+   ```
+   macOS/Linux에서는 herdr가 뜬 다음 로그인 항목이나 systemd 사용자 유닛에서 같은 두 줄(`export SEORI_HOME=...; seori up --cwd ...`)을 실행하세요.
+
+모든 `seori` 명령은 `SEORI_HOME`에 있는 홈을 대상으로 하니, 그 인스턴스용으로 쓰는 셸마다 설정하세요. seori가 연 창에는 이미 들어 있습니다.
+
 ## 환경 변수
 
 | 변수 | 뜻 |
 |---|---|
-| `SEORI_HOME` | 상태 폴더, 기본 `~/.seori` |
+| `SEORI_HOME` | 상태 폴더, 기본 `~/.seori`. 인스턴스마다 하나([한 PC에서 여러 인스턴스 돌리기](#한-pc에서-여러-인스턴스-돌리기)) |
 | `SEORI_AGENT_CMD` | 리뷰어용 omp 명령, 기본 `omp` (리드, 듀티, 레인은 항상 `herdr agent start --kind omp`로 시작) |
 | `SEORI_MODEL` | seori가 띄우는 모든 omp의 모델(`--model`)이자 리뷰어 기본 모델. 비우면 omp 기본 모델 |
 | `SEORI_CMD` | 에이전트와 루프 창이 seori를 부르는 방법, 기본 `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <경로>/src/cli.ts` (Windows는 `bun "<경로>/src/cli.ts"`, 변수는 창 환경으로) |
@@ -561,7 +599,7 @@ herdr, omp, gh를 설치하지는 않습니다. `secrets.json`, `messengers.json
 | `SEORI_MAX_STARTS` | `seori loop --max-starts` 기본값 (2) |
 | `SEORI_MAX_LOAD` | `seori loop --max-load` 기본값 |
 | `SEORI_LANE` | seori가 레인 창에 넣어 주는 값. `seori send`의 기본 보낸 쪽이자 `seori watch add`의 기본 주인 |
-| `PI_CONFIG_FILES` | omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 더 붙입니다 |
+| `PI_CONFIG_FILES` | omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 더 붙입니다. `~/.seori`가 아닌 홈에서는 `agent-omp.yml`이 `mnemopi.dbPath`도 `$SEORI_HOME/omp/memories/mnemopi.db`로 정합니다 |
 | `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | 메신저 토큰. `secrets.json`보다 먼저 |
 
 ## 테스트
