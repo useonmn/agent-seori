@@ -153,21 +153,3 @@ describe("typed fallback keeps the layout of multi-line messages (N4)", () => {
     expect(readFileSync(path!, "utf8")).toBe("see:\n```\ncode\n```\n");
   });
 });
-
-describe("shell detection on Windows process names (I5)", () => {
-  const front = (name: string, argv?: string[]) => interactiveShellInFront({ foreground_processes: [{ name, ...(argv ? { argv } : {}) }] });
-
-  test("backslash paths and .exe names are recognised as shells", () => {
-    expect(front("C:\\Program Files\\PowerShell\\7\\pwsh.exe")).toBe(true);
-    expect(front("C:\\Program Files\\Git\\usr\\bin\\bash.exe")).toBe(true);
-    expect(front("powershell.EXE")).toBe(true);
-    expect(front("cmd.exe")).toBe(true);
-  });
-
-  test("a shell running a command is an agent's child; cmd /k keeps its prompt", () => {
-    expect(front("pwsh.exe", ["pwsh.exe", "-Command", "bun test"])).toBe(false);
-    expect(front("cmd.exe", ["cmd.exe", "/c", "dir"])).toBe(false);
-    expect(front("cmd.exe", ["cmd.exe", "/k", "dir"])).toBe(true);
-    expect(front("C:\\tools\\omp.exe")).toBe(false);
-  });
-});

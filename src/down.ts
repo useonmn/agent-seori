@@ -2,9 +2,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { pidAlive } from "./store.ts";
 
-// `seori down`: a stop for every long-running seori process that works the same on every OS and in every pane shell.
-// Ctrl-C needs a terminal that turns the key into a console signal, and Windows has no SIGTERM to send from outside, so
-// each loop (`seori duty`, `seori loop`, `seori daemon-loop`, `seori daemon`) records its pid in $SEORI_HOME/run/ and
+// `seori down`: a stop for every long-running seori process that works in every pane shell.
+// Ctrl-C needs a terminal that turns the key into a console signal, so each loop (`seori duty`, `seori loop`, `seori daemon-loop`, `seori daemon`) records its pid in $SEORI_HOME/run/ and
 // checks for a stop request addressed to that pid; it then ends the way Ctrl-C ends it (the daemon cleans up its
 // watches and lock first). A request names the pid it is for, so a stale one never stops a process started later.
 

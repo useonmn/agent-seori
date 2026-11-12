@@ -69,9 +69,9 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori status
   seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
   seori daemon-loop                            run the daemon and restart it when it crashes (seori up's daemon pane)
-  seori down [duty|loop|daemon|all]            stop the duty loop, hourly loop and daemon processes (default all) on any OS;
+  seori down [duty|loop|daemon|all]            stop the duty loop, hourly loop and daemon processes (default all);
                                               exit 1 if one is still running after 30 s
-  seori install-skill [--skills-dir DIR]       link the seori-mode skill into omp (junction on Windows); install.sh/.ps1 run it
+  seori install-skill [--skills-dir DIR]       link the seori-mode skill into omp; install.sh runs it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
   seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
                                               answer messenger messages (one reply per id) or send a notice; while the
@@ -159,11 +159,9 @@ function renderPrompt(d: Deps, name: string): string {
 export const LEAD_EXTENSION = join(import.meta.dir, "..", "extensions", "lead-channel.ts");
 
 /**
- * The daemon pane's restart loop (`seori daemon-loop`), in bun so it runs the same in any pane shell (sh, PowerShell,
- * cmd). A daemon that crashed (SIGKILL, OOM, a panic), exited to load a changed messengers.json, or was sent SIGHUP
+ * The daemon pane's restart loop (`seori daemon-loop`), in bun. A daemon that crashed (SIGKILL, OOM, a panic), exited to load a changed messengers.json, or was sent SIGHUP
  * (129) is back within about a second. Only a deliberate stop ends the loop: the daemon ending on Ctrl-C (130),
- * kill/SIGTERM or `seori down` (143), or `stopping()` (the loop itself got Ctrl-C, SIGTERM or a `seori down` request;
- * `seori down` is the stop that works the same on every OS). Closing the pane hangs up the loop too, so nothing
+ * kill/SIGTERM or `seori down` (143), or `stopping()` (the loop itself got Ctrl-C, SIGTERM or a `seori down` request). Closing the pane hangs up the loop too, so nothing
  * restarts then.
  */
 export async function daemonLoop(
@@ -208,8 +206,7 @@ async function runDaemonLoop(root: string): Promise<number> {
 /**
  * Writes `$SEORI_HOME/prompts/lead-omp.yml` (omp settings for the lead only) and returns the PI_CONFIG_FILES value
  * that loads it after every agent's settings (agentOmpConfigFiles), all after a PI_CONFIG_FILES already in the
- * environment, joined with the platform's path delimiter (omp splits on it: ':' on macOS/Linux, ';' on Windows, whose
- * paths contain ':'), so it overlays those too.
+ * environment, joined with the path delimiter (omp splits on it), so it overlays those too.
  */
 function leadOmpConfig(root: string): string {
   const dir = join(root, "prompts");
@@ -289,7 +286,7 @@ async function up(d: Deps, cwd: string): Promise<void> {
 }
 
 /**
- * How long `seori up` waits for the daemon's first heartbeat. Measured on a Windows PC from `pane run` to the first
+ * How long `seori up` waits for the daemon's first heartbeat. Measured from `pane run` to the first
  * heartbeat: about 4 s idle and up to 8.5 s while the lead and duty omp start; a first start after a reboot took over
  * 15 s. A slow start is told once after DAEMON_SLOW_MS so `up` does not look hung.
  */
@@ -360,8 +357,7 @@ async function daemon(root: string): Promise<number> {
   }
   if (!caught) return 0;
   if (me.stopped.aborted) return 128 + osConstants.signals.SIGTERM;
-  // Windows has no signal to re-raise (process.kill on itself just terminates it with status 1): report 128 + number.
-  if (process.platform !== "win32") process.kill(process.pid, caught);
+  process.kill(process.pid, caught);
   // If the re-raised signal is not delivered before main exits, the shell convention still reports it: 128 + number.
   return 128 + osConstants.signals[caught];
 }

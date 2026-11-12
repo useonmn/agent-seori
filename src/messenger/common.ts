@@ -16,7 +16,7 @@ export function secretsPath(root: string): string {
 /**
  * One secret for one messenger: the environment variable wins (tests, one-off runs), then secrets.json. Missing is a
  * configuration error naming both places. A secrets.json readable by group or others is refused, so tokens never sit
- * world-readable without the owner noticing (on Windows, by its ACL: see readableByOthers).
+ * world-readable without the owner noticing.
  */
 export function secret(
   root: string, source: string, key: string, envName: string, env: Record<string, string | undefined> = process.env,

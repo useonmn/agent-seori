@@ -28,7 +28,7 @@ afterEach(() => rmSync(join(root, ".."), { recursive: true, force: true }));
 describe("lessons", () => {
   test("add stores a pending lesson scoped to the realpath of cwd; list is newest first", () => {
     const link = join(root, "..", "link");
-    symlinkSync(repo, link, "junction"); // a junction needs no admin rights on Windows; the type is ignored elsewhere
+    symlinkSync(repo, link, "dir");
     const a = addLesson(root, { cwd: link, rule: "run bun test before ready", evidence: "/tmp/a.log", lane: "fix-a" }, T0);
     const b = addLesson(root, { cwd: repo, rule: "pin the fixture clock", evidence: "/tmp/b.log" }, T0 + 1000);
     expect(a).toMatchObject({ cwd: repo, lane: "fix-a", outcome: "pending", at: "2026-11-07T10:00:00.000Z" });

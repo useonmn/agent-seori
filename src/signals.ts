@@ -4,7 +4,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import { Refusal, type Deps } from "./harness.ts";
 import type { ExecResult } from "./herdr.ts";
 import type { Lane } from "./store.ts";
-import { IS_WINDOWS, killTreeWindows } from "./platform.ts";
 
 // A lane's `Done =` line: signals seori reads back live before the lane may close, so a done claim is never taken on
 // the lane's word. Signals are joined by `;` (a `;` inside quotes, brackets or braces belongs to its signal):
@@ -42,11 +41,9 @@ export type SignalIo = {
 export const defaultSignalIo: SignalIo = {
   run: async (argv, { cwd, timeoutMs }) => {
     let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
-    let spawnedAt = 0;
     try {
-      // Its own process group, so a timeout kills whatever it started too (Windows: its process tree, see below).
-      spawnedAt = Date.now();
-      proc = Bun.spawn([...argv], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: !IS_WINDOWS, windowsHide: true });
+      // Its own process group, so a timeout kills whatever it started too.
+      proc = Bun.spawn([...argv], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true });
     } catch (e) {
       // A missing executable is a failed signal, not a crash of the close.
       return { code: 127, stdout: "", stderr: e instanceof Error ? e.message : String(e) };
@@ -58,13 +55,10 @@ export const defaultSignalIo: SignalIo = {
       const r = await Promise.race([finished, timedOut]);
       if (r !== "timeout") return { code: r[2], stdout: r[0], stderr: r[1] };
       // A child that ignores SIGTERM, or a grandchild holding the pipes open, must not hold up the close.
-      if (IS_WINDOWS) await killTreeWindows(proc.pid, spawnedAt - 2_000);
-      else {
-        try {
-          process.kill(-proc.pid, "SIGKILL");
-        } catch {
-          proc.kill("SIGKILL");
-        }
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+      } catch {
+        proc.kill("SIGKILL");
       }
       finished.catch(() => {});
       return { code: 124, stdout: "", stderr: `timed out after ${timeoutMs / 1000} s` };
@@ -350,9 +344,8 @@ export async function laneWorktrees(d: Deps, lane: Lane): Promise<string[]> {
   let path = "";
   let branch = "";
   const endRecord = (): void => {
-    // git on Windows lists `C:/x/y` while lane.cwd is `C:\x\y`: compare resolved paths, split on either separator.
     const isCwd = path !== "" && resolve(path) === resolve(lane.cwd);
-    if (path && !isCwd && !found.includes(path) && (ours(branch) || ours(path.split(/[\\/]/).pop() ?? ""))) found.push(path);
+    if (path && !isCwd && !found.includes(path) && (ours(branch) || ours(path.split("/").pop() ?? ""))) found.push(path);
     path = "";
     branch = "";
   };

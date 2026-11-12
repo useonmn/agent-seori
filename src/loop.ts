@@ -325,7 +325,7 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
   const candidates = d.store.items()
     .filter((i) => i.status === "open" && !i.decision && !isOpenLane(d.store.lane(i.id)?.status ?? "done"))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  // An unknown load (Windows) holds nothing; memory still does.
+  // An unknown load holds nothing; memory still does.
   const loadBusy = host.load1 !== null && host.load1 > (maxLoad ?? host.cores);
   if (candidates.length > 0 && (loadBusy || host.memFreePct < MEM_FREE_MIN_PCT)) {
     run.held.push(`host busy: load ${host.load1?.toFixed(1) ?? "unknown"} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}%`);

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { daemonLoop } from "../src/cli.ts";
 import { down, DOWN_GROUPS, recordPath } from "../src/down.ts";
-import { IS_WINDOWS } from "../src/platform.ts";
 import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, MAX_RESTART_DELAY_MS, readHealth, restartDelay, runDaemon } from "../src/daemon.ts";
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
@@ -261,7 +260,7 @@ describe("seori daemon process", () => {
   const env = (root: string) => ({ ...process.env, SEORI_HOME: root });
   const loop = (root: string) => Bun.spawn([process.execPath, CLI, "daemon-loop"], { env: env(root), stdout: "ignore", stderr: "ignore" });
   const pidOf = (root: string): number => (JSON.parse(readFileSync(heartbeatPath(root), "utf8")) as { pid: number }).pid;
-  /** Kills the loop and, on Windows where killing it leaves its child running, the daemon it started too. */
+  /** Kills the loop and, and the daemon it started too (killing the loop leaves its child running). */
   const killAll = (sh: ReturnType<typeof loop>, root: string) => {
     sh.kill("SIGKILL");
     try {
@@ -271,8 +270,7 @@ describe("seori daemon process", () => {
     }
   };
 
-  // POSIX signals: Windows has no SIGTERM or SIGHUP to send (process.kill there terminates, which is a crash).
-  test.if(!IS_WINDOWS)("SIGTERM to the daemon stops seori up's restart loop with a status of 128 or more", async () => {
+  test("SIGTERM to the daemon stops seori up's restart loop with a status of 128 or more", async () => {
     const root = home();
     const sh = loop(root);
     await until("daemon heartbeat", () => existsSync(heartbeatPath(root)), 10_000);
@@ -281,8 +279,8 @@ describe("seori daemon process", () => {
     expect(existsSync(daemonLockPath(root))).toBe(false); // stopped cleanly before the re-raise
   }, 15_000);
 
-  // The stop that needs no signal: on Windows nothing else ends the loop and its daemon from outside the pane.
-  test("seori down stops the restart loop and its daemon cleanly on every OS: status 143, watch command and lock gone", async () => {
+  // The stop that needs no signal.
+  test("seori down stops the restart loop and its daemon cleanly: status 143, watch command and lock gone", async () => {
     const root = home();
     new WatchStore(root).add({
       name: "beats",
@@ -322,7 +320,7 @@ describe("seori daemon process", () => {
     }
   }, 30_000);
 
-  test.if(!IS_WINDOWS)("SIGHUP (its pane closed) stops the daemon cleanly, watch commands included, with status 129", async () => {
+  test("SIGHUP (its pane closed) stops the daemon cleanly, watch commands included, with status 129", async () => {
     const root = home();
     new WatchStore(root).add({
       name: "beats",
@@ -344,7 +342,7 @@ describe("seori daemon process", () => {
     }
   }, 15_000);
 
-  test.if(!IS_WINDOWS)("a SIGHUP sent while the restart loop lives restarts the daemon", async () => {
+  test("a SIGHUP sent while the restart loop lives restarts the daemon", async () => {
     const root = home();
     const sh = loop(root);
     try {
@@ -367,10 +365,8 @@ describe("seori daemon process", () => {
       writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: [{ source: "fake", owner: "u1" }] }));
       await until("a second daemon", () => existsSync(heartbeatPath(root)) && pidOf(root) !== first, 20_000);
       expect(sh.exitCode).toBeNull();
-      if (!IS_WINDOWS) {
-        process.kill(pidOf(root), "SIGTERM");
-        expect(await sh.exited).toBeGreaterThanOrEqual(128);
-      }
+      process.kill(pidOf(root), "SIGTERM");
+      expect(await sh.exited).toBeGreaterThanOrEqual(128);
     } finally {
       killAll(sh, root);
     }

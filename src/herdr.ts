@@ -55,25 +55,12 @@ const PASTE_SETTLE_MS = 400;
 const ENTER_ATTEMPTS = 3;
 
 const SHELLS: ReadonlySet<string> = new Set([
-  "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox",
-  "cmd",
+  "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "busybox",
 ]);
-// Windows reports `C:\...\pwsh.exe` or `bash.exe`: split on either separator and drop `.exe`.
-const baseName = (value: unknown): string =>
-  String(value ?? "").replace(/^-/, "").split(/[\\/]/).pop()!.toLowerCase().replace(/\.exe$/, "");
+const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "").split("/").pop()!.toLowerCase();
 // A shell runs a command (not a prompt) only with an explicit command flag: -c, also inside combined short flags such
-// as -lc, or PowerShell's -Command/-File/-EncodedCommand (whole words only: its other long flags contain a 'c'). Any other operand (a script path, --rcfile FILE, -o OPT) stays held.
-// cmd.exe runs a command with /c (and keeps its prompt with /k).
-const runsCommand = (shell: string, arg: string): boolean =>
-  shell === "cmd"
-    ? /^\/c$/i.test(arg)
-    : shell === "pwsh" || shell === "powershell"
-      ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg)
-      : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
-// PowerShell's -NoExit (any prefix it accepts: -noe, -noex, -noexi, -noexit, one or two dashes) keeps an interactive
-// prompt after the command runs, so that shell is held.
-const keepsPrompt = (shell: string, arg: string): boolean =>
-  ((shell === "pwsh" || shell === "powershell") && /^--?noe(x(i(t)?)?)?$/i.test(arg)) || (shell === "cmd" && /^\/k$/i.test(arg));
+// as -lc. Any other operand (a script path, --rcfile FILE, -o OPT) stays held.
+const runsCommand = (arg: string): boolean => /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
 
 /**
  * The typed fallback sends one line (a multi-line paste swallows its Enter). Text whose layout matters (a code fence or
@@ -102,7 +89,7 @@ export function interactiveShellInFront(processInfo: unknown): boolean {
     if (name === "busybox" && args && args.length > 0) [name, args] = [baseName(args[0]), args.slice(1)];
     if (!SHELLS.has(name)) continue;
     if (args === undefined) return true;
-    if (!args.some((a) => runsCommand(name, a)) || args.some((a) => keepsPrompt(name, a))) return true;
+    if (!args.some(runsCommand)) return true;
   }
   return false;
 }

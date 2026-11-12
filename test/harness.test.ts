@@ -29,15 +29,13 @@ async function captureLog(fn: () => Promise<unknown>): Promise<string> {
 
 describe("seori command for agents and loop panes", () => {
   test("carries the herdr session and model when set, so loops and lanes drive the same herdr and omp model", () => {
-    const cmd = defaultSeoriCmd("/h o", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "anthropic/claude-haiku-5-5" }, "linux");
+    const cmd = defaultSeoriCmd("/h o", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "anthropic/claude-haiku-5-5" });
     expect(cmd).toStartWith("SEORI_HOME='/h o' SEORI_HERDR_SESSION='iso' SEORI_MODEL='anthropic/claude-haiku-5-5' bun ");
-    expect(defaultSeoriCmd("/h", {}, "darwin")).toStartWith("SEORI_HOME='/h' bun ");
+    expect(defaultSeoriCmd("/h", {})).toStartWith("SEORI_HOME='/h' bun ");
   });
 
-  test("on Windows it is a plain bun command that PowerShell, cmd and Git Bash all run; the variables come with the pane", () => {
-    const cmd = defaultSeoriCmd("C:\\Users\\me\\.seori", { SEORI_HERDR_SESSION: "iso" }, "win32");
-    expect(cmd).toMatch(/^bun "[^"\\']+\/src\/cli\.ts"$/);
-    expect(paneEnv("C:\\h", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" })).toEqual({ SEORI_HOME: "C:\\h", SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" });
+  test("the pane environment carries the home and the herdr session and model", () => {
+    expect(paneEnv("/h", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" })).toEqual({ SEORI_HOME: "/h", SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" });
     expect(paneEnv("/h", {})).toEqual({ SEORI_HOME: "/h" });
   });
 });
@@ -224,7 +222,7 @@ describe("lanes", () => {
     expect(out).toBe(`UP lead=${lead} duty=${duty} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root} name=seori`);
     expect(create.slice(0, 3)).toEqual(["workspace", "create", "--label"]);
     expect(create[3]).toBe("seori");
-    // Every pane gets seori's environment from herdr, so its commands need no shell env prefix (Windows panes have none).
+    // Every pane gets seori's environment from herdr, so its commands need no shell env prefix.
     const splits = w.calls.filter((c) => (c.argv[0] === "tab" && c.argv[1] === "create") || (c.argv[0] === "pane" && c.argv[1] === "split"));
     expect(splits).toHaveLength(4);
     for (const c of splits) expect(c.argv).toEqual(expect.arrayContaining([`SEORI_HOME=${d.store.root}`, "SEORI_HERDR_SESSION=iso"]));

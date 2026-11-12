@@ -51,8 +51,8 @@ function setup(overrides: Partial<EngineDeps> = {}) {
   return { root, store, clock, delivered, texts, engine, add };
 }
 
-/** A path as one sh word: forward slashes (sh eats the backslashes of a Windows path) in single quotes. */
-const shArg = (path: string): string => `'${path.replaceAll("\\", "/")}'`;
+/** A path as one sh word, in single quotes. */
+const shArg = (path: string): string => `'${path}'`;
 const cmd = (command: string, filter?: string) => ({ kind: "command" as const, command, cwd: tmpdir(), filter });
 const alive = (pid: number): boolean => {
   try {
@@ -144,7 +144,7 @@ describe("command watches", () => {
     const w = t.add({ name: "srv", source: cmd("sleep 30") });
     t.store.save({ ...(t.store.get(w.id) as Watch), pgid, spawnedAt });
     t.engine().start();
-    await until("orphan group killed", async () => !(await groupAlive(pgid, spawnedAt)), 10_000);
+    await until("orphan group killed", async () => !(await groupAlive(pgid)), 10_000);
     await until("new group recorded", () => {
       const cur = t.store.get(w.id);
       return cur?.pgid !== undefined && cur.pgid !== pgid;
@@ -154,7 +154,6 @@ describe("command watches", () => {
 
   test("a recorded group whose processes predate the recorded spawn (pid reuse) is left alone", async () => {
     const t = setup();
-    const since = Date.now() - 2_000;
     const other = spawnGroup("sleep 30");
     const pgid = other.pid as number;
     try {
@@ -168,7 +167,7 @@ describe("command watches", () => {
       });
       expect(alive(pgid)).toBe(true);
     } finally {
-      await killGroupNow(other, since);
+      await killGroupNow(other);
     }
   });
 
