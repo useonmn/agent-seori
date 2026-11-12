@@ -33,7 +33,7 @@ function setup() {
   const w = new World();
   const d = w.deps();
   const lane = (key: string, status: Lane["status"] = "working") =>
-    d.store.saveLane({ key, paneId: "w1:p9", tabId: "w1:t9", brief: "b", cwd: "/", status, createdAt: w.clock, lastActivityAt: w.clock, nudges: 0, log: [] });
+    d.store.saveLane({ key, sessionRef: { runtime: "herdr", id: "w1:p9", container: "w1:t9" }, paneId: "w1:p9", tabId: "w1:t9", brief: "b", cwd: "/", status, createdAt: w.clock, lastActivityAt: w.clock, nudges: 0, log: [] });
   return { w, d, lane, watches: () => new WatchStore(d.store.root) };
 }
 

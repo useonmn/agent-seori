@@ -1,6 +1,9 @@
+// Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync, linkSync, statSync } from "node:fs";
 import { homedir, hostname, uptime } from "node:os";
 import { join } from "node:path";
+import { refFromText, refText, sameSession } from "./refs.ts";
+import type { SessionRef } from "./runtime/types.ts";
 
 /**
  * working/waiting: the lane runs. ready: it sent READY (a done claim). paused: the owner said wait (seori pause; its goal
@@ -15,8 +18,13 @@ export type LaneLogKind =
   | "start" | "report" | "ready" | "nudge" | "done" | "lost"
   | "object" | "pause" | "resume" | "blocked" | "stalled" | "posted";
 
+/**
+ * One lane record. `sessionRef` is the session it runs in, on whichever runtime opened it; `paneId`/`tabId` are written
+ * beside it (the ref's id and container) so an older binary still reads the file. Read `sessionRef`, never `paneId`.
+ */
 export type Lane = {
   key: string;
+  sessionRef: SessionRef;
   paneId: string;
   tabId: string;
   brief: string;
@@ -115,6 +123,27 @@ export const RESERVED_KEYS: readonly Role[] = ["lead", "duty"];
 /** Refusal text for a reserved lane key, or undefined. Keys are lowercase-only (KEY_RE), so the exact match is the whole check. */
 export const reservedKey = (key: string): string | undefined =>
   (RESERVED_KEYS as readonly string[]).includes(key) ? `lane key "${key}" is reserved for the ${key} role` : undefined;
+
+/** A lane file as any binary wrote it: one from before runtimes existed has no `sessionRef`. */
+export type StoredLane = Omit<Lane, "sessionRef"> & { sessionRef?: SessionRef };
+
+/** Reads a record without `sessionRef` as the herdr pane it names; the same input always gives the same lane. */
+export const upgradeLane = (raw: StoredLane): Lane =>
+  raw.sessionRef !== undefined
+    ? (raw as Lane)
+    : { ...raw, sessionRef: { runtime: "herdr", id: raw.paneId, ...(raw.tabId ? { container: raw.tabId } : {}) } };
+
+// Inbox files: one JSONL queue per session. A herdr pane keeps the name it had before runtimes existed (`w1_p3.jsonl`),
+// so queues written by an older binary drain; every other runtime is prefixed (`hc--t7.jsonl`).
+const HC_INBOX_PREFIX = "hc--";
+
+const inboxName = (ref: SessionRef): string =>
+  ref.runtime === "herdr" ? ref.id.replaceAll(":", "_") : `${HC_INBOX_PREFIX}${ref.id}`;
+
+const inboxRef = (stem: string): SessionRef =>
+  stem.startsWith(HC_INBOX_PREFIX)
+    ? { runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) }
+    : { runtime: "herdr", id: stem.replaceAll("_", ":") };
 
 const checkedId = (id: string): string => {
   if (!KEY_RE.test(id)) throw new Error(`invalid id ${JSON.stringify(id)}: must match ${KEY_RE}`);
@@ -228,65 +257,73 @@ export class Store {
   }
 
   lane(key: string): Lane | undefined {
-    return this.readJson<Lane>(join(this.root, "lanes", `${key}.json`));
+    const raw = this.readJson<StoredLane>(join(this.root, "lanes", `${key}.json`));
+    return raw && upgradeLane(raw);
   }
 
+  /** Writes `paneId`/`tabId` from `sessionRef` beside it, so an older binary still reads the record. */
   saveLane(lane: Lane): void {
-    this.writeJson(join(this.root, "lanes", `${lane.key}.json`), lane);
+    const { id, container } = lane.sessionRef;
+    this.writeJson(join(this.root, "lanes", `${lane.key}.json`), { ...lane, paneId: id, tabId: container ?? "" });
   }
 
   lanes(): Lane[] {
     return readdirSync(join(this.root, "lanes"))
       .filter((f) => f.endsWith(".json"))
-      .map((f) => this.readJson<Lane>(join(this.root, "lanes", f)))
-      .filter((l): l is Lane => l !== undefined)
+      .map((f) => this.readJson<StoredLane>(join(this.root, "lanes", f)))
+      .filter((l): l is StoredLane => l !== undefined)
+      .map(upgradeLane)
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
   }
 
-  laneByPane(paneId: string): Lane | undefined {
-    return this.lanes().find((l) => l.paneId === paneId && l.status !== "done");
+  laneBySession(ref: SessionRef): Lane | undefined {
+    return this.lanes().find((l) => sameSession(l.sessionRef, ref) && l.status !== "done");
   }
 
-  roles(): Partial<Record<Role, string>> {
-    return this.readJson(join(this.root, "roles.json")) ?? {};
+  /** roles.json holds ref strings (refText), so an older binary still parses it; a bare value is a herdr pane. */
+  roles(): Partial<Record<Role, SessionRef>> {
+    const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
+    return Object.fromEntries(Object.entries(raw).map(([role, text]) => [role, refFromText(text)]));
   }
 
-  setRole(role: Role, paneId: string): void {
-    this.writeJson(join(this.root, "roles.json"), { ...this.roles(), [role]: paneId });
+  setRole(role: Role, ref: SessionRef): void {
+    const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
+    this.writeJson(join(this.root, "roles.json"), { ...raw, [role]: refText(ref) });
   }
 
   briefPath(key: string): string {
     return join(this.root, "briefs", `${key}.md`);
   }
 
-  inboxPath(paneId: string): string {
-    return join(this.root, "inbox", `${paneId.replaceAll(":", "_")}.jsonl`);
+  inboxPath(ref: SessionRef): string {
+    return join(this.root, "inbox", `${inboxName(ref)}.jsonl`);
   }
 
-  enqueue(paneId: string, msg: QueuedMessage): void {
-    appendFileSync(this.inboxPath(paneId), JSON.stringify(msg) + "\n");
+  enqueue(ref: SessionRef, msg: QueuedMessage): void {
+    appendFileSync(this.inboxPath(ref), JSON.stringify(msg) + "\n");
   }
 
-  queued(paneId: string): QueuedMessage[] {
-    const p = this.inboxPath(paneId);
+  queued(ref: SessionRef): QueuedMessage[] {
+    const p = this.inboxPath(ref);
     if (!existsSync(p)) return [];
     return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as QueuedMessage);
   }
 
-  saveInbox(paneId: string, msgs: readonly QueuedMessage[]): void {
-    writeFileSync(this.inboxPath(paneId), msgs.map((m) => JSON.stringify(m) + "\n").join(""));
+  saveInbox(ref: SessionRef, msgs: readonly QueuedMessage[]): void {
+    writeFileSync(this.inboxPath(ref), msgs.map((m) => JSON.stringify(m) + "\n").join(""));
   }
 
-  /** The pane's inbox lock (`<inbox>.lock`): one flush per pane at a time, across processes. See lockFile. */
-  lockInbox(paneId: string, now: number): (() => void) | undefined {
-    return lockFile(`${this.inboxPath(paneId)}.lock`, now);
+  /** The session's inbox lock (`<inbox>.lock`): one flush per session at a time, across processes. See lockFile. */
+  lockInbox(ref: SessionRef, now: number): (() => void) | undefined {
+    return lockFile(`${this.inboxPath(ref)}.lock`, now);
   }
 
-  inboxPanes(): string[] {
+  /** Sessions with queued messages. */
+  inboxPanes(): SessionRef[] {
     return readdirSync(join(this.root, "inbox"))
       .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => f.slice(0, -".jsonl".length).replaceAll("_", ":"))
-      .filter((p) => this.queued(p).length > 0);
+      .map((f) => inboxRef(f.slice(0, -".jsonl".length)))
+      .filter((r) => this.queued(r).length > 0);
   }
 
   private receiptPath(pr: string, sha: string): string {

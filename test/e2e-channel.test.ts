@@ -12,6 +12,7 @@ import { defaultRuntimes } from "../src/runtime/index.ts";
 import { BACKOFF_MS } from "../src/lead-delivery.ts";
 import type { FakeOutboundRow } from "../src/messenger/fake.ts";
 import { startSwitchProxy, type SwitchProxy } from "./helpers/switch-proxy.ts";
+import { herdrRef } from "./fake.ts";
 
 // The lead channel end to end: real herdr in an isolated named session, `seori up` (lead with the lead-channel
 // extension, duty, loops and the messenger daemon), a REAL omp lead (model calls, costs money) and the fake messenger
@@ -149,7 +150,7 @@ async function restartLead(exports: Record<string, string> = {}): Promise<void> 
   // agent_name_taken for a few seconds.
   for (let attempt = 1; ; attempt++) {
     try {
-      await startAgent(d, "lead", lead(), ["-e", LEAD_EXTENSION, "--append-system-prompt", join(home, "prompts", "lead.md")]);
+      await startAgent(d, "lead", herdrRef(lead()), ["-e", LEAD_EXTENSION, "--append-system-prompt", join(home, "prompts", "lead.md")]);
       return;
     } catch (e) {
       if (!(e instanceof HerdrError && e.result.stderr.includes("agent_name_taken")) || attempt >= 30) throw e;

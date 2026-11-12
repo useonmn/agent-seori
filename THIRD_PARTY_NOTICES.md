@@ -37,3 +37,8 @@ SOFTWARE.
 These files contain portions of dori-superagent code licensed under the Sustainable Use License (https://github.com/sisyphuslabs/dori-superagent/blob/main/LICENSE):
 
 - src/cli.ts
+- src/refs.ts
+- src/store.ts
+- src/target.ts
+- test/records-upgrade.test.ts
+- test/resolve-target.test.ts

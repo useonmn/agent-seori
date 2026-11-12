@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnExec } from "../src/runtime/exec.ts";
 import { blockedText, fileActivity, laneUsage, reachedCeilings, superviseTick } from "../src/supervision.ts";
 import type { Lane, LaneStatus } from "../src/store.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 const MIN = 60_000;
 
@@ -17,7 +17,7 @@ function setup(status: LaneStatus = "working", extra: Partial<Lane> = {}) {
   const w = new World();
   const d = w.deps();
   const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", "w1:p1");
+  d.store.setRole("lead", herdrRef("w1:p1"));
   const pane = w.addPane("w1:p5", "working");
   pane.agent = "omp";
   // git in the lane's cwd: a clean tree at HEAD `git.head`.
@@ -29,7 +29,7 @@ function setup(status: LaneStatus = "working", extra: Partial<Lane> = {}) {
     return { code: 1, stdout: "" };
   };
   d.store.saveLane({
-    key: "fix-a", paneId: "w1:p5", tabId: "w1:t5", brief: "/dev/null", cwd: "/repo", status,
+    key: "fix-a", sessionRef: { runtime: "herdr", id: "w1:p5", container: "w1:t5" }, paneId: "w1:p5", tabId: "w1:t5", brief: "/dev/null", cwd: "/repo", status,
     createdAt: 0, lastActivityAt: 0, nudges: 0, log: [], ...extra,
   });
   const config = (value: unknown) => writeFileSync(join(d.store.root, "config.json"), JSON.stringify(value));
@@ -160,7 +160,7 @@ describe("ceilings", () => {
     await superviseTick(d);
     w.clock = 63 * MIN;
     await superviseTick(d);
-    expect(d.store.queued("w1:p1").map((m) => m.text)).toEqual([blockedText("fix-a", { which: "wallMinutes", actual: 61, limit: 60 })]);
+    expect(d.store.queued(herdrRef("w1:p1")).map((m) => m.text)).toEqual([blockedText("fix-a", { which: "wallMinutes", actual: 61, limit: 60 })]);
     expect(d.store.lane("fix-a")!.log.filter((e) => e.kind === "blocked")).toHaveLength(1);
   });
 });
@@ -320,7 +320,7 @@ test("a stopped duty loop supervises nothing", async () => {
 
 test("one lane's failure is an event and the others are still supervised", async () => {
   const { w, d, lead } = setup();
-  d.store.saveLane({ key: "broken-b", paneId: "w1:p9", tabId: "w1:t9", brief: "/dev/null", cwd: "/x", status: "paused", createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
+  d.store.saveLane({ key: "broken-b", sessionRef: { runtime: "herdr", id: "w1:p9", container: "w1:t9" }, paneId: "w1:p9", tabId: "w1:t9", brief: "/dev/null", cwd: "/x", status: "paused", createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
   w.addPane("w1:p9", "working");
   w.getHook.set("w1:p9", () => { throw new Error("herdr crashed"); });
   w.clock = 21 * MIN;

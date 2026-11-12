@@ -7,7 +7,7 @@ import type { Deps } from "../src/harness.ts";
 import type { Exec, ExecResult } from "../src/runtime/exec.ts";
 import { Herdr } from "../src/runtime/herdr/client.ts";
 import { defaultRuntimes } from "../src/runtime/index.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 const DF_MAC = `Filesystem     1024-blocks      Used Available Capacity  Mounted on
 /dev/disk3s5    971350180 600000000 104857600    86%    /System/Volumes/Data
@@ -32,7 +32,7 @@ function setup(): { w: World; d: Deps; host: Host; dfArgs: (readonly string[])[]
   };
   const d: Deps = { ...base, exec, runtimes: defaultRuntimes(new Herdr(exec, "")) };
   w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", "w1:p1");
+  d.store.setRole("lead", herdrRef("w1:p1"));
   return { w, d, host, dfArgs };
 }
 
@@ -163,7 +163,7 @@ describe("guardTick", () => {
     w.panes.get("w1:p1")!.status = "working";
     expect((await guardTick(d))[0]?.action).toBe("guard-alert");
     expect(await guardTick(d)).toEqual([]);
-    expect(d.store.queued("w1:p1").map((m) => m.text)).toEqual(["[HOST-GUARD ALERT] memory free 4% < 10%"]);
+    expect(d.store.queued(herdrRef("w1:p1")).map((m) => m.text)).toEqual(["[HOST-GUARD ALERT] memory free 4% < 10%"]);
   });
 
   test("a failed delivery is an event; the alert is kept in the lead inbox and not told again", async () => {
@@ -174,7 +174,7 @@ describe("guardTick", () => {
     expect(events.map((e) => e.action)).toEqual(["guard-alert", "guard-delivery-failed"]);
     expect(readGuardState(d.store.root)?.alerting).toBe(true);
     expect(await guardTick(d)).toEqual([]);
-    expect(d.store.queued("w1:p1")).toHaveLength(1);
+    expect(d.store.queued(herdrRef("w1:p1"))).toHaveLength(1);
   });
 
   test("a broken config.json is a guard-failed event, not a throw", async () => {

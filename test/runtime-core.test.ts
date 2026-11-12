@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { HerdrRuntime } from "../src/runtime/herdr/index.ts";
-import { defaultRuntimes, Runtimes, storedRef } from "../src/runtime/index.ts";
+import { defaultRuntimes, Runtimes } from "../src/runtime/index.ts";
 import { RuntimeChoiceError } from "../src/runtime/select.ts";
 import { formatRef, parseRef, type RuntimeKind, type SessionRuntime } from "../src/runtime/types.ts";
 import { World } from "./fake.ts";
@@ -33,7 +33,7 @@ describe("Runtimes", () => {
   test("seori's default registry opens herdr, maps stored pane ids to herdr refs and refuses hc for now", () => {
     const rts = defaultRuntimes();
     expect(rts.default).toBeInstanceOf(HerdrRuntime);
-    expect(rts.for(storedRef("w1:p2"))).toBe(rts.default);
+    expect(rts.for({ runtime: "herdr", id: "w1:p2" })).toBe(rts.default);
     expect(() => rts.for({ runtime: "hc", id: "t1" })).toThrow(RuntimeChoiceError);
   });
 });
