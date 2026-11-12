@@ -31,3 +31,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Sustainable Use License portions
+
+These files contain portions of dori-superagent code licensed under the Sustainable Use License (https://github.com/sisyphuslabs/dori-superagent/blob/main/LICENSE):
+
+- src/cli.ts

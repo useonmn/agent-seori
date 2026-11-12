@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
@@ -106,7 +107,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -116,8 +117,9 @@ function parse(argv: readonly string[]): Args {
     if (a === "--") return { pos, flags, rest: argv.slice(i + 1) };
     if (!a.startsWith("--")) { pos.push(a); continue; }
     const name = a.slice(2);
-    const next = argv[i + 1];
-    const value = BOOLEAN_FLAGS.has(name) || next === undefined ? "true" : (i++, next);
+    // A value flag at the very end (--text $MSG with MSG unset) has no value; reading it as "true" would send that word.
+    const value = BOOLEAN_FLAGS.has(name) ? "true" : argv[++i];
+    if (value === undefined) throw new Refusal(`--${name} needs a value`);
     flags.set(name, [...(flags.get(name) ?? []), value]);
   }
   return { pos, flags, rest: [] };
@@ -130,10 +132,12 @@ const need = (v: string | undefined, what: string): string => {
 };
 
 async function textOf(a: Args): Promise<string> {
-  const t = one(a, "text");
-  if (t !== undefined) return t;
-  if (process.stdin.isTTY) throw new Refusal("give --text or pipe the message on stdin");
-  return (await Bun.stdin.text()).trim();
+  const given = one(a, "text");
+  if (given === undefined && process.stdin.isTTY) throw new Refusal("give --text or pipe the message on stdin");
+  const text = given ?? (await Bun.stdin.text()).trim();
+  // An unset variable (--text "$MSG") or an empty pipe would type a blank message into the pane and print DELIVERED.
+  if (!text.trim()) throw new Refusal("the message is empty: give --text or pipe the message on stdin");
+  return text;
 }
 
 /** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
@@ -552,6 +556,11 @@ function lesson(d: Deps, a: Args, sub: string | undefined): number {
 
 export async function main(argv: readonly string[], d: Deps = defaultDeps()): Promise<number> {
   const a = parse(argv);
+  // --help is a boolean flag, so the word after it is the command: print the usage instead of running it.
+  if (a.flags.has("help")) {
+    console.log(USAGE);
+    return 0;
+  }
   const [cmd, x] = a.pos;
   switch (cmd) {
     case "up":
@@ -655,6 +664,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       }
       if (x !== undefined) throw new Refusal(`unknown duty command ${x}\n\n${USAGE}`);
       const interval = Number(one(a, "interval") ?? "60") * 1000;
+      // Bun.sleep(NaN) and any Bun.sleep under 1 ms return at once, so a bad value would run duty passes back to back.
+      if (!(Number.isFinite(interval) && interval >= 1)) throw new Refusal("--interval must be a number of seconds, 0.001 or more");
       const tick = async () => {
         for (const e of await dutyTick(d)) console.log(`DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`);
       };
