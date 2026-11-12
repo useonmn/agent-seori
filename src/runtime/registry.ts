@@ -1,3 +1,4 @@
+import type { RuntimeChoice } from "./select.ts";
 import type { RuntimeKind, SessionRef, SessionRuntime } from "./types.ts";
 
 const nonEmpty = (value: string | undefined): string | undefined => (value === undefined || value === "" ? undefined : value);
@@ -9,13 +10,22 @@ const nonEmpty = (value: string | undefined): string | undefined => (value === u
 export class Runtimes {
   private readonly built = new Map<RuntimeKind, SessionRuntime>();
 
+  private chosen: RuntimeChoice | undefined;
+
+  /** `selected` is a fixed kind, or a selector (readRuntimeChoice) that runs on first use and may throw. */
   constructor(
-    private readonly selected: RuntimeKind,
+    private readonly selected: RuntimeKind | (() => RuntimeChoice),
     private readonly make: (kind: RuntimeKind) => SessionRuntime,
   ) {}
 
+  /** The selected runtime and why (`seori status` prints it). Throws what the selector throws. */
+  choice(): RuntimeChoice {
+    this.chosen ??= typeof this.selected === "function" ? this.selected() : { kind: this.selected, source: "fixed" };
+    return this.chosen;
+  }
+
   get default(): SessionRuntime {
-    return this.of(this.selected);
+    return this.of(this.choice().kind);
   }
 
   for(ref: SessionRef): SessionRuntime {

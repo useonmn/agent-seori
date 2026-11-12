@@ -43,6 +43,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/runtime/hc/index.ts
 - src/runtime/hc/probe.ts
 - src/runtime/hc/sessions.ts
+- src/runtime/select.ts
 - src/store.ts
 - src/target.ts
 - test/e2e-hc.test.ts
@@ -53,6 +54,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - test/helpers/fake-hc.ts
 - test/helpers/hc-rig.ts
 - test/records-upgrade.test.ts
+- test/runtime-select.test.ts
 - test/resolve-target.test.ts
 - test/runtime-hc-deliver.test.ts
 - test/runtime-hc-misc.test.ts

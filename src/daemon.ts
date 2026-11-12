@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } 
 import { join } from "node:path";
 import { Channel } from "./channel.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
-import { defaultRuntimes, spawnExec, statusOf } from "./runtime/index.ts";
+import { choiceFor, defaultRuntimes, spawnExec, statusOf } from "./runtime/index.ts";
 import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 import { refFromText } from "./refs.ts";
@@ -102,7 +102,7 @@ export type DaemonOptions = {
 /** The real engine deps: watches reach agents through the harness, PR checks through gh, pane state through the runtime. */
 function engineDeps(root: string, now: () => number): EngineDeps {
   const store = new Store(root);
-  const runtimes = defaultRuntimes();
+  const runtimes = defaultRuntimes(undefined, undefined, choiceFor(root));
   // Built on first delivery: defaultDeps() opens $SEORI_HOME's store, which only a firing watch needs.
   let deps: Deps | undefined;
   return {

@@ -15,6 +15,7 @@ import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList, msgSend, parseTo } from "./msg.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
+import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
 import { pidAlive, type Role } from "./store.ts";
 import { parsePr } from "./harness.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
@@ -519,8 +520,16 @@ async function watch(d: Deps, a: Args, sub: string | undefined): Promise<number>
 }
 
 function status(d: Deps): void {
+  let choice;
+  try {
+    choice = d.runtimes.choice();
+  } catch (e) {
+    if (e instanceof RuntimeChoiceError || e instanceof RuntimeConfigError) throw new Refusal(e.message);
+    throw e;
+  }
   const roles = d.store.roles();
   console.log(`lead=${roles.lead ? refText(roles.lead) : "-"} duty=${roles.duty ? refText(roles.duty) : "-"} home=${d.store.root}`);
+  console.log(`RUNTIME ${choice.kind} (from ${choice.source})`);
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);

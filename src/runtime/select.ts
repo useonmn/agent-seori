@@ -1,11 +1,12 @@
+// Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { RuntimeKind } from "./types.ts";
 
-// Which runtime new sessions open on. Not wired into the harness yet: seori opens every session on herdr until the hc
-// adapter lands (src/runtime/index.ts).
+// Which runtime new sessions open on (wired through defaultRuntimes, src/runtime/index.ts): hc unless herdr is asked for
+// or is the only one found.
 
-export type RuntimeSource = "env" | "config" | "detect:HC_TERMINAL_ID" | "detect:HERDR_PANE_ID" | "detect:path";
+export type RuntimeSource = "env" | "config" | "detect:HC_TERMINAL_ID" | "detect:HERDR_PANE_ID" | "detect:path" | "fixed";
 export type RuntimeChoice = { readonly kind: RuntimeKind; readonly source: RuntimeSource };
 
 /** No runtime could be chosen; the message is the one-line fix. */
@@ -56,8 +57,8 @@ function onPath(pathVar: string | undefined, exists: (path: string) => boolean):
 
 /**
  * Which runtime new sessions open on, and why. Precedence: `SEORI_RUNTIME` > the config file's `runtime` key >
- * `HC_TERMINAL_ID` (inside an hc terminal) > `HERDR_PANE_ID` (inside a herdr pane) > the one runtime binary on PATH.
- * Both binaries or neither, with nothing else set, is refused: guessing would open sessions where nobody looks.
+ * `HC_TERMINAL_ID` (inside an hc terminal) > `HERDR_PANE_ID` (inside a herdr pane) > the runtime binaries on PATH: hc
+ * when it is installed, else herdr. Neither binary, with nothing else set, is refused with the fix in one line.
  */
 export function readRuntimeChoice(options: {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -75,8 +76,9 @@ export function readRuntimeChoice(options: {
   if (nonEmpty(env["HC_TERMINAL_ID"]) !== undefined) return { kind: "hc", source: "detect:HC_TERMINAL_ID" };
   if (nonEmpty(env["HERDR_PANE_ID"]) !== undefined) return { kind: "herdr", source: "detect:HERDR_PANE_ID" };
   const found = onPath(env["PATH"], options.exists ?? isExecutableFile);
-  const [only] = found;
-  if (found.length === 1 && only !== undefined) return { kind: only, source: "detect:path" };
-  const why = found.length === 0 ? "neither herdr nor hc is on PATH" : "both herdr and hc are on PATH";
-  throw new RuntimeChoiceError(`${why}: set "runtime": "herdr" or "hc" in ${configPath}, or SEORI_RUNTIME`);
+  if (found.includes("hc")) return { kind: "hc", source: "detect:path" };
+  if (found.includes("herdr")) return { kind: "herdr", source: "detect:path" };
+  throw new RuntimeChoiceError(
+    `neither herdr nor hc is on PATH: install hc (herdr-core) or herdr, or set "runtime": "herdr" or "hc" in ${configPath}, or SEORI_RUNTIME`,
+  );
 }

@@ -6,7 +6,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Outbox } from "./outbox.ts";
 import {
-  defaultRuntimes, DeliveryUncertain, deliverOrThrow, Runtimes, session, shq, spawnExec, statusOf, ToolError, type AgentStatus, type Exec, type SessionRef,
+  choiceFor, defaultRuntimes, DeliveryUncertain, deliverOrThrow, Runtimes, session, shq, spawnExec, statusOf, ToolError, type AgentStatus, type Exec, type SessionRef,
 } from "./runtime/index.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
@@ -53,7 +53,7 @@ export const defaultDeps = (): Deps => {
   const store = new Store();
   return {
     store,
-    runtimes: defaultRuntimes(),
+    runtimes: defaultRuntimes(undefined, undefined, choiceFor(store.root)),
     exec: spawnExec,
     now: Date.now,
     agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
@@ -477,6 +477,7 @@ const KICKOFF_POLL_MS = 500;
 async function agentSessionReported(d: Deps, ref: SessionRef): Promise<void> {
   const until = d.now() + AGENT_SESSION_WAIT_MS;
   const rt = d.runtimes.for(ref);
+  if (rt.kind === "hc") return; // hc reports no agent session id (agentSession() is always undefined): nothing to wait for
   while (!(await rt.agentSession(ref)) && d.now() < until) await d.sleep(KICKOFF_POLL_MS);
 }
 
