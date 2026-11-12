@@ -5,7 +5,9 @@ import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Outbox } from "./outbox.ts";
-import { DeliveryUncertain, Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
+import {
+  defaultRuntimes, DeliveryUncertain, deliverOrThrow, Runtimes, session, shq, spawnExec, statusOf, ToolError, type AgentStatus, type Exec,
+} from "./runtime/index.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { KEY_RE, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
@@ -29,7 +31,8 @@ const LESSONS_RE = new RegExp(`^${LESSONS_HEADING}\\n(?:- .*\\n)*\\n`);
 
 export type Deps = {
   readonly store: Store;
-  readonly herdr: Herdr;
+  /** Every session seori opens or talks to goes through these (src/runtime); records store bare herdr pane ids. */
+  readonly runtimes: Runtimes;
   readonly exec: Exec;
   readonly now: () => number;
   readonly agentCmd: string;
@@ -47,7 +50,7 @@ export const defaultDeps = (): Deps => {
   const store = new Store();
   return {
     store,
-    herdr: new Herdr(),
+    runtimes: defaultRuntimes(),
     exec: spawnExec,
     now: Date.now,
     agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
@@ -125,12 +128,13 @@ export const INTEGRATION_MISSING = "herdr's omp integration is not installed; ru
 
 /** seori reads agent status from herdr, which reports omp as always idle without its omp integration: refuse to start. */
 export async function requireOmpIntegration(d: Deps): Promise<void> {
-  if (!(await d.herdr.ompIntegration())) throw new Refusal(INTEGRATION_MISSING);
+  if (!(await d.runtimes.default.agentIntegration())) throw new Refusal(INTEGRATION_MISSING);
 }
 
 /** Starts omp in a pane via `herdr agent start`, named after the label and pane so names stay unique across live agents. */
 export async function startAgent(d: Deps, label: string, paneId: string, args: readonly string[] = []): Promise<void> {
-  await d.herdr.agentStart(agentName(label, paneId), paneId, [...args, ...(d.model ? ["--model", d.model] : [])]);
+  const { rt, ref } = session(d.runtimes, paneId);
+  await rt.startAgent(ref, agentName(label, paneId), [...args, ...(d.model ? ["--model", d.model] : [])]);
 }
 
 /**
@@ -235,8 +239,9 @@ async function settled<T extends SendResult | undefined>(delivery: Promise<T>): 
  */
 export async function sendToShell(d: Deps, target: string, text: string, from: string): Promise<SendResult> {
   const paneId = resolveTarget(d, target);
-  if ((await d.herdr.status(paneId)) !== "shell") return send(d, target, text, from);
-  if (await d.herdr.typeIntoShell(paneId, text)) return "DELIVERED";
+  if ((await statusOf(d.runtimes, paneId)) !== "shell") return send(d, target, text, from);
+  const { rt, ref } = session(d.runtimes, paneId);
+  if (await rt.typeIntoShell(ref, text)) return "DELIVERED";
   d.store.enqueue(paneId, { at: d.now(), from, text });
   return "QUEUED";
 }
@@ -263,7 +268,7 @@ async function flushLocked(d: Deps, paneId: string): Promise<"delivered" | "queu
   const all = d.store.queued(paneId);
   if (all.length === 0) return "delivered";
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
-  const status = await d.herdr.status(paneId);
+  const status = await statusOf(d.runtimes, paneId);
   // Before the held check, so a gone pane with only held messages says so instead of delivery-ambiguous forever (#108).
   if (status === "gone") throw new Refusal(`pane ${paneId} is gone; ${all.length} message(s) kept in its inbox`);
   if (queued.length === 0) return "held";
@@ -277,7 +282,8 @@ async function flushLocked(d: Deps, paneId: string): Promise<"delivered" | "queu
   if (typed.length > 0) {
     // An earlier pass typed these and only the Enter failed: press Enter, never type them again (#89), and only into
     // the agent they were typed into (#108).
-    const submitted = await d.herdr.submitTyped(paneId, typed[0]!.attempt);
+    const { rt, ref } = session(d.runtimes, paneId);
+    const submitted = await rt.submitTyped(ref, typed[0]!.attempt);
     if (submitted === "wait") return "no-agent";
     if (submitted === "changed") {
       await holdTyped(d, paneId, typed, "a different agent is in the pane than the one the text was typed into");
@@ -293,7 +299,8 @@ async function flushLocked(d: Deps, paneId: string): Promise<"delivered" | "queu
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
   try {
-    if (!(await d.herdr.deliver(paneId, body))) return "no-agent";
+    const { rt, ref } = session(d.runtimes, paneId);
+    if (!(await deliverOrThrow(rt, ref, body))) return "no-agent";
   } catch (e) {
     if (e instanceof DeliveryUncertain) await recordUncertain(d, paneId, queued, e);
     throw e;
@@ -432,25 +439,26 @@ export async function startLane(
 
   const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
   const env = { SEORI_LANE: key, ...paneEnv(d.store.root), PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) };
-  const pane = workspace
-    ? await d.herdr.createTab(key, cwd, workspace, env)
-    : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace(loadConfig(d.store.root).name, cwd)).workspaceId, env);
+  const rt = d.runtimes.default;
+  const group = workspace ? workspace : await rt.createGroup(loadConfig(d.store.root).name, cwd);
+  const ref = await rt.create({ name: key, cwd, env, role: "lane", container: "tab", group });
+  const pane = { paneId: ref.id, tabId: ref.container ?? "" };
   try {
     await startAgent(d, key, pane.paneId);
     await agentSessionReported(d, pane.paneId);
     const kickoff =
       `/goal Read your brief at ${briefPath} and execute it. Your lane key is ${key}. ` +
       `The work is finished only when the brief's exit condition holds and you have sent seori ready.`;
-    if (!(await d.herdr.deliver(pane.paneId, kickoff))) throw new Error("omp was not in front of the pane to take the kickoff");
+    if (!(await deliverOrThrow(rt, ref, kickoff))) throw new Error("omp was not in front of the pane to take the kickoff");
     if (!(await kickoffTook(d, pane.paneId))) {
       // The kickoff can sit typed in omp's input with its Enter lost (omp still loading under load): press only Enter.
-      await d.herdr.submitTyped(pane.paneId);
+      await rt.submitTyped(ref);
       if (!(await kickoffTook(d, pane.paneId))) {
         process.stderr.write(`seori: lane ${key}: omp in ${pane.paneId} has not started on the kickoff; check that pane\n`);
       }
     }
   } catch (e) {
-    await d.herdr.close(pane.paneId).catch(() => undefined);
+    await rt.close(ref).catch(() => undefined);
     throw new Refusal(`lane ${key} did not start, pane ${pane.paneId} closed: ${failureDetail(e)}`);
   }
 
@@ -480,14 +488,15 @@ const KICKOFF_POLL_MS = 500;
  */
 async function agentSessionReported(d: Deps, paneId: string): Promise<void> {
   const until = d.now() + AGENT_SESSION_WAIT_MS;
-  while (!(await d.herdr.agentSessionPath(paneId)) && d.now() < until) await d.sleep(KICKOFF_POLL_MS);
+  const { rt, ref } = session(d.runtimes, paneId);
+  while (!(await rt.agentSession(ref)) && d.now() < until) await d.sleep(KICKOFF_POLL_MS);
 }
 
 /** Whether omp started on the kickoff (herdr reports it working, done or on a dialog) within KICKOFF_TAKE_MS. */
 async function kickoffTook(d: Deps, paneId: string): Promise<boolean> {
   const until = d.now() + KICKOFF_TAKE_MS;
   for (;;) {
-    const status = await d.herdr.status(paneId);
+    const status = await statusOf(d.runtimes, paneId);
     if (status === "working" || status === "done" || status === "blocked") return true;
     if (d.now() >= until) return false;
     await d.sleep(KICKOFF_POLL_MS);
@@ -550,7 +559,7 @@ export async function done(d: Deps, key: string): Promise<void> {
     throw new Refusal(`lane ${key} is already closed${how}; see its final state with: ${d.seoriCmd} status (record: ${join(d.store.root, "lanes", `${key}.json`)})`);
   }
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
-  const st = await d.herdr.status(lane.paneId);
+  const st = await statusOf(d.runtimes, lane.paneId);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
   if (lane.done !== undefined) {
     const failures = await checkSignals(d, lane);
@@ -566,10 +575,10 @@ export async function done(d: Deps, key: string): Promise<void> {
 
 export type DutyEvent = { lane?: string; pane?: string; action: string; detail?: string };
 
-/** A short one-line reason. A HerdrError message carries the whole argv (the queued text), so use herdr's own output. */
+/** A short one-line reason. A ToolError message carries the whole argv (the queued text), so use the runtime's own output. */
 function failureDetail(e: unknown): string {
   if (e instanceof DeliveryUncertain) e = e.failure;
-  const raw = e instanceof HerdrError ? e.result.stderr || e.result.stdout : e instanceof Error ? e.message : String(e);
+  const raw = e instanceof ToolError ? e.result.stderr || e.result.stdout : e instanceof Error ? e.message : String(e);
   const first = raw.trim().split("\n")[0] ?? "";
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 }
@@ -600,7 +609,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   for (const lane of d.store.lanes()) {
     if (lane.status !== "working" && lane.status !== "waiting") continue;
     try {
-      const st = await d.herdr.status(lane.paneId);
+      const st = await statusOf(d.runtimes, lane.paneId);
       const now = d.now();
       if (st === "gone") {
         lane.status = "lost";
@@ -806,7 +815,7 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   const lead = d.store.roles().lead;
   if (stuck.length && lead) {
     try {
-      if ((await d.herdr.status(lead)) === "blocked") due.push(...stuck.map((s): [typeof s, AlertWhy] => [s, "lead-blocked"]));
+      if ((await statusOf(d.runtimes, lead)) === "blocked") due.push(...stuck.map((s): [typeof s, AlertWhy] => [s, "lead-blocked"]));
     } catch (e) {
       events.push({ pane: lead, action: "lead-status-failed", detail: failureDetail(e) });
     }

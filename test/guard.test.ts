@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import { canLaunch, canLaunchLine, guardLines, guardStatePath, guardTick, guardVerdict, hostLine, parseDfAvailableKb, parsePaneCount, readGuardState, sampleHost, type HostSample } from "../src/guard.ts";
 import type { Deps } from "../src/harness.ts";
-import type { ExecResult } from "../src/herdr.ts";
+import type { Exec, ExecResult } from "../src/runtime/exec.ts";
+import { Herdr } from "../src/runtime/herdr/client.ts";
+import { defaultRuntimes } from "../src/runtime/index.ts";
 import { World } from "./fake.ts";
 
 const DF_MAC = `Filesystem     1024-blocks      Used Available Capacity  Mounted on
@@ -20,17 +22,15 @@ function setup(): { w: World; d: Deps; host: Host; dfArgs: (readonly string[])[]
   const base = w.deps();
   const host: Host = { df: { code: 0, stdout: dfOut(100 * 1024 * 1024), stderr: "" }, panes: { code: 0, stdout: panesOut(3), stderr: "" } };
   const dfArgs: (readonly string[])[] = [];
-  const d: Deps = {
-    ...base,
-    exec: async (cmd, argv) => {
-      if (cmd === "df") {
-        dfArgs.push(argv);
-        return host.df;
-      }
-      if (cmd === "herdr" && argv.slice(-2).join(" ") === "pane list") return host.panes;
-      return w.exec(cmd, argv);
-    },
+  const exec: Exec = async (cmd, argv) => {
+    if (cmd === "df") {
+      dfArgs.push(argv);
+      return host.df;
+    }
+    if (cmd === "herdr" && argv.slice(-2).join(" ") === "pane list") return host.panes;
+    return w.exec(cmd, argv);
   };
+  const d: Deps = { ...base, exec, runtimes: defaultRuntimes(new Herdr(exec, "")) };
   w.addPane("w1:p1", "idle");
   d.store.setRole("lead", "w1:p1");
   return { w, d, host, dfArgs };

@@ -3,7 +3,14 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { agentName, defaultSeoriCmd, done, paneEnv, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { deliverOrThrow, session } from "../src/runtime/index.ts";
 import { ompJson, World } from "./fake.ts";
+
+/** The harness's delivery to one stored pane id, through its runtime. */
+const deliverTo = (d: ReturnType<World["deps"]>, paneId: string, text: string): Promise<boolean> => {
+  const { rt, ref } = session(d.runtimes, paneId);
+  return deliverOrThrow(rt, ref, text);
+};
 
 function setup() {
   const w = new World();
@@ -371,11 +378,11 @@ describe("pane messaging", () => {
     const enters = () => w.calls.filter((c) => c.argv[1] === "send-keys").length;
     w.promptFails.set("w1:p1", '{"error":{"code":"agent_not_ready"}}');
     w.keyFails = 2;
-    await d.herdr.deliver("w1:p1", "once");
+    await deliverTo(d, "w1:p1", "once");
     expect(lead.received).toEqual(["once"]);
     expect(enters()).toBe(3);
     w.keyFails = 5;
-    await expect(d.herdr.deliver("w1:p1", "twice")).rejects.toThrow("key press failed");
+    await expect(deliverTo(d, "w1:p1", "twice")).rejects.toThrow("key press failed");
     expect(lead.received).toEqual(["once", "twice"]);
     expect(enters()).toBe(6);
   });
@@ -383,14 +390,14 @@ describe("pane messaging", () => {
   test("another `agent prompt` failure for a message that merely mentions agent_not_ready is still thrown", async () => {
     const { w, d, lead } = setup();
     w.promptFails.set("w1:p1", "herdr exploded");
-    await expect(d.herdr.deliver("w1:p1", "a lane quoted agent_not_ready here")).rejects.toThrow("herdr exploded");
+    await expect(deliverTo(d, "w1:p1", "a lane quoted agent_not_ready here")).rejects.toThrow("herdr exploded");
     expect(lead.received).toEqual([]);
   });
 
   test("the typed fallback trims leading and trailing newlines instead of leaving a dangling ' / '", async () => {
     const { w, d, lead } = setup();
     w.promptFails.set("w1:p1", '{"error":{"code":"agent_not_ready"}}');
-    await d.herdr.deliver("w1:p1", "\n\nhello\nworld\n\n");
+    await deliverTo(d, "w1:p1", "\n\nhello\nworld\n\n");
     expect(lead.received).toEqual(["hello / world"]);
   });
 
@@ -398,7 +405,7 @@ describe("pane messaging", () => {
     const { w, d } = setup();
     const shell = w.addPane("w1:p7", "shell");
     w.promptFails.set("w1:p7", '{"error":{"code":"agent_not_ready"}}');
-    await expect(d.herdr.deliver("w1:p7", "rm -rf nothing")).resolves.toBe(false);
+    await expect(deliverTo(d, "w1:p7", "rm -rf nothing")).resolves.toBe(false);
     expect(shell.received).toEqual([]);
   });
 

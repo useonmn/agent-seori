@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { Refusal, type Deps } from "./harness.ts";
-import type { ExecResult } from "./herdr.ts";
+import type { ExecResult } from "./runtime/exec.ts";
 import type { Lane } from "./store.ts";
 
 // A lane's `Done =` line: signals seori reads back live before the lane may close, so a done claim is never taken on

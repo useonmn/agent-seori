@@ -1,5 +1,5 @@
 import { ConfigError, loadConfig } from "./config.ts";
-import { DeliveryUncertain, HerdrError } from "./herdr.ts";
+import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
 import { Refusal, send, tellLead, type Deps, type DutyEvent, type SendResult } from "./harness.ts";
 import { checkSignals, defaultSignalIo, type SignalIo } from "./signals.ts";
 import type { Lane } from "./store.ts";
@@ -37,7 +37,8 @@ export const objectionText = (reasons: readonly string[]): string =>
 
 /** Closes the lane's pane (unless already gone) and records the close with `note` in its log. */
 export async function closeLane(d: Deps, lane: Lane, note: string): Promise<void> {
-  if ((await d.herdr.status(lane.paneId)) !== "gone") await d.herdr.close(lane.paneId);
+  const { rt, ref } = session(d.runtimes, lane.paneId);
+  if ((await rt.status(ref)) !== "gone") await rt.close(ref);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: note });
   d.store.saveLane(lane);
@@ -72,10 +73,10 @@ export async function objectDone(d: Deps, key: string, reasons: readonly string[
   return send(d, key, objectionText(why), "lead");
 }
 
-/** A short one-line reason for a duty event (herdr's own output for a herdr failure, not its argv). */
+/** A short one-line reason for a duty event (the runtime's own output for a runtime failure, not its argv). */
 function eventDetail(e: unknown): string {
   if (e instanceof DeliveryUncertain) e = e.failure;
-  const raw = e instanceof HerdrError ? e.result.stderr || e.result.stdout : e instanceof Error ? e.message : String(e);
+  const raw = e instanceof ToolError ? e.result.stderr || e.result.stdout : e instanceof Error ? e.message : String(e);
   const first = raw.trim().split("\n")[0] ?? "";
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 }
@@ -100,7 +101,7 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
   for (const lane of due) {
     if (d.now() - lane.final!.at < closeAfterMin * 60_000) continue;
     try {
-      const st = await d.herdr.status(lane.paneId);
+      const st = await statusOf(d.runtimes, lane.paneId);
       if (st === "working" || st === "blocked") {
         events.push({ lane: lane.key, action: "close-deferred", detail: `pane is ${st}` });
         continue;

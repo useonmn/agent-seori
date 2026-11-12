@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } 
 import { join } from "node:path";
 import { Channel } from "./channel.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
-import { Herdr, spawnExec } from "./herdr.ts";
+import { defaultRuntimes, spawnExec, statusOf } from "./runtime/index.ts";
 import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 import { lockFile, Store } from "./store.ts";
@@ -98,17 +98,17 @@ export type DaemonOptions = {
   readonly watch?: Partial<EngineDeps>;
 };
 
-/** The real engine deps: watches reach agents through the harness, PR checks through gh, pane state through herdr. */
+/** The real engine deps: watches reach agents through the harness, PR checks through gh, pane state through the runtime. */
 function engineDeps(root: string, now: () => number): EngineDeps {
   const store = new Store(root);
-  const herdr = new Herdr();
+  const runtimes = defaultRuntimes();
   // Built on first delivery: defaultDeps() opens $SEORI_HOME's store, which only a firing watch needs.
   let deps: Deps | undefined;
   return {
     now,
-    deliver: (w, text) => deliverWatchEvent((deps ??= { ...defaultDeps(), store, herdr }), w, text),
+    deliver: (w, text) => deliverWatchEvent((deps ??= { ...defaultDeps(), store, runtimes }), w, text),
     gh: (argv) => spawnExec("gh", argv),
-    paneStatus: (pane) => herdr.status(pane),
+    paneStatus: (pane) => statusOf(runtimes, pane),
     laneOpen: (key) => {
       const status = store.lane(key)?.status;
       return status !== undefined && status !== "done" && status !== "lost";

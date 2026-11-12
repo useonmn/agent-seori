@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { shq, spawnExec } from "../src/herdr.ts";
+import { shq, spawnExec } from "../src/runtime/exec.ts";
 
 // Real herdr in an isolated named session and a REAL omp lane (model calls, costs money): opt-in with SEORI_E2E_OMP=1.
 // Needs herdr's omp integration installed (`herdr integration install omp`); seori refuses to start lanes without it.

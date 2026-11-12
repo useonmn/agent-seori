@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnExec } from "../src/herdr.ts";
+import { spawnExec } from "../src/runtime/exec.ts";
 import { blockedText, fileActivity, laneUsage, reachedCeilings, superviseTick } from "../src/supervision.ts";
 import type { Lane, LaneStatus } from "../src/store.ts";
 import { World } from "./fake.ts";

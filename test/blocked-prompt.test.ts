@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { BLOCKED_PROMPT_MINUTES, dutyTick, send, startLane } from "../src/harness.ts";
-import { fallbackLine, interactiveShellInFront } from "../src/herdr.ts";
+import { interactiveShellInFront } from "../src/runtime/foreground.ts";
+import { fallbackLine } from "../src/runtime/herdr/client.ts";
 import { World } from "./fake.ts";
 
 // A pane whose agent shows a dialog (a tool approval) reads `blocked`: text typed there goes into the dialog and the

@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { join } from "node:path";
 import { ConfigError, loadConfig, type SeoriConfig } from "./config.ts";
 import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
-import { DeliveryUncertain, HerdrError } from "./herdr.ts";
+import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
 import type { Ceilings, Lane, LaneLogKind } from "./store.ts";
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
 
@@ -15,11 +15,12 @@ export type LaneUsage = { tokens?: number; costUsd?: number };
 
 /**
  * Sums `message.usage.totalTokens` and `message.usage.cost.total` over the assistant messages of the lane's omp session
- * jsonl (its path from herdr, see Herdr.agentSessionPath). A total is undefined when the session file is unknown or
+ * jsonl (its path from the runtime, see SessionRuntime.agentSession). A total is undefined when the session file is unknown or
  * unreadable or no assistant message carries that number; damaged lines (a torn last write) are skipped.
  */
 export async function laneUsage(d: Deps, lane: Lane): Promise<LaneUsage> {
-  const path = await d.herdr.agentSessionPath(lane.paneId);
+  const { rt, ref } = session(d.runtimes, lane.paneId);
+  const path = await rt.agentSession(ref);
   if (!path) return {};
   let text: string;
   try {
@@ -160,9 +161,9 @@ export async function fileActivity(d: Deps, cwd: string): Promise<{ fingerprint:
 
 // ---------- the tick ----------
 
-/** A short one-line reason. A HerdrError message carries the whole argv, so use herdr's own output. */
+/** A short one-line reason. A ToolError message carries the whole argv, so use the runtime's own output. */
 function reason(e: unknown): string {
-  if (e instanceof HerdrError) return (e.result.stderr || e.result.stdout).trim().split("\n")[0] ?? "herdr failed";
+  if (e instanceof ToolError) return (e.result.stderr || e.result.stdout).trim().split("\n")[0] ?? "herdr failed";
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -234,7 +235,7 @@ export async function superviseTick(d: Deps): Promise<DutyEvent[]> {
 
 async function pausedCheck(d: Deps, lane: Lane, events: DutyEvent[]): Promise<void> {
   const [seenMark, toldMark] = PAUSED_WORKING_MARKS;
-  const st = await d.herdr.status(lane.paneId);
+  const st = await statusOf(d.runtimes, lane.paneId);
   if (st === "gone") {
     // As dutyTick does for running lanes: otherwise the key stays paused with no pane, and done/start both refuse it.
     mark(d, lane.key, (l) => { l.status = "lost"; delete l.pausedFrom; }, { kind: "lost", text: "pane disappeared while paused" });
@@ -293,7 +294,7 @@ async function stallCheck(d: Deps, lane: Lane, config: SeoriConfig, activity: Ac
   // Once per stall: progress after it makes a new mark.
   const key = `stalled:${Math.round(lastProgress)}`;
   if (lane.alerts?.[key] !== undefined) return;
-  if ((await d.herdr.status(lane.paneId)) !== "working") return;
+  if ((await statusOf(d.runtimes, lane.paneId)) !== "working") return;
   const text = stalledText(lane.key, Math.floor(quietMs / 60_000));
   await tell(d, text, lane.key, events);
   mark(d, lane.key, (l) => {

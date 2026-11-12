@@ -14,6 +14,7 @@ import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUnti
 import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList, msgSend, parseTo } from "./msg.ts";
+import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { pidAlive, type Role } from "./store.ts";
 import { parsePr } from "./harness.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
@@ -230,18 +231,18 @@ function leadOmpConfig(root: string): string {
 export async function upCheck(d: Deps, name: string, alive: (pid: number) => boolean = pidAlive): Promise<string | undefined> {
   const root = d.store.root;
   const runners = liveRunners(root, alive);
-  const named = (await d.herdr.workspaces()).filter((w) => w.label === name);
+  const named = (await d.runtimes.default.groups()).filter((w) => w.label === name);
   const lead = d.store.roles().lead;
   // herdr pane ids are `<workspace>:p<n>`. The lead counts only inside a workspace with this home's name: herdr ids start
   // over after a herdr restart, and an old id can then name another instance's pane.
-  const leadLive = lead !== undefined && named.some((w) => w.workspaceId === lead.split(":")[0]) && (await d.herdr.status(lead)) !== "gone";
+  const leadLive = lead !== undefined && named.some((w) => w.id === lead.split(":")[0]) && (await statusOf(d.runtimes, lead)) !== "gone";
   if (runners.length > 0 || leadLive) {
     const hint = leadLive ? "" : "; the lead pane is gone: run seori down, then seori up, to open a new set";
     return `ALREADY UP name=${name} home=${root} lead=${leadLive ? lead : "gone"} running=${runners.join(",") || "none"}; nothing opened${hint}`;
   }
   if (named.length > 0) {
     throw new Refusal(
-      `a herdr workspace labelled "${name}" (${named.map((w) => w.workspaceId).join(", ")}) is open, but this home (${root}) has no live lead, ` +
+      `a herdr workspace labelled "${name}" (${named.map((w) => w.id).join(", ")}) is open, but this home (${root}) has no live lead, ` +
         `loop or daemon in it. Close that workspace if it is a leftover of this home, or give this home its own name in ${configPath(root)}`,
     );
   }
@@ -263,17 +264,25 @@ async function up(d: Deps, cwd: string): Promise<void> {
   // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets that file;
   // the lead, duty and lanes all get agent-omp.yml (no setup wizard in an agent pane).
   const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, PI_CONFIG_FILES: leadOmpConfig(d.store.root) };
-  const lead = await d.herdr.createWorkspace(name, cwd, leadEnv);
+  const rt = d.runtimes.default;
+  const below = (near: SessionRef, role: "duty-loop" | "hourly-loop" | "daemon", paneEnv: Record<string, string>) =>
+    rt.create({ name: role, cwd, env: paneEnv, role, container: "split-below", near });
+  const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root" });
+  const lead = { paneId: leadRef.id, workspaceId: leadRef.group ?? "" };
   await startAgent(d, "lead", lead.paneId, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", lead.paneId);
-  const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, { ...env, PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) });
+  const dutyRef = await rt.create({
+    name: "duty", cwd, env: { ...env, PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) }, role: "duty", container: "tab", group: lead.workspaceId,
+  });
+  const duty = { paneId: dutyRef.id };
   await startAgent(d, "duty", duty.paneId, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
   d.store.setRole("duty", duty.paneId);
-  const loop = await d.herdr.split(duty.paneId, cwd, env);
-  const hourly = await d.herdr.split(loop.paneId, cwd, { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
-  const daemon = await d.herdr.split(hourly.paneId, cwd, env);
+  const loopRef = await below(dutyRef, "duty-loop", env);
+  const hourlyRef = await below(loopRef, "hourly-loop", { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
+  const daemonRef = await below(hourlyRef, "daemon", env);
+  const [loop, hourly, daemon] = [{ paneId: loopRef.id }, { paneId: hourlyRef.id }, { paneId: daemonRef.id }];
   const daemonStarted = d.now();
-  await d.herdr.run(daemon.paneId, `${d.seoriCmd} daemon-loop`);
+  await rt.start(daemonRef, `${d.seoriCmd} daemon-loop`);
   // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
   // daemon is up; a daemon that does not come up is reported here and left to duty's outage alert.
   const beat = await heartbeatSince(d.store.root, daemonStarted, {
@@ -282,8 +291,8 @@ async function up(d: Deps, cwd: string): Promise<void> {
   if (!beat) {
     console.error(`WARNING: the messenger daemon in ${daemon.paneId} wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check that pane`);
   }
-  await d.herdr.run(loop.paneId, `${d.seoriCmd} duty --interval 60`);
-  await d.herdr.run(hourly.paneId, `${d.seoriCmd} loop`);
+  await rt.start(loopRef, `${d.seoriCmd} duty --interval 60`);
+  await rt.start(hourlyRef, `${d.seoriCmd} loop`);
   console.log(
     `UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} daemon=${daemon.paneId} home=${d.store.root} name=${name}`,
   );

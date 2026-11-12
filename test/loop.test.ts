@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { done, dutyTick, memFreePct, ready, Refusal, report, startLane } from "../src/harness.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, HOUR, importId, loopTick, msUntilNext, restore } from "../src/loop.ts";
-import type { Exec } from "../src/herdr.ts";
+import type { Exec } from "../src/runtime/exec.ts";
 import { World } from "./fake.ts";
 
 function setup(opts: { lead?: boolean; exec?: (inner: Exec) => Exec } = {}) {

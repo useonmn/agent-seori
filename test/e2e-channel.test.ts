@@ -6,7 +6,9 @@ import type { LedgerEvent } from "../src/channel.ts";
 import { MAX_DELIVERIES } from "../src/channel.ts";
 import { LEAD_EXTENSION } from "../src/cli.ts";
 import { ALERT_TEXT, startAgent, type Deps } from "../src/harness.ts";
-import { Herdr, HerdrError, shq, spawnExec } from "../src/herdr.ts";
+import { shq, spawnExec } from "../src/runtime/exec.ts";
+import { Herdr, HerdrError } from "../src/runtime/herdr/client.ts";
+import { defaultRuntimes } from "../src/runtime/index.ts";
 import { BACKOFF_MS } from "../src/lead-delivery.ts";
 import type { FakeOutboundRow } from "../src/messenger/fake.ts";
 import { startSwitchProxy, type SwitchProxy } from "./helpers/switch-proxy.ts";
@@ -142,7 +144,7 @@ async function restartLead(exports: Record<string, string> = {}): Promise<void> 
     await herdr("pane", "run", lead(), `export ${Object.entries(exports).map(([k, v]) => `${k}=${shq(v)}`).join(" ")}`);
     await Bun.sleep(500);
   }
-  const d = { herdr: herdrApi, model } as unknown as Deps;
+  const d = { runtimes: defaultRuntimes(herdrApi), model } as unknown as Deps;
   // herdr clears the pane's agent before it frees the agent's name: a start right after the exit can get
   // agent_name_taken for a few seconds.
   for (let attempt = 1; ; attempt++) {
