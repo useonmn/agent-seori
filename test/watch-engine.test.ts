@@ -272,6 +272,26 @@ describe("file watches", () => {
     expect(t.texts()).toEqual([`[watch f ${w.id}] created ${path}`, `[watch f ${w.id}] modified ${path}`]);
   });
 
+  test("a change after the poll that opened the coalescing window joins its event", async () => {
+    // Polls far apart: only the first one, at start, sees the change made while no engine ran; the second change comes
+    // after it, inside the window, and no poll follows before the window closes.
+    const t = setup({ timing: { ...FAST, filePollMs: 60_000, fileCoalesceMs: 1_000 } });
+    const path = join(t.root, "target.txt");
+    const w = t.add({ name: "f", source: { kind: "file", path } });
+    const first = t.engine();
+    first.start();
+    await until("baseline checkpoint", () => t.store.get(w.id)?.checkpoint !== undefined);
+    await first.stop();
+    writeFileSync(path, "1");
+    const second = t.engine();
+    second.start();
+    await second.tick();
+    writeFileSync(path, "22");
+    await until("the event", () => t.delivered.length === 1, 5_000);
+    expect(t.texts()).toEqual([`[watch f ${w.id}] created, modified ${path}`]);
+    expect(t.store.get(w.id)?.checkpoint).toMatchObject({ exists: true, size: 2 });
+  });
+
   test("a directory watch reports a file modified in place deep inside it", async () => {
     const t = setup();
     const dir = join(t.root, "dist");
