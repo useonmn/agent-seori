@@ -464,7 +464,7 @@ export class DiscordAdapter implements MessengerAdapter {
         let page: Message[];
         try {
           const res = await httpJson(
-            `${this.api}/channels/${chat}/messages?after=${after}&limit=${PAGE}`,
+            `${this.api}/channels/${seg(chat)}/messages?after=${encodeURIComponent(after)}&limit=${PAGE}`,
             { headers: this.headers(token), signal },
             { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs },
           );
@@ -495,7 +495,7 @@ export class DiscordAdapter implements MessengerAdapter {
       const body: Record<string, unknown> = { content, allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS };
       if (i === 0 && target.replyTo) body["message_reference"] = { message_id: replyTarget(target.replyTo), fail_if_not_exists: false };
       try {
-        const res = await httpJson(`${this.api}/channels/${channel}/messages`, { method: "POST", headers: this.headers(token), body }, { mutating: true, sleep: this.sleepFn, timeoutMs: this.timeoutMs });
+        const res = await httpJson(`${this.api}/channels/${seg(channel)}/messages`, { method: "POST", headers: this.headers(token), body }, { mutating: true, sleep: this.sleepFn, timeoutMs: this.timeoutMs });
         const id = (res.body as { id?: unknown } | undefined)?.id;
         if (typeof id !== "string") throw new SendUncertain(`${this.source}: Discord accepted the message but returned no id`);
         first ??= id;

@@ -490,6 +490,14 @@ describe("DiscordAdapter send and check", () => {
     expect(String(empty)).toContain("empty");
   });
 
+  test("a channel id is one URL segment: a slash or dot segment never reaches another endpoint", async () => {
+    const m = mock();
+    const a = adapter(m, home());
+    expect(await a.send({ chat: "../guilds/1" }, "x")).toEqual({ messageId: "900" });
+    expect(m.posts.map((p) => p.channel)).toEqual(["..%2Fguilds%2F1"]);
+    await expect(a.send({ chat: ".." }, "x")).rejects.toThrow(/is not an id/);
+  });
+
   test("check names the bot; a bad token is a clear error", async () => {
     const m = mock();
     expect(await adapter(m, home()).check()).toBe("@seori (id BOT)");
