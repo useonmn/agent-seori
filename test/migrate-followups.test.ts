@@ -217,6 +217,28 @@ describe("seori migrate follow-ups", () => {
     expect(readdirSync(join(d.store.root, "migrate"))).toEqual(["k.json"]);
   });
 
+  test("--all skips a session it must refuse and goes on with the rest, exiting 3", async () => {
+    const { w, d, lines, opts } = migrateWorld("idle", {}, { t9: terminal() });
+    d.store.setRole("lead", T9);
+    w.addPane("w1:p4", "idle");
+    // Listed first (older): a run toward herdr is in progress for it, so a run toward hc is refused.
+    d.store.saveLane({ ...d.store.lane("k")!, key: "aa", sessionRef: herdrRef("w1:p4"), paneId: "w1:p4", createdAt: 0 });
+    writeJournal(d.store.root, { name: "aa", kind: "lane", phase: "hold", from: herdrRef("w1:p4"), to: "herdr", at: 1 });
+    expect(await migrate(d, { all: true }, opts({ to: "hc" }))).toBe(3);
+    expect(lines).toEqual([
+      "SKIP aa a migration of aa is in progress toward herdr; finish it with --to herdr",
+      "MIGRATED k w1:p3 -> hc:t2",
+      "SKIP lead already on hc",
+    ]);
+    expect(readJournal(d.store.root, "aa")!.to).toBe("herdr");
+  });
+
+  test("without --all the same refusal still throws", async () => {
+    const { d, opts } = migrateWorld("idle");
+    writeJournal(d.store.root, { name: "k", kind: "lane", phase: "hold", from: OLD, to: "herdr", at: 1 });
+    await expect(migrate(d, { lane: "k" }, opts({ to: "hc" }))).rejects.toBeInstanceOf(Refusal);
+  });
+
   test("done refuses a lane being migrated", async () => {
     const { d, lines } = migrateWorld("idle");
     d.store.saveLane({ ...d.store.lane("k")!, status: "ready", migration: true });

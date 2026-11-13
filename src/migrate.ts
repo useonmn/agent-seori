@@ -199,8 +199,9 @@ async function migrateName(d: Deps, name: string, from: SessionRef, opts: Migrat
 }
 
 /**
- * `seori migrate`: hands sessions over to `opts.to`. `--all` = every open lane, then lead and duty. Returns the exit
- * code: 3 when any session rolled back, else 0. The session the command runs in (`opts.self`) is refused, or skipped
+ * `seori migrate`: hands sessions over to `opts.to`. `--all` = every open lane, then lead and duty; a session it must
+ * refuse is logged SKIP and the rest still run. Returns the exit code: 3 when any session rolled back or was refused
+ * under --all, else 0. The session the command runs in (`opts.self`) is refused, or skipped
  * under --all: closing the old session at the end would kill this run before it drains the inbox and drops the journal.
  */
 export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtension = ""): Promise<number> {
@@ -216,17 +217,29 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtensi
     opts.log(`SKIP ${name} is the session running seori migrate`);
     return true;
   };
-  for (const key of lanes) {
-    const lane = d.store.lane(key);
-    if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
-    if (isSelf(key, lane.sessionRef)) continue;
-    // The replacement starts on a kickoff, which would wake a lane only the owner may resume (seori pause).
-    if (lane.status === "paused" && readJournal(d.store.root, key) === undefined) {
-      if (!t.all) throw new Refusal(`lane ${key} is paused; resume it first (seori resume ${key})`);
-      opts.log(`SKIP ${key} paused`);
-      continue;
+  // Under --all one session's refusal (a run toward another runtime, a lock held) must not strand every one after it.
+  const each = async (name: string, run: () => Promise<number>): Promise<void> => {
+    try {
+      code = Math.max(code, await run());
+    } catch (e) {
+      if (!(t.all && e instanceof Refusal)) throw e;
+      opts.log(`SKIP ${name} ${e.message}`);
+      code = Math.max(code, 3);
     }
-    code = Math.max(code, await migrateName(d, key, lane.sessionRef, opts, () => laneSubject(d, key)));
+  };
+  for (const key of lanes) {
+    await each(key, async () => {
+      const lane = d.store.lane(key);
+      if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
+      if (isSelf(key, lane.sessionRef)) return 0;
+      // The replacement starts on a kickoff, which would wake a lane only the owner may resume (seori pause).
+      if (lane.status === "paused" && readJournal(d.store.root, key) === undefined) {
+        if (!t.all) throw new Refusal(`lane ${key} is paused; resume it first (seori resume ${key})`);
+        opts.log(`SKIP ${key} paused`);
+        return 0;
+      }
+      return migrateName(d, key, lane.sessionRef, opts, () => laneSubject(d, key));
+    });
   }
   for (const role of roles) {
     const ref = d.store.roles()[role];
@@ -234,8 +247,9 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtensi
       if (t.all) continue;
       throw new Refusal(`no ${role} session registered`);
     }
-    if (isSelf(role, ref)) continue;
-    code = Math.max(code, await migrateName(d, role, ref, opts, () => roleSubject(d, role, d.store.roles()[role] ?? ref, leadExtension)));
+    await each(role, async () =>
+      isSelf(role, ref) ? 0 : migrateName(d, role, ref, opts, () => roleSubject(d, role, d.store.roles()[role] ?? ref, leadExtension)),
+    );
   }
   return code;
 }
