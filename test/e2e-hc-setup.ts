@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { TEST_AGENT_CMD_SWITCH } from "../src/agent/profile.ts";
+import { socketRootBase } from "./socket-budget.ts";
 
 // One isolated hc core for the CLI e2e file, only with SEORI_E2E_HC=1: its own HC_SESSION and XDG dirs, so the host's
 // own cores (the default core included) are never reached. `hc server stop` in stopCore is the last hc call. Linux
@@ -10,12 +11,8 @@ import { TEST_AGENT_CMD_SWITCH } from "../src/agent/profile.ts";
 export const enabled = process.env["SEORI_E2E_HC"] === "1" && Bun.which("hc") !== null && process.platform === "linux";
 export const session = `e2e-${process.pid}`;
 // A Unix socket path is capped at ~107 bytes: the core's socket lands at <root>/r/herdr-core/<session>.sock, so the
-// root stays short. os.tmpdir() is used only while it is short enough; a long TMPDIR falls back to /tmp.
-const SOCKET_PATH_MAX = 100;
-const base =
-  tmpdir().length + "/sehc-XXXXXX/r/herdr-core/".length + session.length + ".sock".length <= SOCKET_PATH_MAX
-    ? tmpdir()
-    : "/tmp";
+// root stays short. os.tmpdir() is used only while every socket fits (the holder's is the longest); else /tmp.
+const base = socketRootBase(tmpdir(), session);
 const root = enabled ? mkdtempSync(join(base, "sehc-")) : "";
 const [state, run, config] = [join(root, "s"), join(root, "r"), join(root, "c")];
 const socket = join(run, "herdr-core", `${session}.sock`);

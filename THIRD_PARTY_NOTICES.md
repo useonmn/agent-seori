@@ -78,6 +78,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - test/migrate.test.ts
 - test/records-upgrade.test.ts
 - test/runtime-select.test.ts
+- test/socket-budget.ts
 - test/resolve-target.test.ts
 - test/runtime-hc-deliver.test.ts
 - test/runtime-hc-misc.test.ts
