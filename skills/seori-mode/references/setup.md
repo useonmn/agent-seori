@@ -78,14 +78,15 @@ Tell the owner the lead is up and which terminal it is in.
 
 Write it only with the owner's go, and only the fields they want changed.
 
-- `workflow`: `"ulw"` starts every lane as ULW through omp-ulw (below); leave it out for plain omp goal mode. `seori start --workflow ulw|none` picks it per lane.
+- `workflow`: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` starts every lane under that omp-ulw workflow (below); leave it out for plain omp goal mode. `seori start --workflow <W>|none` picks it per lane.
+- `supervision.ulwPlan`: the token and wall-clock ceilings a ulw-plan lane gets when neither its start nor `supervision.defaults` sets them (default `{ "tokens": 300000, "wallMinutes": 60 }`, `null` switches one off).
 
 ### Optional: omp-ulw
 
 [omp-ulw](https://github.com/dbc-hbin/omp-ulw) is a separate omp extension that adds ULW: an intensive, evidence-driven way of working toward omp's goal, plus workflows (mass-ulw, ulw-plan, ulw-research and others) and specialist skills. seori never bundles, copies or installs it; the owner installs it into omp and updates it from its own repository, following its README. Ask the owner before installing it.
 
 - It changes the system prompt of every omp session that loads it: seori's lead, duty and lanes included. seori's reviewer starts omp with `--no-extensions` (extension discovery off).
-- With it enabled (`omp plugin list` shows `omp-ulw`), lanes can run as ULW: `seori start --workflow ulw`, or `"workflow": "ulw"` in config.json for every lane. Without it, `seori start` refuses `--workflow ulw` and says why.
+- With it enabled (`omp plugin list` shows `omp-ulw`), lanes can run under its workflows: `seori start --workflow ulw` (or mass-ulw, ulw-research, ulw-plan, ulw-loop, ulw-execute), or `"workflow"` in config.json for every lane. Without it, `seori start` refuses `--workflow ulw` and says why.
 - omp-ulw follows specific omp versions. After updating omp or omp-ulw, restart the omp sessions (run `seori up` again) and check that a new lane still starts with `STARTUP_OK`.
 
 ## 6. Onboarding

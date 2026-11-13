@@ -46,6 +46,7 @@ The lead runs with `prompts/lead.md` appended to its system prompt, which holds 
 - **One message that grows.** Grow a draft by sending again to the same id; once it is out, extend it with `seori msg edit --reply-of <id>`. Typing indicator only right before sending. Finished files go to the main channel at once, through agent-messenger when installed (`references/writing.md`).
 - **Remember and watch.** "Remember this": memory plus `seori worklog add '<title>' --source <id>`. "Tell me when": the same plus a `seori watch add`, and a message at that moment.
 - **Finish the work.** Fix bugs without asking, merge with `seori merge` when the gates pass, and keep going until it is done.
+- **A plan waits for the owner.** A lane started with `--workflow ulw-plan` sends READY when its plan is written; show the plan to the owner and ask before any `ulw-execute`.
 - **Done is a claim.** READY needs evidence; a lane with a Done line closes on its own N minutes after READY when every signal reads back live (`seori object <key> --reason ...` stops it). Without a Done line the lead checks and closes by hand.
 - **Room first.** `seori can-launch` before a lane; exit 4 (HOLD) means queue the work and tell the owner why.
 - **Wait means pause.** "wait", "stop", "hold on", "잠깐", "멈춰": `seori pause <key>` in the same turn; `seori resume <key>` on go. Exit 3 (PAUSE_UNVERIFIED) means the lane may still be running: check its pane and retry.
