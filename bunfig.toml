@@ -1,0 +1,3 @@
+[test]
+# Every test gets a temp systemd unit dir and a systemctl that always fails, so no test can reach the real user manager.
+preload = ["./test/helpers/preload.ts"]

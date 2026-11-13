@@ -51,6 +51,8 @@ export type Deps = {
   readonly model?: string;
   /** Sends one duty alert to the human through a configured messenger. Throws like MessengerAdapter.send. */
   readonly notify: (config: MessengerConfig, target: SendTarget, text: string) => Promise<void>;
+  /** The OS, process.platform when unset (tests pin it). `seori up` on hc uses systemd --user units only on "linux". */
+  readonly platform?: string;
 };
 
 export const defaultDeps = (): Deps => {

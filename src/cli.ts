@@ -33,10 +33,14 @@ import { ownerText, WATCH_USAGE, watchAdd, watchList, watchLog, watchRearm, watc
 import { WatchRefusal } from "./watch/store.ts";
 import { refText } from "./refs.ts";
 import { parseRef } from "./runtime/types.ts";
+import { removeUnits, systemctl, unitDir, writeUnits, type UnitKind } from "./systemd.ts";
 
 const USAGE = `seori - a proactive multi-session harness on herdr + omp
 
-  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes (once per home)
+  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes (once per home);
+                                              on hc: lead and duty terminals (label seori.group=<name>, cwd default
+                                              $SEORI_HOME); daemon, duty loop and hourly loop as systemd --user units
+                                              seori-<name>-<daemon|duty|hourly> on Linux, in hc terminals on macOS
   seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, lessons + brief + lane rules
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
@@ -222,25 +226,29 @@ async function runDaemonLoop(root: string): Promise<number> {
 export async function upCheck(d: Deps, name: string, alive: (pid: number) => boolean = pidAlive): Promise<string | undefined> {
   const root = d.store.root;
   const runners = liveRunners(root, alive);
-  const named = (await d.runtimes.default.groups()).filter((w) => w.label === name);
+  const rt = d.runtimes.default;
+  const named = (await rt.groups()).filter((w) => w.label === name);
   const lead = d.store.roles().lead;
   // herdr pane ids are `<workspace>:p<n>`. The lead counts only inside a workspace with this home's name: herdr ids start
-  // over after a herdr restart, and an old id can then name another instance's pane.
-  const leadLive = lead !== undefined && named.some((w) => w.id === lead.id.split(":")[0]) && (await statusOf(d.runtimes, lead)) !== "gone";
+  // over after a herdr restart, and an old id can then name another instance's pane. hc terminal ids start over after a
+  // core restart too: the lead counts only while a live terminal with its id carries this home's seori.group label.
+  const leadLive = lead !== undefined && (rt.kind === "hc"
+    ? lead.runtime === "hc" && named.length > 0 && (await rt.list({ group: name })).some((s) => s.ref.id === lead.id)
+    : named.some((w) => w.id === lead.id.split(":")[0]) && (await statusOf(d.runtimes, lead)) !== "gone");
   if (runners.length > 0 || leadLive) {
     const hint = leadLive ? "" : "; the lead pane is gone: run seori down, then seori up, to open a new set";
     return `ALREADY UP name=${name} home=${root} lead=${leadLive ? refText(lead) : "gone"} running=${runners.join(",") || "none"}; nothing opened${hint}`;
   }
   if (named.length > 0) {
     throw new Refusal(
-      `a herdr workspace labelled "${name}" (${named.map((w) => w.id).join(", ")}) is open, but this home (${root}) has no live lead, ` +
+      `${rt.kind === "hc" ? "hc terminals labelled seori.group=" : "a herdr workspace labelled "}"${name}" (${named.map((w) => w.id).join(", ")}) ${rt.kind === "hc" ? "are" : "is"} open, but this home (${root}) has no live lead, ` +
         `loop or daemon in it. Close that workspace if it is a leftover of this home, or give this home its own name in ${configPath(root)}`,
     );
   }
   return undefined;
 }
 
-async function up(d: Deps, cwd: string): Promise<void> {
+async function up(d: Deps, cwdFlag: string | undefined): Promise<void> {
   await requireOmpIntegration(d);
   const name = loadConfig(d.store.root).name;
   const already = await upCheck(d, name);
@@ -248,6 +256,8 @@ async function up(d: Deps, cwd: string): Promise<void> {
     console.log(already);
     return;
   }
+  if (d.runtimes.default.kind === "hc") return upHc(d, name, cwdFlag === undefined ? d.store.root : resolve(cwdFlag));
+  const cwd = resolve(cwdFlag ?? process.cwd());
   // Every pane gets seori's environment from herdr (--env), so its commands need no shell-specific env prefix.
   const env = paneEnv(d.store.root);
   // The extension reads its home and how to run seori from the environment of the shell omp starts in. The lead's omp
@@ -287,6 +297,126 @@ async function up(d: Deps, cwd: string): Promise<void> {
   console.log(
     `UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} daemon=${daemon.paneId} home=${d.store.root} name=${name}`,
   );
+}
+
+/** This file, which the units' ExecStart runs with bun. */
+const CLI_PATH = import.meta.path;
+
+/** Whether the resident processes run as systemd --user units: Linux only; elsewhere (macOS) they run in terminals. */
+export const usesSystemdUnits = (d: Deps): boolean => (d.platform ?? process.platform) === "linux";
+
+/**
+ * `seori up` on hc: the lead and duty agents in hc terminals labelled `seori.group=<name>`, recorded as roles; on Linux
+ * the daemon, duty loop and hourly loop as systemd --user units (src/systemd.ts), enabled so they start after a boot; on
+ * macOS, which has no systemd, they run in hc terminals of the same group as on herdr (upHcTerminals). The agents start
+ * in `cwd`, which defaults to $SEORI_HOME.
+ */
+async function upHc(d: Deps, name: string, cwd: string): Promise<void> {
+  const rt = d.runtimes.default;
+  const env = paneEnv(d.store.root);
+  const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, ...d.agent.leadEnv(d.store.root) };
+  // The unit files are written first: one that cannot be written (a line break in a value, a unit of another home under
+  // the same name) refuses the up before any terminal opens. They start only after lead and duty are up.
+  const dir = unitDir();
+  const units = usesSystemdUnits(d)
+    ? writeUnits(dir, { instance: name, home: d.store.root, cwd, bun: process.execPath, cli: CLI_PATH, env: process.env })
+    : [];
+  const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root", group: name });
+  await startAgent(d, "lead", leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
+  d.store.setRole("lead", leadRef);
+  const dutyRef = await rt.create({ name: `${name}-duty`, cwd, env: { ...env, ...d.agent.agentEnv(d.store.root) }, role: "duty", container: "tab", group: name });
+  await startAgent(d, "duty", dutyRef, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
+  d.store.setRole("duty", dutyRef);
+  if (!usesSystemdUnits(d)) return upHcTerminals(d, name, cwd, env, leadRef, dutyRef);
+  const [daemonUnit, dutyUnit, hourlyUnit] = units;
+  const ctl = systemctl();
+  await ctl(["daemon-reload"]);
+  const daemonStarted = d.now();
+  await ctl(["enable", "--now", daemonUnit!]);
+  // As on herdr: the duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
+  const beat = await heartbeatSince(d.store.root, daemonStarted, {
+    onSlow: () => console.error(`waiting for the messenger daemon (${daemonUnit}) to start (a first start can be slow)...`),
+  });
+  if (!beat) {
+    console.error(`WARNING: the messenger daemon wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check: systemctl --user status ${daemonUnit}`);
+  }
+  await ctl(["enable", "--now", dutyUnit!, hourlyUnit!]);
+  console.log(
+    `UP lead=${refText(leadRef)} duty=${refText(dutyRef)} units=${[daemonUnit, dutyUnit, hourlyUnit].join(",")} home=${d.store.root} name=${name}`,
+  );
+}
+
+/**
+ * The resident processes in hc terminals of the home's group (macOS): `seori daemon-loop`, `seori duty --interval 60`
+ * and `seori loop`, each recorded in $SEORI_HOME/run/ so `seori down` stops it; `seori down` (all) closes the terminals.
+ */
+async function upHcTerminals(
+  d: Deps, name: string, cwd: string, env: Record<string, string>, leadRef: SessionRef, dutyRef: SessionRef,
+): Promise<void> {
+  const rt = d.runtimes.default;
+  const open = (role: "duty-loop" | "hourly-loop" | "daemon") => rt.create({ name: `${name}-${role}`, cwd, env, role, container: "tab", group: name });
+  const loopRef = await open("duty-loop");
+  const hourlyRef = await open("hourly-loop");
+  const daemonRef = await open("daemon");
+  const daemonStarted = d.now();
+  await rt.start(daemonRef, `${d.seoriCmd} daemon-loop`);
+  // As on herdr: the duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
+  const beat = await heartbeatSince(d.store.root, daemonStarted, {
+    onSlow: () => console.error(`waiting for the messenger daemon in ${refText(daemonRef)} to start (a first start can be slow)...`),
+  });
+  if (!beat) {
+    console.error(`WARNING: the messenger daemon in ${refText(daemonRef)} wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check that terminal`);
+  }
+  await rt.start(loopRef, `${d.seoriCmd} duty --interval 60`);
+  await rt.start(hourlyRef, `${d.seoriCmd} loop`);
+  console.log(
+    `UP lead=${refText(leadRef)} duty=${refText(dutyRef)} loop=${refText(loopRef)} hourly=${refText(hourlyRef)} daemon=${refText(daemonRef)} home=${d.store.root} name=${name}`,
+  );
+}
+
+/** Which units `seori down <group>` stops: `loop` is the hourly loop, `daemon` the daemon (its restart loop included). */
+const DOWN_UNITS: Readonly<Record<string, readonly UnitKind[]>> = { duty: ["duty"], loop: ["hourly"], daemon: ["daemon"], all: ["daemon", "duty", "hourly"] };
+
+/**
+ * `seori down`: each process is asked to stop first (it ends cleanly, which its unit does not restart), then the
+ * home's units of that group are stopped, disabled and removed. `all` on hc also closes every terminal labelled
+ * seori.group=<name> (lead, duty and lanes), the caller's own terminal last. ok is false when a process outlived the wait.
+ */
+async function downHome(d: Deps, which: string): Promise<{ lines: string[]; ok: boolean }> {
+  const r = await down(d.store.root, DOWN_GROUPS[which]!);
+  const name = (() => {
+    try {
+      return loadConfig(d.store.root).name;
+    } catch {
+      return undefined; // a broken config.json must not stop a down
+    }
+  })();
+  if (name === undefined) return r;
+  // No systemd off Linux: there `seori up` wrote no units, and the processes stopped above are all there is.
+  const lines = usesSystemdUnits(d) ? [...r.lines, ...(await removeUnits(unitDir(), name, d.store.root, DOWN_UNITS[which]!, systemctl()))] : [...r.lines];
+  if (which === "all" && runtimeKind(d) === "hc") {
+    const rt = d.runtimes.default;
+    const self = process.env["HC_TERMINAL_ID"];
+    const open = (await rt.list({ group: name })).map((s) => s.ref).sort((a, b) => Number(a.id === self) - Number(b.id === self));
+    for (const ref of open) {
+      lines.push(`CLOSED ${refText(ref)} (seori.group=${name})`);
+      if (ref.id === self) {
+        console.log(lines.splice(0).join("\n")); // closing this terminal ends this command: print what it did first
+      }
+      await rt.close(ref);
+    }
+  }
+  return { lines, ok: r.ok };
+}
+
+/** The selected runtime kind, or undefined when none can be chosen (down and uninstall still stop the processes). */
+function runtimeKind(d: Deps): string | undefined {
+  try {
+    return d.runtimes.choice().kind;
+  } catch (e) {
+    if (e instanceof RuntimeChoiceError || e instanceof RuntimeConfigError) return undefined;
+    throw e;
+  }
 }
 
 /**
@@ -576,7 +706,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
   const [cmd, x] = a.pos;
   switch (cmd) {
     case "up":
-      await up(d, resolve(one(a, "cwd") ?? process.cwd()));
+      await up(d, one(a, "cwd"));
       return 0;
     case "role": {
       const role = need(x, "role") as Role;
@@ -836,9 +966,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "daemon-loop":
       return runDaemonLoop(d.store.root);
     case "down": {
-      const group = DOWN_GROUPS[x ?? "all"];
-      if (!group) throw new Refusal(`seori down takes duty, loop, daemon or all\n\n${USAGE}`);
-      const r = await down(d.store.root, group);
+      if (!DOWN_GROUPS[x ?? "all"]) throw new Refusal(`seori down takes duty, loop, daemon or all\n\n${USAGE}`);
+      const r = await downHome(d, x ?? "all");
       console.log(r.lines.join("\n"));
       return r.ok ? 0 : 1;
     }
@@ -849,7 +978,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "uninstall": {
       // Its loops and daemon run from this checkout: stop them before their command goes away.
-      console.log((await down(d.store.root, DOWN_GROUPS["all"]!)).lines.join("\n"));
+      console.log((await downHome(d, "all")).lines.join("\n"));
       const name = (() => {
         try {
           return loadConfig(d.store.root).name;
