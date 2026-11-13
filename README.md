@@ -649,6 +649,12 @@ GitHub Actions runs both on Ubuntu and macOS for every push and pull request (`.
 
 The hc end-to-end tests (`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`) start their own isolated hc core and need `SEORI_E2E_HC=1` and hc on PATH; they call no model. See [docs/runtime.md](docs/runtime.md#testing-against-an-isolated-hc-core).
 
+The real-omp end-to-end tests drive a real omp lead and real omp lanes on their own isolated hc core: the lead channel with the fake messenger (`test/e2e-hc-channel.test.ts`), watches (`test/e2e-hc-watch.test.ts`) and lanes with the hourly loop (`test/e2e-hc-lanes.test.ts`). They call a model, so they cost money and CI does not run them. They need Linux, hc and omp on PATH (omp logged in to a provider) and both opt-in variables; `SEORI_E2E_MODEL` picks the model (omp's default when unset) and `SEORI_E2E_ONLY=1,4,8` runs only those scenarios of the channel and watch files. They use a throwaway `SEORI_HOME` and a fake systemctl that runs the units as plain processes, and leave omp's own settings alone:
+
+```sh
+SEORI_E2E_HC=1 SEORI_E2E_OMP=1 bun test test/e2e-hc-channel.test.ts test/e2e-hc-watch.test.ts test/e2e-hc-lanes.test.ts --timeout 1800000
+```
+
 ## Telemetry
 
 None. seori sends nothing anywhere.

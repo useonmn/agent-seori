@@ -1,6 +1,6 @@
 import type { Socket } from "bun";
 
-// A tiny HTTP CONNECT proxy whose behaviour the e2e test switches at run time: "refuse" answers every tunnel request
+// A tiny HTTP proxy (CONNECT tunnels, and plain-http requests in absolute form) whose behaviour the e2e test switches at run time: "refuse" answers every tunnel request
 // with 502 (the client sees a provider connection failure), "pass" tunnels bytes to the requested host. omp routes
 // provider traffic through PI_PROXY, so pointing a lead at this proxy simulates a provider outage and its recovery.
 
@@ -71,7 +71,13 @@ export function startSwitchProxy(mode: ProxyMode = "pass"): SwitchProxy {
         if (end < 0) return;
         const request = c.head.subarray(0, end).toString("latin1");
         const early = c.head.subarray(end + 4);
-        const m = /^CONNECT ([^\s:]+):(\d+) HTTP\/1\.[01]/.exec(request);
+        // CONNECT host:port for https; a plain-http provider (a local endpoint) is asked in absolute form instead,
+        // which is passed on verbatim (servers take the absolute form) over a connection to that host. That connection
+        // then carries the rest of the client's keep-alive requests too: omp sends them all to its one provider
+        // endpoint, and a switch to "refuse" cuts every open connection anyway.
+        const connect = /^CONNECT ([^\s:]+):(\d+) HTTP\/1\.[01]/.exec(request);
+        const plain = connect ? null : /^[A-Z]+ http:\/\/([^\s:/]+)(?::(\d+))?[^\s]* HTTP\/1\.[01]/.exec(request);
+        const m = connect ?? (plain && [plain[0], plain[1], plain[2] ?? "80"]);
         if (!m) {
           s.end("HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
           return;
@@ -86,14 +92,14 @@ export function startSwitchProxy(mode: ProxyMode = "pass"): SwitchProxy {
           toClient: new Out(() => (c.closed ? undefined : (s as Socket<unknown>))),
         };
         c.tunnel = tunnel;
-        tunnel.toUpstream.write(early);
+        tunnel.toUpstream.write(connect ? early : c.head);
         Bun.connect<undefined>({
           hostname: m[1]!,
           port: Number(m[2]),
           socket: {
             open(up) {
               tunnel.upstream = up;
-              tunnel.toClient.write(Buffer.from("HTTP/1.1 200 Connection Established\r\n\r\n"));
+              if (connect) tunnel.toClient.write(Buffer.from("HTTP/1.1 200 Connection Established\r\n\r\n"));
               tunnel.toUpstream.flush();
             },
             data(_up, d) {
