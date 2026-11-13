@@ -2,11 +2,11 @@
 // `seori migrate`: hands a lane, the lead or duty over to a session on another runtime (hc <-> herdr). The duty loop,
 // hourly loop and daemon are not moved: seori does not record them as runtime sessions (on Linux they are systemd
 // --user units, which no runtime owns; on macOS and herdr they are unrecorded terminals or panes holding no state).
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
 import { agentSessionReported, paneEnv, promptsDir, Refusal, startAgent, type Deps } from "./harness.ts";
-import { askCheckpoint, capture, type MigrateOpts, type Subject } from "./migrate-capture.ts";
+import { askCheckpoint, capture, handoffPath, type MigrateOpts, type Subject } from "./migrate-capture.ts";
 import { createJournal, lockMigration, type MigrateJournal, readJournal, removeJournal, writeJournal } from "./migrate-journal.ts";
 import { swapAgent } from "./migrate-swap.ts";
 import { refText } from "./refs.ts";
@@ -117,6 +117,8 @@ async function agentSession(d: Deps, s: Subject, j: MigrateJournal | undefined, 
     s.setHold(true);
   }
   if (j.phase === "hold" && j.briefPath === undefined) {
+    // A checkpoint an earlier migration left is not this agent's current state: only one written after this ask counts.
+    rmSync(handoffPath(d, s.name), { force: true });
     const asked = j.resume === undefined ? await askCheckpoint(d, s, opts) : "stopped";
     if (asked === "blocked" || asked === "working") {
       removeJournal(d.store.root, s.name);
