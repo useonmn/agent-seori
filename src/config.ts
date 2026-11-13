@@ -112,7 +112,9 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow"], path);
+  // talkWithOthers, agentTurnLimit and trusted belonged to the removed talking-with-others: a config.json that still has
+  // them loads, and they are ignored.
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "talkWithOthers", "agentTurnLimit", "trusted"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;

@@ -584,7 +584,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 A malformed field is an error naming it, never a silent default, so a typo cannot switch a ceiling off without anyone noticing:
 
 - a file that is not valid JSON, or not a JSON object, is an error;
-- an unknown field at the top level or inside `supervision`, `supervision.defaults`, `guard` or `heavy` is an error naming the field and the known ones;
+- an unknown field at the top level or inside `supervision`, `supervision.defaults`, `guard` or `heavy` is an error naming the field and the known ones (`talkWithOthers`, `agentTurnLimit` and `trusted`, left from a removed feature, are accepted and ignored);
 - `repoIdentities`, `supervision`, `supervision.defaults`, `guard` and `heavy` must be objects, and each `repoIdentities` entry needs a nonempty `name` and `email`;
 - every number must be finite and not negative; a ceiling is such a number or `null`; `heavy.slots` must be a whole number of at least 1;
 - `name` must match the rule in the table;

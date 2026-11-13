@@ -8,6 +8,19 @@ const T0 = 1_700_000_000_000;
 const row = (id: string, text = `text of ${id}`): InboundRow => ({ id, kind: "messenger", source: "fake", chat: "c1", from: "u1", at: T0, text });
 const fresh = () => new Channel(mkdtempSync(join(tmpdir(), "seori-channel-")));
 
+describe("rows stored by an earlier seori from someone other than the owner", () => {
+  test("count as closed, so they are never delivered or listed open; the owner's rows, with or without a sender, stay open", () => {
+    const c = fresh();
+    const stored = (id: string, kind: string) => ({ ...row(id), sender: { kind, id: "x" } }) as unknown as InboundRow;
+    c.appendInbound(row("fake:c1:1"));
+    c.appendInbound(stored("fake:c1:2", "owner"));
+    for (const [n, kind] of [["3", "person"], ["4", "agent"], ["5", "trusted"]] as const) c.appendInbound(stored(`fake:c1:${n}`, kind));
+    c.appendLedger({ id: "fake:c1:3", ev: "delivered", at: T0, attempt: 1, mode: "followUp" });
+    expect(c.open().map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2"]);
+    expect(c.states().filter((s) => s.closed).map((s) => s.row.id)).toEqual(["fake:c1:3", "fake:c1:4", "fake:c1:5"]);
+  });
+});
+
 describe("appendInbound", () => {
   test("dedupes against rows stored earlier, by this instance, another instance, or appended after this one last looked", () => {
     const a = fresh();
