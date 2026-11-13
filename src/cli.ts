@@ -5,7 +5,7 @@ import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import {
   defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, review, send, sendToShell,
-  startAgent, ROLES, type Deps, type SendResult,
+  startAgent, ROLES, type Deps, type DutyEvent, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
 import { down, DOWN_GROUPS, liveRunners, running, sleepUnless } from "./down.ts";
@@ -282,6 +282,22 @@ async function up(d: Deps, cwdFlag: string | undefined): Promise<void> {
     return;
   }
   return upHc(d, name, cwdFlag === undefined ? d.store.root : resolve(cwdFlag));
+}
+
+const dutyLine = (e: DutyEvent): string => `DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`;
+
+/**
+ * One pass of the long-running duty loop. A record left from herdr refuses the pass with one `DUTY ERROR` line naming
+ * its file, and the loop keeps running, so the next pass goes through once that file is cleaned up; any other error
+ * still ends the loop.
+ */
+export async function dutyPass(d: Deps, out: (line: string) => void = console.log, err: (line: string) => void = console.error): Promise<void> {
+  try {
+    for (const e of await dutyTick(d)) out(dutyLine(e));
+  } catch (e) {
+    if (!(e instanceof HerdrRecord)) throw e;
+    err(`DUTY ERROR ${e.message}`);
+  }
 }
 
 /** This file, which the units' ExecStart runs with bun. */
@@ -901,7 +917,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       // Bun.sleep(NaN) and any Bun.sleep under 1 ms return at once, so a bad value would run duty passes back to back.
       if (!(Number.isFinite(interval) && interval >= 1)) throw new Refusal("--interval must be a number of seconds, 0.001 or more");
       const tick = async () => {
-        for (const e of await dutyTick(d)) console.log(`DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`);
+        for (const e of await dutyTick(d)) console.log(dutyLine(e));
       };
       if (one(a, "once")) {
         await tick();
@@ -910,14 +926,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const me = running(d.store.root, "duty");
       try {
         while (!me.stopped.aborted) {
-          try {
-            await tick();
-          } catch (e) {
-            // A record left from herdr refuses the pass with one line naming its file; the loop keeps running so the
-            // pass goes through once that file is cleaned up.
-            if (!(e instanceof HerdrRecord)) throw e;
-            console.error(`DUTY ERROR ${e.message}`);
-          }
+          await dutyPass(d);
           await sleepUnless(interval, me.stopped);
         }
       } finally {
