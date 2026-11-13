@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import { canLaunch, canLaunchLine, guardLines, guardStatePath, guardTick, guardVerdict, hostLine, parseDfAvailableKb, parsePaneCount, readGuardState, sampleHost, type HostSample } from "../src/guard.ts";
 import type { Deps } from "../src/harness.ts";
+import type { Lane } from "../src/store.ts";
 import type { Exec, ExecResult } from "../src/runtime/exec.ts";
 import { Herdr } from "../src/runtime/herdr/client.ts";
 import { defaultRuntimes } from "../src/runtime/index.ts";
@@ -57,8 +59,47 @@ describe("sampleHost", () => {
     w.host = { load1: 4, cores: 8, memFreePct: 42 };
     const s = await sampleHost(d);
     expect(s).toEqual({ loadPct: 50, memFreePct: 42, diskFreeGb: 100, panes: 3, unreadable: [] });
-    expect(dfArgs).toEqual([["-k", "-P", d.store.root]]);
+    expect(dfArgs).toEqual([["-k", "-P", homedir()]]);
     expect(hostLine(s)).toBe("load 50% per core, memory free 42%, disk free 100 GB, panes 3");
+  });
+
+  test("disk is measured where lanes work, not on a small tmpfs $SEORI_HOME", async () => {
+    // df -k -P output captured on a Linux box whose /tmp is a 6 GB tmpfs and whose / has ~945 GiB free.
+    const DF_TMPFS = "Filesystem     1024-blocks    Used Available Capacity Mounted on\ntmpfs              6093080 1195532   4897548      20% /tmp\n";
+    const DF_ROOT = "Filesystem     1024-blocks     Used Available Capacity Mounted on\n/dev/sdd        1055762868 10933868 991125528       2% /\n";
+    const { w, d } = setup();
+    const asked: string[] = [];
+    const exec: Exec = async (cmd, argv) => {
+      if (cmd !== "df") return d.exec(cmd, argv);
+      const path = argv.at(-1) ?? "";
+      asked.push(path);
+      return { code: 0, stdout: path === d.store.root ? DF_TMPFS : DF_ROOT, stderr: "" };
+    };
+    const s = await sampleHost({ ...d, exec });
+    expect(asked).toEqual([homedir()]);
+    expect(s.diskFreeGb).toBeCloseTo(991125528 / 1024 / 1024, 5);
+    expect(Math.floor(s.diskFreeGb ?? 0)).toBe(945);
+    expect(w).toBeDefined();
+  });
+
+  test("open lanes' directories are measured and the least free volume wins; done lanes and missing dirs are skipped", async () => {
+    const { d, host, dfArgs } = setup();
+    const lane = (key: string, cwd: string, status: Lane["status"]): Lane => ({ key, sessionRef: herdrRef(`w1:${key}`), paneId: `w1:${key}`, tabId: "t1", brief: "b", cwd, status, createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
+    const a = mkdtempSync(join(tmpdir(), "seori-guard-a-"));
+    const b = mkdtempSync(join(tmpdir(), "seori-guard-b-"));
+    try {
+      d.store.saveLane(lane("a", a, "working"));
+      d.store.saveLane(lane("b", b, "working"));
+      d.store.saveLane(lane("gone", join(a, "missing"), "working"));
+      d.store.saveLane(lane("old", homedir(), "done"));
+      host.df = { code: 0, stdout: dfOut(30 * 1024 * 1024), stderr: "" };
+      const s = await sampleHost(d);
+      expect(dfArgs.map((x) => x.at(-1))).toEqual([a, b]);
+      expect(s.diskFreeGb).toBe(30);
+    } finally {
+      rmSync(a, { recursive: true, force: true });
+      rmSync(b, { recursive: true, force: true });
+    }
   });
 
   test("an unreadable figure is undefined with its reason, never 0", async () => {

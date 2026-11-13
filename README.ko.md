@@ -482,7 +482,7 @@ seori watch stop dev
 | `guard.loadAlertPct` | `150` | 코어당 1분 부하(%)가 이보다 높으면 알림 |
 | `guard.loadOkPct` | `80` | 알림을 풀려면 부하(%)가 이보다 낮아져야 함 |
 | `guard.memFreeMinPct` | `10` | 남은 메모리(%)가 이보다 적으면 새 레인을 막고 알림 |
-| `guard.diskFreeMinGb` | `20` | `$SEORI_HOME` 디스크의 남은 공간(GB)이 이보다 적으면 새 레인을 막고 알림 |
+| `guard.diskFreeMinGb` | `20` | 레인이 일하는 디스크(열린 레인의 디렉터리, 없으면 `$HOME`)의 남은 공간(GB)이 이보다 적으면 새 레인을 막고 알림 |
 | `guard.panesMax` | `30` | 살아 있는 런타임 세션이 이보다 많으면 새 레인을 막고 알림 |
 | `heavy.slots` | `1` | `seori heavy` 명령이 동시에 몇 개까지 돌 수 있는지 |
 | `heavy.maxLoadPct` | `80` | 무거운 명령은 코어당 부하(%)가 이보다 낮아질 때까지 기다림 |

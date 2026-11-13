@@ -15,7 +15,7 @@ export type GuardThresholds = {
   readonly loadOkPct: number;
   /** Free memory below this percentage holds new lanes and alerts. */
   readonly memFreeMinPct: number;
-  /** Free disk (GB) on $SEORI_HOME's volume below this holds new lanes and alerts. */
+  /** Free disk (GB) on the volumes lanes work on (open lane directories, else $HOME) below this holds new lanes and alerts. */
   readonly diskFreeMinGb: number;
   /** More live herdr panes than this holds new lanes and alerts. */
   readonly panesMax: number;

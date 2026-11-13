@@ -344,7 +344,7 @@ A stale heartbeat is not a failure. `boot` exits 1 when an input could not be re
 
 ## Host guard, can-launch and heavy slots
 
-The host guard takes one reading of the machine: the 1-minute load per core in percent (100 = every core busy), free memory, free disk on `$SEORI_HOME`'s volume (`df -k -P`) and the number of live sessions the runtime lists (`hc ls` or `herdr pane list`).
+The host guard takes one reading of the machine: the 1-minute load per core in percent (100 = every core busy), free memory, free disk on the volumes lanes work on (`df -k -P` of each open lane's directory, else of `$HOME`; `$SEORI_HOME` is not measured, it may sit on a small tmpfs) and the number of live sessions the runtime lists (`hc ls` or `herdr pane list`).
 
 - `seori can-launch` prints `CAN_LAUNCH` (exit 0) or `HOLD <reason> | <reason>` (exit 4). It holds a new lane when free memory is under `guard.memFreeMinPct`, free disk under `guard.diskFreeMinGb`, or there are more panes than `guard.panesMax`. CPU load never holds a launch: it moves too fast to plan around (heavy commands wait for it instead). A figure that cannot be read holds nothing and raises no alert, so a flaky `df` or runtime call does not stop all work; `seori guard` shows it as `unknown`.
 - `seori start` runs the same check: when the host is full it prints the `HOLD` line and `lane <key> not started; queue it (seori backlog add) or pass --force`, and exits 4. `--force` skips the check. The lead's rules tell it to run `seori can-launch` before opening a lane and to queue the work on HOLD.
@@ -510,7 +510,7 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
 | `guard.loadAlertPct` | `150` | 1-minute load per core (%) above which the guard alerts |
 | `guard.loadOkPct` | `80` | load per core (%) it must fall under to clear |
 | `guard.memFreeMinPct` | `10` | free memory (%) under which new lanes are held and the guard alerts |
-| `guard.diskFreeMinGb` | `20` | free disk (GB) on `$SEORI_HOME`'s volume under which new lanes are held and the guard alerts |
+| `guard.diskFreeMinGb` | `20` | free disk (GB) on the volumes lanes work on (open lane directories, else `$HOME`) under which new lanes are held and the guard alerts |
 | `guard.panesMax` | `30` | more live sessions than this holds new lanes and the guard alerts |
 | `heavy.slots` | `1` | how many `seori heavy` commands may run at once |
 | `heavy.maxLoadPct` | `80` | load per core (%) a heavy command waits to fall under |
