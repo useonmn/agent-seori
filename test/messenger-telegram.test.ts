@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InboundMessage, SendUncertain } from "../src/messenger/adapter.ts";
@@ -192,6 +192,24 @@ describe("TelegramAdapter receive", () => {
       { update_id: 2, message: { message_id: 2, from: { id: 9 }, chat: group, date: 1, text: "thanks", is_topic_message: true, message_thread_id: 70 } },
     );
     expect((await collect(t.adapter, 1)).map((m) => [m.id, m.thread])).toEqual([["telegram:-100:2", "70"]]);
+  });
+
+  test("a mention in a topic joins it only once handled: a rejected one leaves the topic unjoined", async () => {
+    const t = setup();
+    const group = { id: -100, type: "supergroup" };
+    t.updates.push({ update_id: 1, message: { message_id: 1, from: { id: 9 }, chat: group, date: 1, text: "@seori_bot help", is_topic_message: true, message_thread_id: 80, entities: [{ type: "mention", offset: 0, length: 10 }] } });
+    await expect(t.adapter.receive(new AbortController().signal, async () => { throw new Error("disk full"); })).rejects.toThrow("disk full");
+    expect(existsSync(join(t.root, "messenger", "telegram", "topics"))).toBe(false);
+    t.updates.push({ update_id: 2, message: { message_id: 2, from: { id: 9 }, chat: group, date: 1, text: "follow-up", is_topic_message: true, message_thread_id: 80 } });
+    expect((await collect(t.make(), 2)).map((m) => m.id)).toEqual(["telegram:-100:1", "telegram:-100:2"]);
+  });
+
+  test("pairing mode does not ask getMe", async () => {
+    const t = setup();
+    const a = new TelegramAdapter({ source: "telegram", owner: "", options: { apiBase: t.apiBase, pollTimeoutSec: 0 } }, t.root, { env: { SEORI_TELEGRAM_TOKEN: TOKEN }, pairing: true, cursorRoot: home() });
+    t.updates.push({ update_id: 1, message: { message_id: 1, from: { id: 9 }, chat: { id: 9, type: "private" }, date: 1, text: "pair me" } });
+    expect((await collect(a, 1)).map((m) => m.from)).toEqual(["9"]);
+    expect(t.calls.some((c) => c.method === "getMe")).toBe(false);
   });
 
   test("a rejected onMessage keeps the cursor, so the same id is offered again", async () => {
@@ -407,6 +425,15 @@ describe("TelegramAdapter voice transcription that never finishes", () => {
 });
 
 describe("TelegramAdapter send", () => {
+  test("a post into a topic still succeeds when the topic cannot be noted, with one warning", async () => {
+    const t = setup();
+    mkdirSync(join(t.root, "messenger", "telegram", "topics"), { recursive: true }); // a directory: not writable as the list
+    const warnings: string[] = [];
+    const a = new TelegramAdapter({ source: "telegram", owner: OWNER, options: { apiBase: t.apiBase } }, t.root, { env: { SEORI_TELEGRAM_TOKEN: TOKEN }, warn: (l) => warnings.push(l) });
+    expect(await a.send({ chat: "-100", thread: "70" }, "on it")).toEqual({ messageId: "100" });
+    expect(warnings).toHaveLength(1);
+  });
+
   test("splits at 4096, replies the first part to the stored id and keeps the topic on every part", async () => {
     const t = setup();
     const text = `${"a".repeat(4000)}\n\n${"b".repeat(200)}`;
