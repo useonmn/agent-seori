@@ -73,6 +73,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - test/helpers/fake-hc.ts
 - test/helpers/hc-rig.ts
 - test/messenger-presence.test.ts
+- test/migrate-followups.test.ts
 - test/migrate-setup.ts
 - test/migrate.test.ts
 - test/records-upgrade.test.ts
