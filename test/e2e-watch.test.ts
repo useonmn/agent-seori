@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { LedgerEvent, WatchRow } from "../src/channel.ts";
 import { LEAD_EXTENSION } from "../src/cli.ts";
+import { HEARTBEAT_MS } from "../src/daemon.ts";
 import { startAgent, type Deps } from "../src/harness.ts";
 import { shq, spawnExec } from "../src/runtime/exec.ts";
 import { Herdr, HerdrError } from "../src/runtime/herdr/client.ts";
 import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { Lane } from "../src/store.ts";
+import { DEFAULT_TIMING } from "../src/watch/engine.ts";
 import { MAX_RESTARTS, WAKE_BUDGET, type Watch, WatchStore } from "../src/watch/store.ts";
 import { herdrRef } from "./fake.ts";
 
@@ -142,9 +144,18 @@ async function expectLeadGot(w: { id: string; name: string }, needle: string, ms
   return row;
 }
 
-/** No more rows for the watch than `n`, also after a quiet period, and every row delivered exactly once. */
-async function expectRows(w: { id: string }, n: number, quietMs = 8_000): Promise<WatchRow[]> {
-  await Bun.sleep(quietMs);
+/** The longest the engine takes from a change to its row: a file poll plus the file coalescing window, or a pane poll. */
+const SETTLE_MS = Math.max(DEFAULT_TIMING.filePollMs + DEFAULT_TIMING.fileCoalesceMs, DEFAULT_TIMING.coalesceMs, DEFAULT_TIMING.panePollMs);
+/** The daemon, which runs the watch engine, has gone on past `at` on its own clock: it wrote a heartbeat stamped later. */
+const daemonPast = (at: number) =>
+  until(`a daemon heartbeat after ${new Date(at).toISOString()}`, () => (beat().at >= at ? true : undefined), Math.max(0, at - Date.now()) + 3 * HEARTBEAT_MS);
+
+/**
+ * No more rows for the watch than `n`, and every row delivered at most once, checked once the daemon has run SETTLE_MS
+ * past the last row: a duplicate of it would have been written by then.
+ */
+async function expectRows(w: { id: string }, n: number): Promise<WatchRow[]> {
+  await daemonPast(Math.max(watchFile(w.id).createdAt, ...watchRows(w.id).map((r) => r.at)) + SETTLE_MS);
   const rows = watchRows(w.id);
   expect(rows.map((r) => r.text)).toHaveLength(n);
   for (const r of rows) expect(deliveredTo(r.id).length).toBeLessThanOrEqual(1);
@@ -198,7 +209,8 @@ afterAll(async () => {
     const id = /^(w\S+) /.exec(line)?.[1];
     if (id) await seoriRaw(["watch", "stop", id]);
   }
-  await Bun.sleep(3000);
+  // Cleanup only: what is still running after this is killed below.
+  await until("the watch commands gone", async () => ((await pids(work)).length === 0 ? true : undefined), 15_000).catch(() => undefined);
   await spawnExec("herdr", ["--session", session, "server", "stop"]);
   await server?.exited;
   await spawnExec("herdr", ["session", "delete", session]);
@@ -332,7 +344,7 @@ test.skipIf(!scenario("6"))("6 survives a daemon SIGKILL: the command is re-run,
   await expectLeadGot(cmd, "MATCH6 after-daemon-restart");
   log(`6: command match delivered ${since("6")} after SIGKILL`);
   await expectRows(file, 1);
-  await expectRows(cmd, 1, 0);
+  await expectRows(cmd, 1);
   const left = await pids(trig.path);
   log(`6: s6 command processes after the match: ${left.length}`);
   expect(left).toHaveLength(1);
@@ -426,8 +438,10 @@ test.skipIf(!scenario("8"))("8 lane-owned watch: the lane gets the event as a st
 test.skipIf(!scenario("9"))("9 pane watch: --status working fires once when the lead starts a turn, then the watch is done", async () => {
   await waitLeadIdle();
   const w = await addWatch(["--pane", lead(), "--status", "working", "--name", "s9"]);
-  await Bun.sleep(6000);
+  // The engine picks a new watch up on its next 1 s tick and polls the pane right away: it has seen the idle lead.
+  await daemonPast(watchFile(w.id).createdAt + 1_000 + DEFAULT_TIMING.panePollMs);
   expect(watchRows(w.id)).toHaveLength(0);
+  expect(watchFile(w.id).status).toBe("active");
   t0s.set("9", Date.now());
   await prompt("Run exactly this shell command and nothing else: sleep 15  -- then say finished.");
   const row = await expectLeadGot(w, `pane ${lead()} is working`);
