@@ -406,6 +406,7 @@ export async function startLane(
   const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
   if (opts.done !== undefined) parseDone(opts.done);
   if (opts.thread !== undefined && !opts.thread.trim()) throw new Refusal("--thread needs a lead channel id");
+  if (opts.activityPaths?.some((p) => !p.trim())) throw new Refusal("--activity-path needs a path");
   await requireOmpIntegration(d);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);

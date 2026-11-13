@@ -53,7 +53,8 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
               [--activity-path PATH ...]
                                               Done line read back live before close; ID = lead channel id for progress posts;
                                               ceilings block (report to lead); exits 4 with HOLD when the host is full;
-                                              a change under an activity path counts as progress (stall check)
+                                              a written activity file (or an entry added to or removed from an
+                                              activity directory) counts as progress in the stall check
   seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
                                               register an already-running session as a lane (types nothing into it)
   seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a

@@ -59,6 +59,8 @@ describe("start with a Done line", () => {
     expect(d.store.lane(lane.key)!.activityPaths).toEqual(["out", "/data/run.log"]);
     const plain = await startLane(d, "fix-other", brief, { workspace: "w1", cwd, activityPaths: [] });
     expect("activityPaths" in d.store.lane(plain.key)!).toBe(false);
+    await expect(startLane(d, "fix-empty", brief, { workspace: "w1", cwd, activityPaths: ["out", " "] })).rejects.toThrow("--activity-path needs a path");
+    expect(d.store.lane("fix-empty")).toBeUndefined();
   });
 
   test("closeAfterMin comes from config.json", async () => {
