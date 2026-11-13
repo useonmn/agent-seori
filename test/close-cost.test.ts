@@ -46,6 +46,14 @@ describe("cost recorded when a lane closes", () => {
     expect(ledger()).toHaveLength(1);
   });
 
+  test("two concurrent closeLane calls on one lane write one ledger line and run recordCost once", async () => {
+    const { d, lane, ledger, hookCalls } = setup([assistant(10, 0.125)], { recordCost: ["record-cost", "{key}", "{tokens}", "{cost}", "{closeKey}"] });
+    await Promise.allSettled([closeLane(d, lane, "closed by lead"), closeLane(d, lane, "closed by lead")]);
+    await hooksSettled(1000);
+    expect(ledger()).toHaveLength(1);
+    expect(hookCalls()).toEqual([["fix-a", "10", "0.125", "fix-a@7"]]);
+  });
+
   test("usage that cannot be read is recorded as null, never 0, and runs no hook", async () => {
     const { d, lane, ledger, hookCalls } = setup(undefined, { recordCost: ["record-cost", "{key}"] });
     await closeLane(d, lane, "closed by lead");
