@@ -796,7 +796,7 @@ export class SlackAdapter implements MessengerAdapter {
     const from = this.pairing ? (ev.user as string) : this.config.owner;
     // A thread reply answers the thread's first message; its text is not in the event (seori msg show reads it).
     const replyTo = ev.thread_ts && ev.thread_ts !== ts ? { replyTo: { id: messageId(this.source, channel, ev.thread_ts) } } : {};
-    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(ts), text, ...replyTo }, key, ctx);
+    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, sender: { kind: "owner", id: from }, at: tsMs(ts), text, ...replyTo }, key, ctx);
     if (agentThread && thread) this.showWorking(channel, thread, ctx.working);
     this.advance(channel, ts, ctx);
   }
@@ -861,7 +861,7 @@ export class SlackAdapter implements MessengerAdapter {
     if (!text) return;
     const thread = dm && !this.agent ? m.thread_ts : (m.thread_ts ?? m.ts);
     await this.deliver(
-      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from: this.config.owner, at: tsMs(stamp), text: `(edited) ${text}` },
+      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from: this.config.owner, sender: { kind: "owner", id: this.config.owner }, at: tsMs(stamp), text: `(edited) ${text}` },
       key,
       ctx,
     );

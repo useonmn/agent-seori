@@ -236,7 +236,7 @@ describe("SlackAdapter user mode receive", () => {
     const root = home();
     const r = run(mock, root);
     await r.clock.parked();
-    expect(r.got).toEqual([{ id: "slack:D1:1700000000.000100", source: "slack", chat: "D1", from: OWNER, at: 1700000000000, text: "hi 1700000000.000100" }]);
+    expect(r.got).toEqual([{ id: "slack:D1:1700000000.000100", source: "slack", chat: "D1", from: OWNER, sender: { kind: "owner", id: OWNER }, at: 1700000000000, text: "hi 1700000000.000100" }]);
     expect(cursorOf(root).channels["D1"]).toBe("1700000000.000500");
     // this account posted at .000400: its thread is tracked, and the owner answers in it
     expect(Object.keys(cursorOf(root).threads["D1"] ?? {})).toContain("1700000000.000400");

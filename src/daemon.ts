@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Channel } from "./channel.ts";
+import { Channel, type MessengerRow } from "./channel.ts";
+import { configPath, DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
 import { choiceFor, defaultRuntimes, spawnExec, statusOf } from "./runtime/index.ts";
 import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
@@ -10,11 +11,13 @@ import { lockFile, Store } from "./store.ts";
 import { deliverWatchEvent } from "./watch/deliver.ts";
 import { type EngineDeps, WatchEngine } from "./watch/engine.ts";
 
-// `seori daemon`: receives every configured messenger and stores owner messages in the lead channel before the adapter
-// acknowledges them upstream, and runs the watch engine (src/watch/engine.ts) that wakes agents when a watch fires. It
+// `seori daemon`: receives every configured messenger and stores the messages meant for seori in the lead channel before
+// the adapter acknowledges them upstream (the owner's; with config.json talkWithOthers also other people's and agents',
+// with an agent-loop guard), and runs the watch engine (src/watch/engine.ts) that wakes agents when a watch fires. It
 // never talks to omp; the lead extension delivers from the channel. One daemon per $SEORI_HOME (daemon.lock), and a
 // heartbeat file so duty can tell a dead daemon from a quiet messenger. It reads messengers.json once and exits when the
-// file changes, so `seori up`'s restart loop starts it again on the new config (watches resume from their files).
+// file (or config.json) changes, so `seori up`'s restart loop starts it again on the new config (watches resume from
+// their files).
 
 export const HEARTBEAT_MS = 5_000;
 export const RESTART_DELAY_MS = 5_000;
@@ -151,17 +154,19 @@ const writeHeartbeat = (root: string, at: number): void => {
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-/** Identifies one version of messengers.json (missing counts as a version), so an edit, creation or removal is seen. */
-const configStamp = (root: string): string => {
+/** Identifies one version of a file (missing counts as a version), so an edit, creation or removal is seen. */
+const fileStamp = (path: string): string => {
   try {
-    const s = statSync(join(root, "messengers.json"));
+    const s = statSync(path);
     return `${s.mtimeMs}:${s.size}`;
   } catch {
     return "missing";
   }
 };
 
-/** Why runDaemon returned: its signal aborted, or messengers.json changed and it must be started again to load it. */
+const configStamp = (root: string): string => fileStamp(join(root, "messengers.json"));
+
+/** Why runDaemon returned: its signal aborted, or messengers.json or config.json changed and it must be started again to load it. */
 export type DaemonExit = "stopped" | "config-changed";
 
 /**
@@ -176,6 +181,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
   const emit = opts.onEvent ?? ((e: DaemonEvent) => console.log(daemonLine(e)));
   // Stamped before the read: an edit landing between the two is still seen as a change.
   const stamp = configStamp(root);
+  const settingsStamp = fileStamp(configPath(root));
   // A broken file must not stop the watches too: run without messengers until the file changes (the stamp check below
   // then restarts the daemon on the fixed file). duty tells the lead the file cannot be read.
   let messengers: MessengerConfig[] = [];
@@ -184,6 +190,16 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     messengers = loadMessengers(root);
   } catch (e) {
     configError = errorText(e);
+  }
+  // A config.json that does not load keeps upstream's owner-only rule until it is fixed (the change restarts the daemon).
+  let talk = { withOthers: DEFAULT_CONFIG.talkWithOthers, agentTurnLimit: DEFAULT_CONFIG.agentTurnLimit };
+  let settingsError: string | undefined;
+  try {
+    const config = loadConfig(root);
+    talk = { withOthers: config.talkWithOthers, agentTurnLimit: config.agentTurnLimit };
+  } catch (e) {
+    settingsError = errorText(e);
+    talk = { ...talk, withOthers: false };
   }
 
   mkdirSync(daemonDir(root), { recursive: true });
@@ -211,8 +227,9 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     } catch (e) {
       emit({ ev: "error", source: "heartbeat", detail: errorText(e) });
     }
-    if (!signal.aborted && configStamp(root) !== stamp) {
-      emit({ ev: "idle", detail: `${join(root, "messengers.json")} changed; exiting so it is started again with the new config` });
+    const changed = configStamp(root) !== stamp ? join(root, "messengers.json") : fileStamp(configPath(root)) !== settingsStamp ? configPath(root) : undefined;
+    if (!signal.aborted && changed !== undefined) {
+      emit({ ev: "idle", detail: `${changed} changed; exiting so it is started again with the new config` });
       exit = "config-changed";
       stop.abort();
     }
@@ -223,6 +240,9 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     // Started only once the lock is held: one daemon, so one engine, runs a $SEORI_HOME's watches.
     engine = new WatchEngine(root, { ...engineDeps(root, now), ...opts.watch });
     engine.start();
+    if (settingsError !== undefined) {
+      emit({ ev: "error", source: "config.json", detail: `${settingsError}; only the owner's messages are received until the file changes` });
+    }
     if (configError !== undefined) {
       emit({ ev: "error", source: "messengers.json", detail: `${configError}; running without messengers (heartbeat and watches only) until the file changes` });
     } else if (!messengers.length) {
@@ -230,20 +250,40 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     }
 
     const runOne = async (config: MessengerConfig): Promise<void> => {
+      // Agent messages in a row per conversation (`<chat>:<thread>`) since the last human one; memory only, so a
+      // restart starts every count afresh.
+      const agentRun = new Map<string, number>();
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.
       const onMessage = async (m: InboundMessage): Promise<void> => {
-        if (m.from !== config.owner) return emit({ ev: "dropped", id: m.id, from: m.from });
-        const stored = channel.appendInbound({
+        // The owner is the configured id and never a bot, whatever the adapter guessed.
+        const owner = m.from === config.owner && m.sender.kind !== "agent";
+        if (!owner && !talk.withOthers) return emit({ ev: "dropped", id: m.id, from: m.from });
+        const sender = owner ? { ...m.sender, kind: "owner" as const } : m.sender.kind === "owner" ? { ...m.sender, kind: "person" as const } : m.sender;
+        const conversation = `${m.chat}:${m.thread ?? ""}`;
+        let loopStopped: number | undefined;
+        if (sender.kind !== "agent") agentRun.delete(conversation);
+        else {
+          const run = (agentRun.get(conversation) ?? 0) + 1;
+          agentRun.set(conversation, run);
+          if (run > talk.agentTurnLimit + 1) return emit({ ev: "dropped", id: m.id, from: m.from });
+          if (run > talk.agentTurnLimit) loopStopped = talk.agentTurnLimit;
+        }
+        const row: MessengerRow = {
           id: m.id,
           kind: "messenger",
           source: m.source,
           chat: m.chat,
           ...(m.thread !== undefined ? { thread: m.thread } : {}),
           from: m.from,
+          sender,
           at: m.at,
-          text: m.text,
+          text: loopStopped === undefined
+            ? m.text
+            : `agent loop stopped: ${loopStopped} agent messages in a row here with no human message between; this one and further agent messages in this conversation are not delivered until a person writes`,
           ...(m.replyTo !== undefined ? { replyTo: m.replyTo } : {}),
-        });
+          ...(loopStopped !== undefined ? { loopStopped } : {}),
+        };
+        const stored = channel.appendInbound(row);
         emit({ ev: stored ? "stored" : "duplicate", id: m.id });
         // A message got through, so receive works: end any failure streak at once.
         if (failing) {

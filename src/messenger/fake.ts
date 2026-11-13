@@ -7,14 +7,36 @@ import {
 // A messenger made of files under $SEORI_HOME/messenger/fake/, so tests and humans can drive the whole channel without a
 // platform account: append a row to in.jsonl to "send" a message to the lead; read out.jsonl to see what was sent back;
 // write ok|timeout|error to send-mode to make sends succeed, end uncertain, or fail.
+// With an owner set (the daemon's adapter), rows follow the platforms' delivery rules: the owner's always pass; anyone
+// else's pass in a direct message (`dm`), when they mention the bot (`mentions`), or inside a thread the bot was
+// mentioned in or has replied in. `bot` marks an agent's row, and rows from FAKE_BOT_ID are the bot's own, never passed.
 
 /** One line of in.jsonl. */
-export type FakeInboundRow = { msgId: string; chat: string; thread?: string; from: string; text: string; at?: number; replyTo?: { id: string; text?: string } };
+export type FakeInboundRow = {
+  msgId: string;
+  chat: string;
+  thread?: string;
+  from: string;
+  text: string;
+  at?: number;
+  replyTo?: { id: string; text?: string };
+  /** The sender's display name. */
+  name?: string;
+  /** The sender is a bot or app: an agent. */
+  bot?: boolean;
+  /** A direct message to the bot. */
+  dm?: boolean;
+  /** The text mentions the bot. */
+  mentions?: boolean;
+};
 /** One line of out.jsonl. */
 export type FakeOutboundRow = { messageId: string; chat: string; thread?: string; replyTo?: string; text: string; at: number };
 export type FakeSendMode = "ok" | "timeout" | "error";
 /** One line of actions.jsonl: a react, edit, typing or thread call, as it was asked. */
 export type FakeActionRow = { action: "react" | "edit" | "typing" | "thread"; at: number } & Record<string, unknown>;
+
+/** The fake bot's own sender id: rows from it in in.jsonl are its own messages echoed back, never delivered. */
+export const FAKE_BOT_ID = "seori";
 
 export const fakeDir = (root: string): string => join(root, "messenger", "fake");
 
@@ -37,13 +59,18 @@ export class FakeAdapter implements MessengerAdapter {
   private readonly offsetDir: string;
   private readonly pollMs: number;
   private readonly now: () => number;
+  private readonly owner: string | undefined;
 
-  /** `cursorRoot`: where the offset file lives instead of `root` (`seori msg pair` points it at a temp dir). */
-  constructor(root: string, options: { pollMs?: number; now?: () => number; cursorRoot?: string } = {}) {
+  /**
+   * `cursorRoot`: where the offset file lives instead of `root` (`seori msg pair` points it at a temp dir). `owner`: the
+   * owner's id, which turns on the delivery rules; without it every row passes (pairing, tests of the file mechanics).
+   */
+  constructor(root: string, options: { pollMs?: number; now?: () => number; cursorRoot?: string; owner?: string } = {}) {
     this.dir = fakeDir(root);
     this.offsetDir = fakeDir(options.cursorRoot ?? root);
     this.pollMs = options.pollMs ?? 500;
     this.now = options.now ?? Date.now;
+    this.owner = options.owner;
     mkdirSync(this.dir, { recursive: true });
     if (this.offsetDir !== this.dir) mkdirSync(this.offsetDir, { recursive: true });
   }
@@ -90,7 +117,7 @@ export class FakeAdapter implements MessengerAdapter {
     while (!signal.aborted) {
       const lines = this.lines();
       for (let i = this.offset(); i < lines.length && !signal.aborted; i++) {
-        const m = this.parse(lines[i]!);
+        const m = this.parse(lines[i]!, lines, i);
         // A rejection propagates before the commit, so the message is offered again when receive restarts.
         if (m) await onMessage(m);
         this.commit(i + 1);
@@ -100,25 +127,32 @@ export class FakeAdapter implements MessengerAdapter {
   }
 
   /** Blank or malformed lines are consumed without a message; they can never become valid, so waiting on them would stall the queue. */
-  private parse(line: string): InboundMessage | undefined {
-    if (!line.trim()) return undefined;
-    let r: Partial<FakeInboundRow>;
-    try {
-      r = JSON.parse(line) as Partial<FakeInboundRow>;
-    } catch {
-      return undefined;
-    }
-    if (typeof r.msgId !== "string" || typeof r.chat !== "string" || typeof r.from !== "string" || typeof r.text !== "string") return undefined;
+  private parse(line: string, lines: readonly string[], index: number): InboundMessage | undefined {
+    const r = row(line);
+    if (!r) return undefined;
+    if (r.from === FAKE_BOT_ID) return undefined;
+    const kind = r.bot === true ? "agent" : r.from === this.owner ? "owner" : "person";
+    if (this.owner !== undefined && kind !== "owner" && !r.dm && !r.mentions && !(r.thread !== undefined && this.joined(r.chat, r.thread, lines, index))) return undefined;
     return {
       id: `fake:${r.chat}:${r.msgId}`,
       source: this.source,
       chat: r.chat,
       ...(typeof r.thread === "string" ? { thread: r.thread } : {}),
       from: r.from,
+      sender: { kind, id: r.from, ...(typeof r.name === "string" ? { name: r.name } : {}) },
       at: typeof r.at === "number" ? r.at : this.now(),
       text: r.text,
       ...(r.replyTo && typeof r.replyTo.id === "string" ? { replyTo: r.replyTo } : {}),
     };
+  }
+
+  /** The bot replied in the thread (out.jsonl), or was mentioned in it or in its first message, before row `index`. */
+  private joined(chat: string, thread: string, lines: readonly string[], index: number): boolean {
+    if (this.sent().some((s) => s.chat === chat && s.thread === thread)) return true;
+    return lines.slice(0, index).some((l) => {
+      const r = row(l);
+      return r !== undefined && r.chat === chat && r.mentions === true && (r.thread === thread || (r.thread === undefined && r.msgId === thread));
+    });
   }
 
   sendMode(): FakeSendMode {
@@ -207,4 +241,17 @@ export class FakeAdapter implements MessengerAdapter {
     if (mode === "timeout") throw new SendUncertain("fake messenger: send timed out after sending (send-mode timeout)");
     return { messageId };
   }
+}
+
+/** One valid row of in.jsonl; blank or malformed lines are undefined. */
+function row(line: string): FakeInboundRow | undefined {
+  if (!line.trim()) return undefined;
+  let r: Partial<FakeInboundRow>;
+  try {
+    r = JSON.parse(line) as Partial<FakeInboundRow>;
+  } catch {
+    return undefined;
+  }
+  if (typeof r.msgId !== "string" || typeof r.chat !== "string" || typeof r.from !== "string" || typeof r.text !== "string") return undefined;
+  return r as FakeInboundRow;
 }

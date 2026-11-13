@@ -226,7 +226,7 @@ describe("SlackAdapter receive", () => {
     };
     const root = home();
     const got = await collect(adapter(mock, root), () => mock.acks.length >= 4);
-    expect(got).toEqual([{ id: "slack:D1:1700000000.000100", source: "slack", chat: "D1", from: OWNER, at: 1700000000000, text: "hi 1700000000.000100" }]);
+    expect(got).toEqual([{ id: "slack:D1:1700000000.000100", source: "slack", chat: "D1", from: OWNER, sender: { kind: "owner", id: OWNER }, at: 1700000000000, text: "hi 1700000000.000100" }]);
     expect(mock.acks).toEqual(["e1", "e2", "e3", "e4"]);
     expect(cursorOf(root).channels["D1"]).toBe("1700000000.000400");
   });
@@ -673,7 +673,7 @@ describe("SlackAdapter pairing mode", () => {
       pairing: true,
     });
     const got = await collect(a, () => mock.acks.length >= 5 && mock.historyCalls.length >= 1);
-    expect(got).toEqual([{ id: "slack:D1:1700000000.000500", source: "slack", chat: "D1", from: "UNEW", at: 1700000000000, text: "hi 1700000000.000500" }]);
+    expect(got).toEqual([{ id: "slack:D1:1700000000.000500", source: "slack", chat: "D1", from: "UNEW", sender: { kind: "owner", id: "UNEW" }, at: 1700000000000, text: "hi 1700000000.000500" }]);
     expect(mock.acks.length).toBe(5);
     expect(mock.historyCalls.length).toBeGreaterThanOrEqual(1);
   });
