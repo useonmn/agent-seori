@@ -26,6 +26,8 @@ Roles:
 - Hourly loop: `seori loop`, a process that syncs the backlog, audits missed work, starts the next item and asks open questions through the lead. Design: [docs/hourly-loop.md](docs/hourly-loop.md).
 - Daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead, and runs the watches agents arm. See [Messenger channel](#messenger-channel) and [Watches](#watches).
 
+How the lead talks to you: it reacts with eyes to each of your messages and handles it, reading the message you replied to first. Each job gets one thread with one status message it edits in place (⏳ while working, ✅ when done) and a status emoji at the start of the thread name (🔄 working, ⏸ waiting, ✅ done); when the job is done it removes the reaction and closes the thread, and if you write there again it reopens the thread and the job's lane. A reply is one message that grows by editing, not a burst of messages, and finished files land in the main channel. Apart from those status markers it writes no emojis, and it always sends as the bot, never as your account. Slack, Telegram and Discord limit some of this; see [writing.md](skills/seori-mode/references/writing.md#platforms).
+
 The runtime gives every session a terminal and reports the agent's state in it (idle, working, blocked). seori reads that state before it does anything to a session. hc is the default runtime and herdr is the other one; the agent is always omp. [docs/runtime.md](docs/runtime.md) explains how the runtime is picked and how the two runtimes differ.
 
 The examples below show hc refs (`hc:t7`). On herdr the same commands take pane ids such as `w1:p3`.
@@ -160,6 +162,14 @@ seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--a
                                             lead extension runs it is drafted and goes out when the lead's turn ends
                                             (--now: send at once); a second send to the same ids replaces the draft
 seori msg send --replace DRAFT --text T      change the text of an open draft (reply or notice)
+seori msg edit --to SOURCE:CHAT[:THREAD] --message MID --text T
+                                            edit a message seori sent (MID is the message= value msg send printed)
+seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
+seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
+                                            show the typing indicator once, right before sending
+seori msg thread (--to SOURCE:CHAT:THREAD | --of ID) [--name T] [--status working|waiting|done] [--close|--reopen]
+                                            set the thread's name with the status emoji in front; close or reopen it
+                                            (--of ID: the thread the lead channel message ID came in)
 seori msg drafts                             open drafts: draft  age  reply IDS|notice SOURCE:CHAT  text
 seori msg drop <draft> --why T               discard an open draft; its ids are open again
 seori msg flush                              send every open draft now, oldest first
@@ -401,7 +411,7 @@ Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuse
 | source | what to create | `owner` | env variables |
 |---|---|---|---|
 | `telegram` | a bot from @BotFather; send it `/start` once in a DM. For groups or forum topics, turn privacy mode off (`/setprivacy`) | your numeric user id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write` and `im:history` (plus `app_mentions:read`, `channels:history` for channels), bot event `message.im`, and the Messages tab enabled; or, instead of an app, a member account's user token and `d` cookie (`userToken`, `cookie`; needs a paid seat, polled once a minute) | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (or `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
+| `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write`, `im:history` and `reactions:write` (plus `app_mentions:read`, `channels:history` for channels), bot event `message.im`, and the Messages tab enabled; or, instead of an app, a member account's user token and `d` cookie (`userToken`, `cookie`; needs a paid seat, polled once a minute) | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (or `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
 | `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only) and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check` asks each configured messenger who its bot is, which proves the tokens work: it prints `OK <source>: <who the bot is>` or `FAIL <source>: <why>` per messenger and exits 1 when any fails. `seori msg check <source>` checks that one source, and works before `messengers.json` has an entry for it: only its token matters.
