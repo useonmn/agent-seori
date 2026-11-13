@@ -58,6 +58,7 @@ Tell the owner the lead is up and which terminal it is in.
 
 ```json
 {
+  "name": "seori",
   "repoIdentities": { "owner/repo": { "name": "Their Name", "email": "them@example.com" } },
   "closeAfterMin": 5,
   "progressEveryMin": 15,
@@ -68,6 +69,7 @@ Tell the owner the lead is up and which terminal it is in.
 }
 ```
 
+- `name`: this instance's name (1 to 40 letters, digits, `.`, `_` or `-`, starting with a letter or digit). Required in `$SEORI_HOME/config.json` for any instance other than the first, so side-by-side instances don't collide.
 - `repoIdentities`: the Git identity commits in that repo must carry; `seori verify-pr` and the merge gate check it. Ask the owner for it per repo they want checked.
 - `closeAfterMin`: how long after READY a lane with a Done line closes on its own.
 - `progressEveryMin`: how often a lane with a thread gets its newest report posted there.
