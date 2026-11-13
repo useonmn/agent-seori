@@ -304,7 +304,7 @@ seori resume fix-flaky-login
 
 듀티 루프는 열린 레인마다 두 가지를 지켜보고, 각각 한 번씩 리드에게 알립니다. seori는 이 일로 레인에 메시지를 보내거나, 멈추거나, 끄지 않습니다. 결정은 리드가 합니다.
 
-한도. 레인마다 걸린 시간, 토큰, 비용 한도를 둘 수 있습니다. `seori start --wall-minutes N --token-limit N --cost-limit N`은 그 레인 하나의 한도를 정합니다. `none`은 그 한도를 끄고, 빠진 플래그는 설정의 기본값을 씁니다. 이 플래그를 하나도 주지 않은 레인은 `config.json`의 `supervision.defaults`를 따르고, 기본값은 모두 꺼져 있습니다. 걸린 시간은 레인을 연 때부터 셉니다. 토큰과 비용은 레인 에이전트 세션 파일(경로는 런타임이 알려 줌)의 어시스턴트 메시지에서 더합니다. 읽을 수 없는 값은 한도에 닿지 않은 것으로 보고, `usage-unknown` 듀티 이벤트로 한 번 보여 줍니다. 한도에 닿으면 리드에게 `[BLOCKED <key>] <종류> ceiling reached (<값>, limit <한도>); the lane keeps running until you decide`를 보냅니다. 한도마다, 한도 값마다 한 번이고(리드가 한도를 올리면 거기에 닿을 때 다시 알림), 레인 기록에도 남습니다.
+한도. 레인마다 걸린 시간, 토큰, 비용 한도를 둘 수 있습니다. `seori start --wall-minutes N --token-limit N --cost-limit N`은 그 레인 하나의 한도를 정합니다. `none`은 그 한도를 끄고, 빠진 플래그는 설정의 기본값을 씁니다. 이 플래그를 하나도 주지 않은 레인은 `config.json`의 `supervision.defaults`를 따르고, 기본값은 모두 꺼져 있습니다. 걸린 시간은 레인을 연 때부터 셉니다. 토큰과 비용은 레인 에이전트 세션 파일(경로는 런타임이 알려 줌)의 어시스턴트 메시지에서 더합니다. hc는 아직 이 경로를 알려 주지 않으므로 토큰과 비용 값을 알 수 없고, 시간 한도만 적용됩니다. 읽을 수 없는 값은 한도에 닿지 않은 것으로 보고, `usage-unknown` 듀티 이벤트로 한 번 보여 줍니다. 한도에 닿으면 리드에게 `[BLOCKED <key>] <종류> ceiling reached (<값>, limit <한도>); the lane keeps running until you decide`를 보냅니다. 한도마다, 한도 값마다 한 번이고(리드가 한도를 올리면 거기에 닿을 때 다시 알림), 레인 기록에도 남습니다.
 
 비용 기록. 레인이 닫힐 때(`seori done`, 또는 Done 줄이 있는 레인을 seori가 닫을 때) 세션을 닫기 전에 에이전트 세션 파일에서 쓴 토큰과 비용을 읽어 `$SEORI_HOME/cost.jsonl`에 한 줄로 덧붙입니다: `{ "key", "closeKey": "<key>@<createdAt>", "tokens", "costUsd", "at" }`. 읽을 수 없는 값(지금은 hc)은 0이 아니라 `null`입니다. 다시 닫아도 두 번째 줄은 생기지 않습니다. 이 파일은 이 PC에만 남고, `hooks.recordCost`를 설정하지 않으면 어디에도 보내지 않습니다. 설정하면 그 값으로 한 번 실행합니다. 여기서 실패해도 stderr에 한 줄만 남기고 레인은 그대로 닫힙니다.
 
@@ -528,11 +528,11 @@ seori watch stop dev
 | `workflow` | 없음 | `seori start --workflow`로 따로 정하지 않은 모든 레인의 워크플로입니다. `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"`, `"ulw-execute"` 가운데 하나면 레인을 그 omp-ulw 워크플로로 돌립니다. 없으면 omp 기본 목표 모드입니다. [워크플로](#워크플로) 참고 |
 | `startupWaitSeconds` | `180` | `seori start`가 새 레인의 시작 판정을 위해 몇 초까지 지켜보는지(시작 명령 20초 뒤 첫 확인, 그 뒤 10초마다). [레인이 시작되는 방법](#레인이-시작되는-방법) 참고 |
 | `supervision.defaults.wallMinutes` | `null` | 레인마다 걸린 시간 한도(분). `null`은 끔 |
-| `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |
-| `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔 |
+| `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔. hc에서는 적용되지 않습니다. hc에서는 omp가 세션 파일을 알려 주지 않아 값을 알 수 없기 때문입니다 |
+| `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔. hc에서는 적용되지 않습니다. hc에서는 omp가 세션 파일을 알려 주지 않아 값을 알 수 없기 때문입니다 |
 | `supervision.hungAfterMin` | `20` | 보고도 파일 변경도 없이 몇 분 지나면 working 레인을 멈춘 것으로 알리는지 |
 | `supervision.activityPaths` | `[]` | 바뀌면 모든 레인의 진행으로 치는 파일이나 폴더(각 레인 폴더 기준, 폴더는 항목이 생기거나 지워지거나 이름이 바뀔 때) |
-| `supervision.ulwPlan.tokens` | `300000` | 한도 플래그 없이 시작한 ulw-plan 레인의 토큰 한도. `supervision.defaults.tokens`가 있으면 그것을 씀. `null`은 끔 |
+| `supervision.ulwPlan.tokens` | `300000` | 한도 플래그 없이 시작한 ulw-plan 레인의 토큰 한도. `supervision.defaults.tokens`가 있으면 그것을 씀. `null`은 끔. hc에서는 적용되지 않습니다. hc에서는 omp가 세션 파일을 알려 주지 않아 값을 알 수 없기 때문입니다. 그래서 아래의 60분 시간 한도만 적용됩니다 |
 | `supervision.ulwPlan.wallMinutes` | `60` | 한도 플래그 없이 시작한 ulw-plan 레인의 시간 한도(분). `supervision.defaults.wallMinutes`가 있으면 그것을 씀. `null`은 끔 |
 | `guard.loadAlertPct` | `150` | 코어당 1분 부하(%)가 이보다 높으면 알림 |
 | `guard.loadOkPct` | `80` | 알림을 풀려면 부하(%)가 이보다 낮아져야 함 |

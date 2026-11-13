@@ -536,11 +536,11 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 | `workflow` | unset | every lane's workflow unless `seori start --workflow` says otherwise: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` runs lanes under that omp-ulw workflow; unset is plain omp goal mode. See [Workflows](#workflows) |
 | `startupWaitSeconds` | `180` | how long `seori start` watches a new lane for a startup verdict (first check 20 s after the kickoff, then every 10 s); see [How a lane starts](#how-a-lane-starts) |
 | `supervision.defaults.wallMinutes` | `null` | wall-clock ceiling per lane, in minutes; `null` is off |
-| `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off |
-| `supervision.defaults.costUsd` | `null` | cost ceiling per lane, in US dollars; `null` is off |
+| `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off. On hc it is not enforced: omp reports no session file there, so the reading is unknown |
+| `supervision.defaults.costUsd` | `null` | cost ceiling per lane, in US dollars; `null` is off. On hc it is not enforced: omp reports no session file there, so the reading is unknown |
 | `supervision.hungAfterMin` | `20` | minutes with no report and no file change before a working lane is reported stalled |
 | `supervision.activityPaths` | `[]` | files or directories (relative to each lane's cwd) whose change counts as every lane's progress (a directory: an entry added, removed or renamed) |
-| `supervision.ulwPlan.tokens` | `300000` | token ceiling for a ulw-plan lane started without ceiling flags, unless `supervision.defaults.tokens` is set; `null` is off |
+| `supervision.ulwPlan.tokens` | `300000` | token ceiling for a ulw-plan lane started without ceiling flags, unless `supervision.defaults.tokens` is set; `null` is off. On hc it is not enforced: omp reports no session file there, so the reading is unknown and only the 60-minute wall-clock ceiling below applies |
 | `supervision.ulwPlan.wallMinutes` | `60` | wall-clock ceiling in minutes for a ulw-plan lane started without ceiling flags, unless `supervision.defaults.wallMinutes` is set; `null` is off |
 | `guard.loadAlertPct` | `150` | 1-minute load per core (%) above which the guard alerts |
 | `guard.loadOkPct` | `80` | load per core (%) it must fall under to clear |

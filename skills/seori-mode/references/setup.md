@@ -72,14 +72,14 @@ Tell the owner the lead is up and which terminal it is in.
 - `closeAfterMin`: how long after READY a lane with a Done line closes on its own.
 - `progressEveryMin`: how often a lane with a thread gets its newest report posted there.
 - `blockedPromptMin`: how long a lane may sit on a dialog (tool approval or question) before the lead gets one `[BLOCKED-PROMPT]`.
-- `supervision.defaults`: wall-clock, token and cost ceilings for every lane (`null` is off); `hungAfterMin`: when a working lane with no report and no file change is reported stalled; `activityPaths`: files or directories (relative to each lane's cwd) whose change counts as progress besides git status (a file when written, a directory only when an entry is added, removed or renamed; per lane: `seori start --activity-path`).
+- `supervision.defaults`: wall-clock, token and cost ceilings for every lane (`null` is off; on hc only the wall-clock one is enforced, since token and cost read as unknown there); `hungAfterMin`: when a working lane with no report and no file change is reported stalled; `activityPaths`: files or directories (relative to each lane's cwd) whose change counts as progress besides git status (a file when written, a directory only when an entry is added, removed or renamed; per lane: `seori start --activity-path`).
 - `guard`: host load, memory, disk and pane-count lines; `seori can-launch` holds new lanes past them.
 - `heavy`: slots and load limit for `seori heavy`.
 
 Write it only with the owner's go, and only the fields they want changed.
 
 - `workflow`: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` starts every lane under that omp-ulw workflow (below); leave it out for plain omp goal mode. `seori start --workflow <W>|none` picks it per lane.
-- `supervision.ulwPlan`: the token and wall-clock ceilings a ulw-plan lane gets when neither its start nor `supervision.defaults` sets them (default `{ "tokens": 300000, "wallMinutes": 60 }`, `null` switches one off).
+- `supervision.ulwPlan`: the token and wall-clock ceilings a ulw-plan lane gets when neither its start nor `supervision.defaults` sets them (default `{ "tokens": 300000, "wallMinutes": 60 }`, `null` switches one off). On hc omp reports no session file, so token and cost ceilings read as unknown and are not enforced: only the wall-clock ceiling applies.
 
 ### Optional: omp-ulw
 
