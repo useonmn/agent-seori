@@ -533,13 +533,18 @@ describe("SlackAdapter removed user-token mode", () => {
 });
 
 describe("SlackAdapter removed agent mode", () => {
-  test("leftover agent options are ignored with one warning naming them; the adapter still starts", () => {
+  test("leftover agent options are ignored with one warning from receive (the daemon), none from a CLI send or edit", async () => {
     const warned: string[] = [];
     const err = console.error;
     console.error = (...a: unknown[]) => void warned.push(a.join(" "));
+    const env = { SEORI_SLACK_BOT_TOKEN: "xoxb-1", SEORI_SLACK_APP_TOKEN: "xapp-1" };
     try {
-      new SlackAdapter({ source: "slack", owner: OWNER, options: { agent: true, agentStatus: "x" } }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } });
-      new SlackAdapter({ source: "slack", owner: OWNER }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } });
+      const leftover = new SlackAdapter({ source: "slack", owner: OWNER, options: { agent: true, agentStatus: "x" } }, home(), { env });
+      expect(warned).toEqual([]);
+      const stopped = new AbortController();
+      stopped.abort();
+      await leftover.receive(stopped.signal, async () => {});
+      await new SlackAdapter({ source: "slack", owner: OWNER }, home(), { env }).receive(stopped.signal, async () => {});
     } finally {
       console.error = err;
     }
