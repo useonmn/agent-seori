@@ -1,6 +1,6 @@
 # seori (서리)
 
-A multi-session coding-agent harness. Its agent is [omp](https://github.com/can1357/oh-my-pi) (oh-my-pi), the only one it runs. It runs on [hc](https://herdr.dev) (herdr-core) by default; [herdr](https://github.com/herdrdev/herdr) still works as an option. Linux is the primary platform and macOS is supported; Windows is not.
+A multi-session coding-agent harness. Its agent is [omp](https://github.com/can1357/oh-my-pi) (oh-my-pi), the only one it runs. It runs on [hc](https://herdr.dev) (herdr-core). Linux is the primary platform and macOS is supported; Windows is not.
 
 English | [한국어](README.ko.md)
 
@@ -28,9 +28,9 @@ Roles:
 
 How the lead talks to you: it reacts with eyes to each of your messages and handles it, reading the message you replied to first (on Telegram a bot cannot fetch an older message, so it sees only the text of your reply). Each job gets one thread with one status message it edits in place (⏳ while working, ✅ when done) and a status emoji at the start of the thread name (🔄 working, ⏸ waiting, ✅ done); when the job is done it removes the reaction and closes the thread, and if you write there again it reopens the thread and the job's lane. A reply is one message that grows by editing, not a burst of messages. seori itself only sends and edits messages; reactions, reading a replied-to message, thread names and closing, and finished files go through the optional agent-messenger's bot commands (otherwise the lead skips them, and posts a file's path or link). Apart from those status markers it writes no emojis, and it sends as the bot.
 
-The runtime gives every session a terminal and reports the agent's state in it (idle, working, blocked). seori reads that state before it does anything to a session. hc is the default runtime and herdr is the other one; the agent is always omp. [docs/runtime.md](docs/runtime.md) explains how the runtime is picked and how the two runtimes differ.
+The runtime gives every session a terminal and reports the agent's state in it (idle, working, blocked). seori reads that state before it does anything to a session. The runtime is hc (herdr-core) and the agent is always omp. [docs/runtime.md](docs/runtime.md) explains what seori does on hc.
 
-The examples below show hc refs (`hc:t7`). On herdr the same commands take pane ids such as `w1:p3`.
+The examples below show hc refs (`hc:t7`).
 
 ## Requirements
 
@@ -40,10 +40,6 @@ The examples below show hc refs (`hc:t7`). On herdr the same commands take pane 
 - omp (oh-my-pi) on PATH, logged in to a model provider.
 - On Linux, a running systemd user session (`systemctl --user`): `seori up` runs the daemon and both loops as `systemd --user` units. macOS needs no systemd; there they run in hc terminals.
 - The GitHub CLI `gh`, for PR head SHAs, checks, reviews and the merge.
-
-Optional:
-
-- herdr 0.9.5 or newer instead of hc, with its omp integration installed (`herdr integration install omp`; `herdr integration status` must not say `not installed` on the `omp:` line). Without the integration herdr reports omp as idle at all times, so seori refuses to start lanes there.
 
 ## Quick start by hand
 
@@ -59,9 +55,7 @@ seori up
 # UP lead=hc:t1 duty=hc:t2 units=seori-seori-1a2b3c4d-daemon.service,seori-seori-1a2b3c4d-duty.service,seori-seori-1a2b3c4d-hourly.service home=~/.seori name=seori
 ```
 
-On hc, `seori up` opens two terminals, the lead (named after the instance, `seori` by default) and the duty session (`seori-duty`), both labelled `seori.group=<name>`. Their working directory is `$SEORI_HOME` unless you pass `--cwd`. On Linux the daemon, the duty loop and the hourly loop run as `systemd --user` units named `seori-<name>-<hash>-daemon`, `seori-<name>-<hash>-duty` and `seori-<name>-<hash>-hourly` (`<hash>` is 8 hex digits of `$SEORI_HOME`'s path); they are enabled, so they come back after a reboot or a WSL restart. On macOS the same three processes run in hc terminals of the group. `seori up` waits for the daemon's heartbeat before it starts the loops, and a second `seori up` prints `ALREADY UP` and opens nothing.
-
-On herdr, `seori up` opens a workspace with a lead pane, a duty pane, the duty loop, the hourly loop and the daemon, as before.
+`seori up` opens two terminals, the lead (named after the instance, `seori` by default) and the duty session (`seori-duty`), both labelled `seori.group=<name>`. Their working directory is `$SEORI_HOME` unless you pass `--cwd`. On Linux the daemon, the duty loop and the hourly loop run as `systemd --user` units named `seori-<name>-<hash>-daemon`, `seori-<name>-<hash>-duty` and `seori-<name>-<hash>-hourly` (`<hash>` is 8 hex digits of `$SEORI_HOME`'s path); they are enabled, so they come back after a reboot or a WSL restart. On macOS the same three processes run in hc terminals of the group. `seori up` waits for the daemon's heartbeat before it starts the loops, and a second `seori up` prints `ALREADY UP` and opens nothing.
 
 `seori down` stops the processes, disables and removes the units and closes every terminal in the group, lanes included. Run it from a shell outside the group: run from inside the lead's terminal, it closes that terminal last and its own output stops there.
 
@@ -100,30 +94,26 @@ A session you started yourself can join seori too. `seori adopt <key> --ref hc:t
 ## Commands
 
 ```
-seori up [--cwd DIR]                         start this home's lead, duty, duty loop, hourly loop and daemon (once per home);
-                                            hc: lead and duty terminals labelled seori.group=<name> (cwd default $SEORI_HOME);
+seori up [--cwd DIR]                         start this home's lead, duty, duty loop, hourly loop and daemon (once per home):
+                                            lead and duty terminals labelled seori.group=<name> (cwd default $SEORI_HOME);
                                             daemon, duty loop and hourly loop as systemd --user units
-                                            seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS;
-                                            herdr: one workspace with five panes
-seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
-seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
+                                            seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS
+seori role <lead|duty> [REF]                 register a session (hc:t7) as lead or duty (default: this one)
+seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal, agent session, lessons + brief + lane rules
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
             [--activity-path PATH ...] [--model M] [--workflow W|none]
                                             Done line read back live before close; ID = lead channel id for progress posts;
                                             ceilings block (report to lead); exits 4 with HOLD when the host is full
-seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
+seori adopt <key> --ref <hc:tN> [--brief FILE] [--cwd DIR]
                                             register an already-running session as a lane (types nothing into it)
 seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
                                             vanished lane is marked lost (no session is ever closed)
-seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
-                                            hand sessions over to another runtime: checkpoint, handoff brief, replacement
-                                            verified, inbox moved; exit 3 after a rollback (docs/runtime.md)
 seori transcribe <audio-file>                run hooks.transcribe (config.json, argv template with {file}) and print the text
 seori report <key> --text T [--status working|waiting]
 seori ready <key> --text T --evidence LINK [--evidence LINK ...]
 seori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane's agent is idle
                 [--to-shell]                operator only: type this one message into a pane with no agent
-seori inbox list <pane|role|key>             queued entries: index, state (queued|typed|held), sender, time, first 60 chars
+seori inbox list <pane|role|key>             queued entries: index, state (queued|held), sender, time, first 60 chars
 seori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
 seori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
 seori duty [--once] [--interval SECONDS]     flush inboxes, nudge silent lanes, escalate, detect lost lanes, close Done lanes,
@@ -188,30 +178,13 @@ seori watch log <id|name> [-n N]             the watch's last events
 
 `--text` may be left off to read the message from stdin. `send`, `report` and `ready` exit 3 and print `HELD <target>` when a delivery may or may not have reached the pane; a held message is never resent, so check the pane, then `seori inbox ack` or `seori inbox resend` it. `QUEUED` (exit 0) means it waits in the pane's inbox. `object` prints `OBJECTED <key>` and reports its message to the lane the same way. `msg send` exits 0 with `SENT`, or with `DRAFTED` or `REPLACED` while the lead extension runs (see [Reply drafts](#reply-drafts)), 3 with `HELD` when the messenger may or may not have the reply (check the chat, then pass `--again` to send it anyway), and 2 when it refuses, for example a second reply to an id that is already answered. A notice (`msg send --to`) is HELD (exit 3) the same way when it may have arrived, but it has no ledger: sending it again sends a second copy, and `--again` is for replies only. `start` and `can-launch` exit 4 with `HOLD <reasons>` when the host has no room for a lane; `pause` and `resume` exit 3 when the pane did not confirm; `verify-pr` exits 2 on FAIL; `boot` exits 1 when something could not be read or the registry drifted. `transcribe` exits 2 when no `hooks.transcribe` is set, the file is missing or the hook failed. Refusals, including a broken `config.json` for the commands that read it, exit 2. The commands the agents see are rendered with the full path to `src/cli.ts` and `SEORI_HOME` set, so `seori` does not need to be on their PATH.
 
-### If a migration gets stuck
-
-`seori migrate` writes a journal for each lane or role it moves, `$SEORI_HOME/migrate/<name>.json` (`<name>` is the lane key, `lead` or `duty`), and rewrites it before every step. While that file exists, the inbox of the old session and of its replacement is held: messages are queued, not typed in, and a lane can't be paused, resumed or auto-closed (`lane <key> is being migrated`). A journal left behind by a run that died or was killed is what a stuck migration looks like. `seori migrate --to <runtime> --lane <key> --dry-run` (or `--role lead|duty`) shows it as `PLAN <name> ... (resume at <phase>)`.
-
-First, run the same command again, with the same `--to`. A run toward a different runtime is refused until this one is finished. The re-run picks up at the journal's `phase`:
-
-- `hold`: nothing has moved yet. The re-run asks for a checkpoint again (unless the handoff brief was already written) and opens the replacement.
-- `creating`: a replacement (`newRef`) exists, but omp may not have started in it. The re-run closes it and opens a fresh one.
-- `opened`: the replacement is up. The re-run checks it reaches idle or working within 3 minutes, then moves the inbox and points the lane or role at it. If the check fails, it rolls back (`MIGRATE_ROLLBACK`, exit 3): the replacement is closed and the old session keeps its inbox.
-- `switched`: the record already names the replacement. Only closing the old session (`from`) and draining its inbox are left, which is what the re-run does.
-
-When the journal doesn't parse, seori names the file and stops. Open it: if it's readable enough to show the phase and refs, fix it and re-run, otherwise treat it as the last resort below.
-
-Last resort, when re-running keeps failing: make sure no `seori migrate` for that name is still running, then delete `$SEORI_HOME/migrate/<name>.json` (and a `<name>.lock` next to it, if one is left). Close by hand, in hc or herdr, whichever of `from` and `newRef` the lane or role does not name any more: before `switched` that is usually `newRef`, at `switched` it's `from`. For a lane, also remove `"migration": true` from `$SEORI_HOME/lanes/<key>.json`, or it stays held. For a role, if it points at the wrong session, set it with `seori role lead|duty <REF>`.
-
 ## How a lane starts
 
 `seori start <key> --brief FILE` first checks that the host has room for a lane (see [Host guard](#host-guard-can-launch-and-heavy-slots); `--force` skips the room check) and refuses a Done line (`--done`) it cannot parse. It writes the lessons for the lane's directory (see [Lessons](#lessons)), the brief and the lane rules to `~/.seori/briefs/<key>.md` and opens a new terminal with a plain shell.
 
-On hc the terminal joins the instance's group (`seori.group=<name>`, with `seori.role` and `seori.name` labels). seori types the agent command into it and waits for the agent to report its first status. It then sends the kickoff: a `/goal` command whose objective points the agent at the brief and the lane key. seori then waits for omp to report `working` on the kickoff; if it does not, seori presses Enter once more (see the startup verdict below for what happens next).
+The terminal joins the instance's group (`seori.group=<name>`, with `seori.role` and `seori.name` labels). seori types the agent command into it and waits for the agent to report its first status. It then sends the kickoff: a `/goal` command whose objective points the agent at the brief and the lane key. seori then waits for omp to report `working` on the kickoff (see the startup verdict below for what happens when it does not).
 
-On herdr seori first checks herdr's omp integration, opens a new tab and runs `herdr agent start --kind omp`, which returns once omp is ready for input, then sends the same `/goal` kickoff with `herdr agent prompt`.
-
-Either way the lane is recorded as `working` (with its Done line, `--thread` and ceilings, when given) and the lead gets `[START <key>]`.
+The lane is recorded as `working` (with its Done line, `--thread` and ceilings, when given) and the lead gets `[START <key>]`.
 
 `seori start` then prints `STARTED <key> pane=<ref> brief=<path>` and watches the new lane before it returns. It reads the lane's screen (unwrapped: a line the terminal wrapped over several rows reads as one) and its status 20 s after the kickoff, then every 10 s for up to `startupWaitSeconds` (default 180; a slow host can take minutes before omp's first turn runs), and prints one more line:
 
@@ -295,7 +268,7 @@ seori lesson mark <id> --outcome helped|no-effect|harmful|encoded
 
 - A lesson belongs to one directory: the lane's cwd (`lesson add <key>`, `done --lesson`), or `--cwd DIR` (recorded with lane `lead`). The path is resolved to its real path and matched exactly.
 - `seori start` puts up to 8 of the newest `pending` or `helped` lessons for the lane's cwd at the top of the brief, under `## Lessons for this repo`.
-- A `--global` lesson is the lead's standing rule for every lane, whatever its repo: it has no cwd and is recorded with lane `lead`. `seori start` puts up to 4 of the newest pending or helped global lessons above the repo's, under `## Lessons for every lane`; the cap is separate, so global rules never push repo lessons out. `--global` and `lesson mark` on a global lesson are refused from a lane's terminal (the terminal of an open lane, found from `HC_TERMINAL_ID` / `HERDR_PANE_ID`). That check is a convenience against accidents, not a security boundary.
+- A `--global` lesson is the lead's standing rule for every lane, whatever its repo: it has no cwd and is recorded with lane `lead`. `seori start` puts up to 4 of the newest pending or helped global lessons above the repo's, under `## Lessons for every lane`; the cap is separate, so global rules never push repo lessons out. `--global` and `lesson mark` on a global lesson are refused from a lane's terminal (the terminal of an open lane, found from `HC_TERMINAL_ID`). That check is a convenience against accidents, not a security boundary.
 - A new lesson is `pending`; `lesson mark` records its outcome. Lessons marked `no-effect`, `harmful` or `encoded` no longer go into briefs.
 - `done --lesson` never blocks the close. Its evidence is `--evidence`, else the lane's READY evidence, else its Done line. A lesson that is refused prints `LESSON_WARNING <why>` after `DONE`.
 - The rule is one line of at most 400 characters, the evidence one line of at most 2000.
@@ -338,9 +311,9 @@ A paused lane gets no nudges and no ceiling or stall reports. A report from a pa
 
 The duty loop watches every open lane for two things and tells the lead once each. seori never messages, pauses or kills a lane for them; the lead decides.
 
-Ceilings. A lane can have a wall-clock, a token and a cost ceiling. `seori start --wall-minutes N --token-limit N --cost-limit N` sets them for one lane; `none` switches one off, and a flag left out takes the config default. A lane started with none of these flags follows `supervision.defaults` in `config.json`, which are all off by default. Wall-clock time counts from the lane's start. Tokens and cost are summed over the assistant messages in the lane's agent session file, whose path comes from the runtime. Only herdr reports that path today, so on hc the totals read as unknown and only the wall-clock ceiling applies; a total that cannot be read never reaches a ceiling and is shown once as a `usage-unknown` duty event. A reached ceiling is told as `[BLOCKED <key>] <which> ceiling reached (<reading>, limit <limit>); the lane keeps running until you decide`, once per ceiling and limit (a raised limit is told again once reached), and logged on the lane.
+Ceilings. A lane can have a wall-clock, a token and a cost ceiling. `seori start --wall-minutes N --token-limit N --cost-limit N` sets them for one lane; `none` switches one off, and a flag left out takes the config default. A lane started with none of these flags follows `supervision.defaults` in `config.json`, which are all off by default. Wall-clock time counts from the lane's start. Tokens and cost are summed over the assistant messages in the lane's agent session file, whose path comes from the runtime. hc reports no such path today, so the totals read as unknown and only the wall-clock ceiling applies; a total that cannot be read never reaches a ceiling and is shown once as a `usage-unknown` duty event. A reached ceiling is told as `[BLOCKED <key>] <which> ceiling reached (<reading>, limit <limit>); the lane keeps running until you decide`, once per ceiling and limit (a raised limit is told again once reached), and logged on the lane.
 
-Cost record. When a lane closes (`seori done`, or seori's own close after a Done line), what it spent is read from its agent session file before the session closes and appended to `$SEORI_HOME/cost.jsonl` as one line: `{ "key", "closeKey": "<key>@<createdAt>", "tokens", "costUsd", "at" }`. A total that cannot be read (on hc today) is `null`, never 0. A retried close adds no second line. The file stays local; nothing is sent anywhere unless you set `hooks.recordCost`, which then runs once with the reading. A failure here is one stderr line and never keeps a lane open.
+Cost record. When a lane closes (`seori done`, or seori's own close after a Done line), what it spent is read from its agent session file before the session closes and appended to `$SEORI_HOME/cost.jsonl` as one line: `{ "key", "closeKey": "<key>@<createdAt>", "tokens", "costUsd", "at" }`. A total that cannot be read (hc reports none today) is `null`, never 0. A retried close adds no second line. The file stays local; nothing is sent anywhere unless you set `hooks.recordCost`, which then runs once with the reading. A failure here is one stderr line and never keeps a lane open.
 
 Stalls. A working lane that the runtime reads working but that has sent no report and changed no file for `supervision.hungAfterMin` minutes (default 20) is told as `[STALLED <key>] ...`, once per stall. A file change is a new HEAD or a change in the paths `git status` lists in the lane's cwd (`node_modules` left out), with their times and sizes. Paths given with `seori start --activity-path PATH` (repeatable) or in `supervision.activityPaths`, relative to the lane's cwd, count too, git checkout or not: a file counts when it is written (a symlink's target is read), a directory only when an entry in it is added, removed or renamed, so list a file itself to catch rewrites inside a directory. A lane writing a log outside its checkout is then not reported stalled while it writes; outside a git checkout and without activity paths only reports count. A waiting lane said it waits, so its quiet is no stall. The change history is kept in `duty/supervision.json`.
 
@@ -377,11 +350,11 @@ The lead's rules: `add` the moment a request arrives, `next` and `note` as it mo
 - `DAEMON` heartbeat age (fresh or stale) and a `MESSENGER` health line per source;
 - `BOOT checked`, `BOOT incomplete`, or `BOOT failed (N drift)`.
 
-A stale heartbeat is not a failure. `boot` exits 1 when an input could not be read (each such input has its own line) or when the registry drifted from the runtime: one `DRIFT` line per problem, either `DRIFT lane <key> has no session <ref>` (an open lane whose session the runtime reports gone) or `DRIFT session <ref> is in group <name> but has no lane or role record` (an agent session in this home's `seori.group` with no lane or role record; shells such as the loop panes are not flagged). It works on hc (the `seori.group` label) and herdr (the workspace of that name); nothing is relaunched or closed.
+A stale heartbeat is not a failure. `boot` exits 1 when an input could not be read (each such input has its own line) or when the registry drifted from the runtime: one `DRIFT` line per problem, either `DRIFT lane <key> has no session <ref>` (an open lane whose session the runtime reports gone) or `DRIFT session <ref> is in group <name> but has no lane or role record` (an agent session in this home's `seori.group` with no lane or role record; shells such as the loop panes are not flagged). Nothing is relaunched or closed.
 
 ## Host guard, can-launch and heavy slots
 
-The host guard takes one reading of the machine: the 1-minute load per core in percent (100 = every core busy), free memory, free disk on the volumes lanes work on (`df -k -P` of each open lane's directory, else of `$HOME`; `$SEORI_HOME` is not measured, it may sit on a small tmpfs) and the number of live sessions the runtime lists (`hc ls` or `herdr pane list`).
+The host guard takes one reading of the machine: the 1-minute load per core in percent (100 = every core busy), free memory, free disk on the volumes lanes work on (`df -k -P` of each open lane's directory, else of `$HOME`; `$SEORI_HOME` is not measured, it may sit on a small tmpfs) and the number of live sessions hc lists (`hc ls`).
 
 - `seori can-launch` prints `CAN_LAUNCH` (exit 0) or `HOLD <reason> | <reason>` (exit 4). It holds a new lane when free memory is under `guard.memFreeMinPct`, free disk under `guard.diskFreeMinGb`, or there are more panes than `guard.panesMax`. CPU load never holds a launch: it moves too fast to plan around (heavy commands wait for it instead). A figure that cannot be read holds nothing and raises no alert, so a flaky `df` or runtime call does not stop all work; `seori guard` shows it as `unknown`.
 - `seori start` runs the same check: when the host is full it prints the `HOLD` line and `lane <key> not started; queue it (seori backlog add) or pass --force`, and exits 4. `--force` skips the check. The lead's rules tell it to run `seori can-launch` before opening a lane and to queue the work on HOLD.
@@ -462,7 +435,7 @@ The `fake` adapter is made of files under `$SEORI_HOME/messenger/fake/`: append 
 
 How a message travels:
 
-1. The daemon (a systemd unit on Linux with hc, else a terminal or pane of `seori up`) receives it and, if it is from the owner, stores it in `$SEORI_HOME/lead/` (synced to disk) before acknowledging it to the messenger. A message received twice is stored once. The daemon writes a heartbeat every few seconds; `seori daemon-loop` restarts it, so a crashed daemon is back within about a second (on Linux systemd restarts the loop itself if it fails). When `messengers.json` changes (created, edited or removed), the daemon exits and the loop starts it again with the new file, so you can configure messengers after `seori up`. A `messengers.json` that cannot be read is logged in that pane and the daemon runs without messengers (heartbeat and watches keep going) until the file changes. Ctrl-C in that pane (status 130), or `kill` of the daemon process (143), stops the daemon and the loop. SIGHUP (129, also what closing the pane sends) stops the daemon cleanly, its watch commands included; the loop starts it again if the loop is still running. Only one daemon runs per `$SEORI_HOME` (`messenger/daemon.lock`).
+1. The daemon (a systemd unit on Linux, an hc terminal of `seori up` on macOS) receives it and, if it is from the owner, stores it in `$SEORI_HOME/lead/` (synced to disk) before acknowledging it to the messenger. A message received twice is stored once. The daemon writes a heartbeat every few seconds; `seori daemon-loop` restarts it, so a crashed daemon is back within about a second (on Linux systemd restarts the loop itself if it fails). When `messengers.json` changes (created, edited or removed), the daemon exits and the loop starts it again with the new file, so you can configure messengers after `seori up`. A `messengers.json` that cannot be read is logged in that pane and the daemon runs without messengers (heartbeat and watches keep going) until the file changes. Ctrl-C in that pane (status 130), or `kill` of the daemon process (143), stops the daemon and the loop. SIGHUP (129, also what closing the pane sends) stops the daemon cleanly, its watch commands included; the loop starts it again if the loop is still running. Only one daemon runs per `$SEORI_HOME` (`messenger/daemon.lock`).
 2. The lead's omp loads `extensions/lead-channel.ts` (only the lead: duty, lanes and the reviewer never load it). It delivers each stored message into the lead's conversation with its id, and records each delivery in a ledger next to it. A message stays open across an agent restart, `/new`, `/resume` or `/fork`.
 3. The lead answers with `seori msg send --reply-to <id> --text '...'`, or `seori msg close <id> --why '...'` when no answer is needed. The reply is kept as a draft until the lead's turn ends (see Reply drafts below). Only a reply the messenger accepted, or a close, ends an id. A second reply to the same id is refused; a reply that may or may not have arrived (a timeout after sending) is recorded and not retried until you check the chat and pass `--again`.
 4. An id that is still unanswered is delivered again, up to 3 deliveries in total; after that it is given up. An id with an open draft is `drafted` in `seori msg list` and counts as answered: it is not delivered again.
@@ -497,7 +470,7 @@ Kinds:
 - `--command CMD [--filter RE] [--cwd DIR]`: a long-running shell command. Each output line matching the regex (every line without `--filter`) is an event; lines arriving together become one event (at most 40 lines per event; a line longer than 64 KiB is cut). A command that exits 0 ends the watch as done. One that crashes (non-zero exit or a signal) is restarted with backoff up to 3 times in a row, then the watch is stopped; a run that lasted longer than the last backoff resets that count. If the daemon itself died without cleaning up, the restarted daemon kills the command it left behind before starting it again.
 - `--file PATH`: a file or directory; every change (created, modified, deleted) is an event, including one made while the daemon was down. A directory is checked as a whole tree (newest change, total size and entry count; up to 10,000 entries and 8 levels deep, symlinks not followed).
 - `--checks OWNER/REPO#N`: a PR's checks; one event when every check has finished (pass or fail), then the watch is done.
-- `--pane PANE --status idle|working|blocked|gone`: a session's agent state (`hc:tN` or a herdr pane); one event when it gets there (`idle` also matches herdr's `done`), then the watch is done.
+- `--pane PANE --status idle|working|blocked|gone`: a session's agent state (`hc:tN`); one event when it gets there (`idle` also matches `done`), then the watch is done.
 
 A muted watch only counts what it misses, and each watch's event log is kept to about 1 MiB (the older part moves to `<id>.events.jsonl.1`).
 
@@ -516,7 +489,7 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
 
 ## Workflows
 
-A lane runs in omp goal mode: its kickoff is `/goal Read your brief at ...`. A host that has the optional [omp-ulw](https://github.com/dbc-hbin/omp-ulw) extension can run a lane under one of its workflows instead: `seori start --workflow <W>` (or `"workflow": "<W>"` in config.json for every lane) makes the kickoff `/goal <W> <keyword> Read your brief at ...`. omp still holds the lane's native goal, so the startup verdict, `seori pause`, `seori resume` and `seori migrate` work as before; a migrated lane keeps its workflow. `--workflow none` starts one lane in plain goal mode whatever the config says.
+A lane runs in omp goal mode: its kickoff is `/goal Read your brief at ...`. A host that has the optional [omp-ulw](https://github.com/dbc-hbin/omp-ulw) extension can run a lane under one of its workflows instead: `seori start --workflow <W>` (or `"workflow": "<W>"` in config.json for every lane) makes the kickoff `/goal <W> <keyword> Read your brief at ...`. omp still holds the lane's native goal, so the startup verdict, `seori pause` and `seori resume` work as before. `--workflow none` starts one lane in plain goal mode whatever the config says.
 
 | `--workflow` | kickoff starts with | for |
 |---|---|---|
@@ -529,7 +502,7 @@ A lane runs in omp goal mode: its kickoff is `/goal Read your brief at ...`. A h
 
 The keyword turns on the omp mode the workflow's own command (`/mass-ulw` and the like) would turn on; seori never sends those commands, because they run without omp's goal and seori could not track the lane. Each workflow keeps its own state files and closes the goal when they say it is done.
 
-`ulw-plan` is the exception: it closes its goal once the reviewed plan is written, while the plan still waits for the owner's approval. Its READY means "plan delivered, approval needed": the lead shows the plan to the owner and asks before any `ulw-execute`. Its review rounds have no cap of their own, so a ulw-plan lane started without ceiling flags gets `supervision.ulwPlan` ceilings (default 300000 tokens and 60 minutes; `supervision.defaults` win when set) and seori reports `[BLOCKED <key>]` when one is reached. Token totals are only read on herdr; on hc the wall-clock ceiling is the one that applies.
+`ulw-plan` is the exception: it closes its goal once the reviewed plan is written, while the plan still waits for the owner's approval. Its READY means "plan delivered, approval needed": the lead shows the plan to the owner and asks before any `ulw-execute`. Its review rounds have no cap of their own, so a ulw-plan lane started without ceiling flags gets `supervision.ulwPlan` ceilings (default 300000 tokens and 60 minutes; `supervision.defaults` win when set) and seori reports `[BLOCKED <key>]` when one is reached. hc reports no token totals today, so the wall-clock ceiling is the one that applies.
 
 Before it opens a pane, `seori start` checks `omp plugin list --json` and refuses `--workflow` when omp-ulw is not enabled, so a lane never gets a goal that starts with a word nothing understands. omp-ulw is a separate install that seori never bundles or installs; see the seori-mode skill's `references/setup.md`.
 
@@ -551,15 +524,11 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 }
 ```
 
-`"runtime": "hc" | "herdr"` picks the runtime (see [docs/runtime.md](docs/runtime.md)); `"agent"` may only be `"omp"`, and any other value is refused; `hooks` is described under [Hooks](#hooks).
-
-```json
-{ "runtime": "hc" }
-```
+`"agent"` may only be `"omp"`, and any other value is refused; `hooks` is described under [Hooks](#hooks).
 
 | field | default | meaning |
 |---|---|---|
-| `name` | `"seori"` | this instance's name: the `seori.group` label of its hc terminals, or the herdr workspace `seori up` opens (and a lane's workspace when it has none to join); also part of the systemd unit names. 1-40 letters (any script), digits, `.`, `_` or `-`, starting with a letter or digit. Give every instance on a PC its own; see [Several instances on one PC](#several-instances-on-one-pc) |
+| `name` | `"seori"` | this instance's name: the `seori.group` label of its hc terminals; also part of the systemd unit names. 1-40 letters (any script), digits, `.`, `_` or `-`, starting with a letter or digit. Give every instance on a PC its own; see [Several instances on one PC](#several-instances-on-one-pc) |
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: the Git identity a repo's commits must carry; verify-pr and the merge gate check the email. Repo keys match without case. A repo with no entry is not identity-checked |
 | `closeAfterMin` | `5` | minutes after READY that a lane with a Done line closes on its own, unless the lead objects |
 | `progressEveryMin` | `15` | a lane with `--thread` gets its newest report posted at most this often (minutes) |
@@ -621,7 +590,7 @@ The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name
 - creates `~/.seori` (or `$SEORI_HOME`) with mode 700;
 - warns when hc is missing, when hc's `config.toml` lacks `notes = false`, when omp, gh or `seori` on PATH is missing, and on Linux when `systemctl` is missing.
 
-It never installs hc, herdr, omp or gh, never edits hc's config, and never creates or overwrites `secrets.json`, `messengers.json` or `config.json`.
+It never installs hc, omp or gh, never edits hc's config, and never creates or overwrites `secrets.json`, `messengers.json` or `config.json`.
 
 To uninstall, run `seori down` (it stops the processes, removes the systemd units and closes the group's terminals), then `seori uninstall` (or `bash install.sh --uninstall`). It removes the skill link (or seori's own copy) and runs `bun unlink` for the `seori` command, and keeps `~/.seori` with your secrets and history unless you add `--purge`.
 
@@ -633,7 +602,7 @@ JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inb
 
 Each seori is one `$SEORI_HOME`. Its lanes, messages, daemon, loops, watches, worklog, secrets and messenger bot all live there, so two homes never see each other's state. To keep them apart in the runtime and the agent too:
 
-- **Name.** `name` in the home's `config.json` is its `seori.group` label on hc (or its herdr workspace) and part of its systemd unit names. The first instance needs nothing (the default is `seori`); give every other one its own name.
+- **Name.** `name` in the home's `config.json` is its `seori.group` label on hc and part of its systemd unit names. The first instance needs nothing (the default is `seori`); give every other one its own name.
 - **Agent memory.** omp's memory is one database per machine, so every home other than `~/.seori` gets `mnemopi.dbPath` set to `$SEORI_HOME/omp/memories/mnemopi.db` in its `prompts/agent-omp.yml`, and `~/.seori` keeps omp's own database.
 - **Once per home.** `seori up` in a home whose lead, loops or daemon are already running prints `ALREADY UP name=... home=...; nothing opened` and exits 0. Stop one instance with `seori down` under that home's `SEORI_HOME`; the others keep running.
 
@@ -657,13 +626,11 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 |---|---|
 | `SEORI_HOME` | state directory, default `~/.seori`; one per instance ([Several instances on one PC](#several-instances-on-one-pc)) |
 | `SEORI_PROMPTS_DIR` | directory the reviewer prompt and the lead/duty/lane prompts are read from instead of the repo's `prompts/` (the rendered copies still go to `$SEORI_HOME/prompts`) |
-| `SEORI_RUNTIME` | `hc` or `herdr`; overrides `"runtime"` in `config.json` and detection ([docs/runtime.md](docs/runtime.md)) |
 | `SEORI_AGENT` | may only be `omp` (the default); any other value, here or as `"agent"` in `config.json`, refuses every command with exit 2 |
-| `SEORI_AGENT_CMD` | the command seori runs for omp (lead, duty, lanes on hc, and the reviewer); default `omp`. Its basename must be `omp` (a path to omp or a wrapper named omp); anything else refuses every command with exit 2. On herdr, lead, duty and lanes always start through `herdr agent start --kind omp` |
+| `SEORI_AGENT_CMD` | the command seori runs for omp (lead, duty, lanes and the reviewer); default `omp`. Its basename must be `omp` (a path to omp or a wrapper named omp); anything else refuses every command with exit 2 |
 | `SEORI_MODEL` | model for every agent seori starts (`--model`) except a lane started with `seori start --model M`, and the reviewer's default model; unset = the agent's default |
-| `SEORI_CMD` | how the agents and loops call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=...] [SEORI_MODEL=...] bun <path>/src/cli.ts` |
+| `SEORI_CMD` | how the agents and loops call seori, default `SEORI_HOME=<home> [SEORI_MODEL=...] bun <path>/src/cli.ts` |
 | `SEORI_SH` | the sh that runs watch commands, default `sh` on PATH |
-| `SEORI_HERDR_SESSION` | a named herdr session to talk to |
 | `HC_SESSION`, `HC_SOCKET`, `XDG_RUNTIME_DIR` | which hc core seori talks to (hc's own variables); `seori up` passes them on to its systemd units |
 | `SEORI_SYSTEMD_DIR`, `SEORI_SYSTEMCTL` | where `seori up` writes its unit files (default `${XDG_CONFIG_HOME:-~/.config}/systemd/user`) and the systemctl it runs (default `systemctl`); the tests point both at fakes |
 | `SEORI_MAX_LANES` | default for `seori loop --max-lanes` (3) |
@@ -671,12 +638,12 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 | `SEORI_MAX_LOAD` | default for `seori loop --max-load` |
 | `SEORI_LANE` | set by seori in a lane's terminal; the default sender of `seori send` and the default owner of `seori watch add` |
 | `PI_CONFIG_FILES` | omp only: omp settings files; seori appends `$SEORI_HOME/prompts/agent-omp.yml` (`startup.setupWizard: false`) for the lead, duty and lane omp, so an omp whose setup version is behind still starts at its prompt instead of the onboarding wizard (log in to a provider with `omp login` first), and `$SEORI_HOME/prompts/lead-omp.yml` (`advisor.syncBacklog: strict`) for the lead's omp only. In a home other than `~/.seori`, `agent-omp.yml` also sets `mnemopi.dbPath` to `$SEORI_HOME/omp/memories/mnemopi.db` |
-| `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` (on hc, not in the lead, duty, lane or hourly-loop terminals) |
+| `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` (not in the lead, duty, lane or hourly-loop terminals) |
 
 ## Testing
 
 ```sh
-bun test         # unit tests against a fake hc, a fake herdr, a fake systemctl and a fake gh; no model is called
+bun test         # unit tests against a fake hc, a fake systemctl and a fake gh; no model is called
 bun run typecheck
 ```
 
@@ -684,15 +651,13 @@ GitHub Actions runs both on Ubuntu and macOS for every push and pull request (`.
 
 The hc end-to-end tests (`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`) start their own isolated hc core and need `SEORI_E2E_HC=1` and hc on PATH; they call no model. See [docs/runtime.md](docs/runtime.md#testing-against-an-isolated-hc-core).
 
-The older end-to-end tests in `test/e2e.test.ts` (lanes and the hourly loop), `test/e2e-channel.test.ts` (the messenger channel: idle, busy, burst, lead restart, `/new`, subagents, Esc, a model outage and recovery, a permanent outage ending in gave-up, daemon crash and config change) and `test/e2e-watch.test.ts` (watches: command filter and exit, crash restarts, file changes, `/new`, lead restart, daemon SIGKILL, wake budget and rearm, a lane-owned watch, pane state, limits, no leftover commands after herdr stops) need a real herdr with the omp integration installed, omp on PATH, and `SEORI_E2E_OMP=1`. They call a real model, so they cost money; without those they are skipped. The channel suite takes about 18 minutes and the watch suite about 6; `SEORI_E2E_ONLY=1,2,3` runs a subset (channel scenario 8, the outage, takes about 9 minutes on its own).
-
 ## Telemetry
 
 None. seori sends nothing anywhere.
 
 ## Differences from dori-superagent
 
-- Runtime: hc by default, like dori, with herdr as a second runtime behind the same interface. Sessions are grouped by the `seori.group` label (dori uses its own key), so seori and dori never claim each other's terminals.
+- Runtime: hc only. Sessions are grouped by the `seori.group` label (dori uses its own key), so seori and dori never claim each other's terminals.
 - Agent: omp only. Any other agent value is refused.
 - Linux runs the daemon and loops as `systemd --user` units; macOS keeps them in hc terminals.
 - Lanes start with a `/goal` kickoff, so each lane runs in goal mode. Briefs carry an observable exit condition.

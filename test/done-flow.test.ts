@@ -5,7 +5,7 @@ import { autoCloseTick, objectDone } from "../src/done-flow.ts";
 import { done, ready, Refusal, startLane } from "../src/harness.ts";
 import { addLesson } from "../src/lessons.ts";
 import type { SignalIo } from "../src/signals.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
 const MERGED = '{"state":"MERGED","mergeCommit":{"oid":"abc123"}}';
 
@@ -13,15 +13,15 @@ const MERGED = '{"state":"MERGED","mergeCommit":{"oid":"abc123"}}';
 function setup() {
   const w = new World();
   const d = w.deps();
-  const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
+  const lead = w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix the flaky login test.");
   const cwd = join(d.store.root, "work");
   mkdirSync(cwd);
   const state = { merged: false, dirty: "" };
   w.gh = () => ({ code: 0, stdout: state.merged ? MERGED : '{"state":"OPEN","mergeCommit":null}' });
-  // Every command that is neither gh nor herdr reaches World.reviewer: here, git.
+  // Every command that is neither gh nor hc reaches World.reviewer: here, git.
   w.reviewer = (argv) => {
     const verb = argv[2];
     if (verb === "rev-parse") return { code: 0, stdout: "true\n" };
@@ -41,7 +41,7 @@ describe("start with a Done line", () => {
   test("stores the Done line, thread and ceilings, and the footer states the line and the close rule", async () => {
     const { d, brief, cwd } = setup();
     const ceilings = { wallMinutes: 90, tokens: null, costUsd: 5 };
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd, done: "Done = merged o/r#1", thread: "telegram:42:5", ceilings });
+    const lane = await startLane(d, "fix-login", brief, { cwd, done: "Done = merged o/r#1", thread: "telegram:42:5", ceilings });
     expect(lane.done).toBe("merged o/r#1");
     expect(lane.thread).toBe("telegram:42:5");
     expect(lane.ceilings).toEqual(ceilings);
@@ -55,44 +55,44 @@ describe("start with a Done line", () => {
 
   test("stores --activity-path values on the lane; none stores nothing", async () => {
     const { d, brief, cwd } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd, activityPaths: ["out", "/data/run.log"] });
+    const lane = await startLane(d, "fix-login", brief, { cwd, activityPaths: ["out", "/data/run.log"] });
     expect(d.store.lane(lane.key)!.activityPaths).toEqual(["out", "/data/run.log"]);
-    const plain = await startLane(d, "fix-other", brief, { workspace: "w1", cwd, activityPaths: [] });
+    const plain = await startLane(d, "fix-other", brief, { cwd, activityPaths: [] });
     expect("activityPaths" in d.store.lane(plain.key)!).toBe(false);
-    await expect(startLane(d, "fix-empty", brief, { workspace: "w1", cwd, activityPaths: ["out", " "] })).rejects.toThrow("--activity-path needs a path");
+    await expect(startLane(d, "fix-empty", brief, { cwd, activityPaths: ["out", " "] })).rejects.toThrow("--activity-path needs a path");
     expect(d.store.lane("fix-empty")).toBeUndefined();
   });
 
   test("closeAfterMin comes from config.json", async () => {
     const { d, brief, cwd } = setup();
     writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ closeAfterMin: 12 }));
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd, done: "merged o/r#1" });
+    const lane = await startLane(d, "fix-login", brief, { cwd, done: "merged o/r#1" });
     expect(readFileSync(lane.brief, "utf8")).toContain("12 min after READY");
   });
 
   test("a lane without a Done line keeps the lead-closes rule", async () => {
     const { d, brief, cwd } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd });
+    const lane = await startLane(d, "fix-login", brief, { cwd });
     expect(lane.done).toBeUndefined();
     expect(readFileSync(lane.brief, "utf8")).toContain("8. Never close your own pane. The lead closes it with `seori done fix-login`.");
   });
 
-  test("a bad Done line is refused before any tab opens", async () => {
+  test("a bad Done line is refused before any terminal opens", async () => {
     const { w, d, brief } = setup();
-    await expect(startLane(d, "fix-login", brief, { workspace: "w1", done: "tests pass" })).rejects.toThrow(Refusal);
-    await expect(startLane(d, "fix-login", brief, { workspace: "w1", done: "" })).rejects.toThrow("empty Done line");
-    expect(w.calls.some((c) => c.argv[0] === "tab")).toBe(false);
+    await expect(startLane(d, "fix-login", brief, { done: "tests pass" })).rejects.toThrow(Refusal);
+    await expect(startLane(d, "fix-login", brief, { done: "" })).rejects.toThrow("empty Done line");
+    expect(w.calls.some((c) => c.argv[1] === "run")).toBe(false);
     expect(d.store.lane("fix-login")).toBeUndefined();
   });
 
   test("lessons for the repo go above the brief, exactly once on a retry with the written brief", async () => {
     const { d, brief, cwd } = setup();
     addLesson(d.store.root, { cwd, rule: "run bun test twice", evidence: "/tmp/log" }, 1000);
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd });
+    const lane = await startLane(d, "fix-login", brief, { cwd });
     const first = readFileSync(lane.brief, "utf8");
     expect(first).toStartWith("## Lessons for this repo\n- [pending; lead] run bun test twice\n\nFix the flaky login test.\n\n## Lane rules");
     d.store.saveLane({ ...d.store.lane("fix-login")!, status: "lost" });
-    await startLane(d, "fix-login", lane.brief, { workspace: "w1", cwd });
+    await startLane(d, "fix-login", lane.brief, { cwd });
     expect(readFileSync(lane.brief, "utf8")).toBe(first);
   });
 });
@@ -100,7 +100,7 @@ describe("start with a Done line", () => {
 describe("ready and objections", () => {
   test("READY on a Done lane tells the lead how to object and the lane when it closes; a new READY clears the objection", async () => {
     const { d, lead, brief, cwd, w } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd, done: "merged o/r#1" });
+    const lane = await startLane(d, "fix-login", brief, { cwd, done: "merged o/r#1" });
     const pane = w.panes.get(lane.paneId)!;
     await ready(d, "fix-login", "fixed", ["https://github.com/o/r/pull/1"]);
     expect(lead.received.at(-1)).toBe(
@@ -125,7 +125,7 @@ describe("ready and objections", () => {
 
   test("READY on a lane without a Done line keeps the old message and tells the lane nothing", async () => {
     const { d, lead, brief, cwd, w } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd });
+    const lane = await startLane(d, "fix-login", brief, { cwd });
     const before = w.panes.get(lane.paneId)!.received.length;
     await ready(d, "fix-login", "fixed", ["e"]);
     expect(lead.received.at(-1)).toBe("[READY fix-login] fixed\nevidence: e");
@@ -142,7 +142,7 @@ describe("ready and objections", () => {
 describe("done", () => {
   test("refuses a Done lane while a signal is not live or work is uncommitted, listing every reason; closes once both hold", async () => {
     const { d, brief, cwd, w, state } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd, done: "merged o/r#1; file out.txt" });
+    const lane = await startLane(d, "fix-login", brief, { cwd, done: "merged o/r#1; file out.txt" });
     await ready(d, "fix-login", "fixed", ["e"]);
     state.dirty = " M src/a.ts\n";
     await expect(done(d, "fix-login")).rejects.toThrow(
@@ -161,7 +161,7 @@ describe("done", () => {
 
   test("a lane objected to while its signals were read is not closed", async () => {
     const { d, brief, cwd, w, state } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd, done: "merged o/r#1" });
+    const lane = await startLane(d, "fix-login", brief, { cwd, done: "merged o/r#1" });
     await ready(d, "fix-login", "fixed", ["e"]);
     w.gh = () => {
       void objectDone(d, "fix-login", ["CI is red on main"]);
@@ -179,7 +179,7 @@ describe("done", () => {
 describe("autoCloseTick", () => {
   async function claimed(over: { done?: string } = {}) {
     const s = setup();
-    const lane = await startLane(s.d, "fix-login", s.brief, { workspace: "w1", cwd: s.cwd, ...("done" in over ? (over.done === undefined ? {} : { done: over.done }) : { done: "merged o/r#1" }) });
+    const lane = await startLane(s.d, "fix-login", s.brief, { cwd: s.cwd, ...("done" in over ? (over.done === undefined ? {} : { done: over.done }) : { done: "merged o/r#1" }) });
     await ready(s.d, "fix-login", "fixed", ["e"]);
     return { ...s, lane, pane: s.w.panes.get(lane.paneId)! };
   }
@@ -197,16 +197,6 @@ describe("autoCloseTick", () => {
     expect(closed.log.at(-1)).toEqual({ at: w.clock, kind: "done", text: "closed 5 min after READY: every Done signal read back live" });
     expect(lead.received.at(-1)).toBe("[CLOSED fix-login] closed 5 min after READY: every Done signal reads back live");
     expect(await autoCloseTick(d, noIo)).toEqual([]);
-  });
-
-  test("a lane being migrated is not closed, however old its claim", async () => {
-    const { d, w, lane, state } = await claimed();
-    state.merged = true;
-    d.store.saveLane({ ...d.store.lane("fix-login")!, migration: true });
-    w.clock += 60 * 60_000;
-    expect(await autoCloseTick(d, noIo)).toEqual([]);
-    expect(w.panes.has(lane.paneId)).toBe(true);
-    expect(d.store.lane("fix-login")!.status).toBe("ready");
   });
 
   test("a failed check objects to the claim with the reasons and tells the lead NOT-DONE", async () => {

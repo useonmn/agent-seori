@@ -16,12 +16,12 @@ const ULW_PLUGIN = { npm: [{ name: "omp-ulw", version: "0.1.0", enabled: true }]
 function setup(config?: Record<string, unknown>) {
   const w = new World();
   const d = w.deps();
-  w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", { runtime: "herdr", id: "w1:p1" });
+  w.addPane("t1", "idle");
+  d.store.setRole("lead", { runtime: "hc", id: "t1" });
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix the flaky login test.");
   if (config) writeFileSync(join(d.store.root, "config.json"), JSON.stringify(config));
-  const id = `w1:p${w.next + 1}`;
+  const id = `t${w.next + 1}`;
   return { w, d, brief, id };
 }
 
@@ -30,7 +30,7 @@ async function start(d: Deps, brief: string, ...extra: string[]): Promise<{ code
   const log = console.log;
   console.log = (...args: unknown[]) => void out.push(args.join(" "));
   try {
-    const code = await main(["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force", ...extra], d);
+    const code = await main(["start", "fix-login", "--brief", brief, "--force", ...extra], d);
     return { code, out };
   } finally {
     console.log = log;
@@ -52,7 +52,7 @@ describe("seori start --workflow", () => {
       w.ompPlugins = ULW_PLUGIN;
       const r = await start(d, brief, "--workflow", workflow);
       expect(r.code).toBe(0);
-      expect(r.out[1]).toBe(`STARTUP_OK fix-login ${id}`);
+      expect(r.out[1]).toBe(`STARTUP_OK fix-login hc:${id}`);
       expect(w.panes.get(id)!.received[0]).toBe(
         `${prefix}Read your brief at ${d.store.briefPath("fix-login")} and execute it. Your lane key is fix-login. ` +
           `The work is finished only when the brief's exit condition holds and you have sent seori ready.`,
@@ -81,8 +81,8 @@ describe("seori start --workflow", () => {
     const log = console.log;
     console.log = (...args: unknown[]) => void out.push(args.join(" "));
     try {
-      await main(["start", "fix-hard", "--brief", brief, "--workspace", "w1", "--force", "--workflow", "ulw-plan", "--token-limit", "500000"], d);
-      await main(["start", "fix-ulw", "--brief", brief, "--workspace", "w1", "--force", "--workflow", "ulw"], d);
+      await main(["start", "fix-hard", "--brief", brief, "--force", "--workflow", "ulw-plan", "--token-limit", "500000"], d);
+      await main(["start", "fix-ulw", "--brief", brief, "--force", "--workflow", "ulw"], d);
     } finally {
       console.log = log;
     }
@@ -105,7 +105,7 @@ describe("seori start --workflow", () => {
   test("unset: the kickoff is stock omp goal mode, exactly as before, and omp's plugins are not asked", async () => {
     const { w, d, brief, id } = setup();
     const r = await start(d, brief);
-    expect(r.out[1]).toBe(`STARTUP_OK fix-login ${id}`);
+    expect(r.out[1]).toBe(`STARTUP_OK fix-login hc:${id}`);
     expect(w.panes.get(id)!.received[0]).toBe(
       `/goal Read your brief at ${d.store.briefPath("fix-login")} and execute it. Your lane key is fix-login. ` +
         `The work is finished only when the brief's exit condition holds and you have sent seori ready.`,
@@ -120,12 +120,12 @@ describe("seori start --workflow", () => {
     expect(loadConfig(d.store.root).workflow).toBe("ulw");
     await start(d, brief);
     expect(w.panes.get(id)!.received[0]).toStartWith("/goal ulw Read your brief at ");
-    const other = `w1:p${w.next + 1}`;
+    const other = `t${w.next + 1}`;
     const out: string[] = [];
     const log = console.log;
     console.log = (...args: unknown[]) => void out.push(args.join(" "));
     try {
-      await main(["start", "fix-other", "--brief", brief, "--workspace", "w1", "--force", "--workflow", "none"], d);
+      await main(["start", "fix-other", "--brief", brief, "--force", "--workflow", "none"], d);
     } finally {
       console.log = log;
     }

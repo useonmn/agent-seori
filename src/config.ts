@@ -4,8 +4,7 @@ import { join } from "node:path";
 import type { Ceilings } from "./store.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 
-// `$SEORI_HOME/config.json`: optional settings for the agent and runtime choice (read by src/agent/profile.ts and
-// src/runtime/select.ts), the done flow, PR rules, supervision, the host guard and heavy slots.
+// `$SEORI_HOME/config.json`: optional settings for the agent (read by src/agent/profile.ts), the done flow, PR rules, supervision, the host guard and heavy slots.
 // Every field is optional; a missing file means all defaults. A malformed field is an error naming it, never a silent
 // default, so a typo (`toknes`) cannot switch a ceiling off without anyone noticing.
 
@@ -19,14 +18,15 @@ export type GuardThresholds = {
   readonly memFreeMinPct: number;
   /** Free disk (GB) on the volumes lanes work on (open lane directories, else $HOME) below this holds new lanes and alerts. */
   readonly diskFreeMinGb: number;
-  /** More live herdr panes than this holds new lanes and alerts. */
+  /** More live hc terminals than this holds new lanes and alerts. */
   readonly panesMax: number;
 };
 
 export type SeoriConfig = {
   /**
-   * This instance's name: the label of the herdr workspace `seori up` opens and of a lane's fallback workspace. Each
-   * seori on a PC has its own $SEORI_HOME and its own name, so herdr never shows two instances under one label.
+   * This instance's name: the `seori.group` label of every hc terminal `seori up` and `seori start` open, and part of
+   * its systemd unit names. Each seori on a PC has its own $SEORI_HOME and its own name, so two instances never share
+   * one group.
    */
   readonly name: string;
   /** Expected Git identity per `owner/repo` (keys match without case), checked by verify-pr and the merge gate. */
@@ -35,7 +35,7 @@ export type SeoriConfig = {
   readonly closeAfterMin: number;
   /** A lane with a thread gets its newest report posted there at most this often. */
   readonly progressEveryMin: number;
-  /** A lane whose pane shows a dialog (herdr `blocked`) this long is told to the lead once as [BLOCKED-PROMPT]. */
+  /** A lane whose terminal shows a dialog (hc `blocked`) this long is told to the lead once as [BLOCKED-PROMPT]. */
   readonly blockedPromptMin: number;
   /**
    * How long `seori start` waits for a new lane to confirm its start (its first check 20 s after the kickoff, then every
@@ -45,7 +45,7 @@ export type SeoriConfig = {
   readonly supervision: {
     /** Ceilings for every lane; `seori start --wall-minutes/--token-limit/--cost-limit` override per lane. */
     readonly defaults: Ceilings;
-    /** A lane herdr reports working with no report and no file change for this long is stalled (told to the lead once). */
+    /** A lane hc reports working with no report and no file change for this long is stalled (told to the lead once). */
     readonly hungAfterMin: number;
     /** Files or directories (relative to a lane's cwd) whose change counts as every lane's progress, beside git status. */
     readonly activityPaths: readonly string[];
@@ -61,7 +61,7 @@ export type SeoriConfig = {
 /** The name of an instance whose config.json sets none: the first seori on a PC keeps the label it always had. */
 export const DEFAULT_NAME = "seori";
 
-/** Letters (any script), digits, `.`, `_` and `-`, starting with a letter or digit: a herdr label that needs no quoting. */
+/** Letters (any script), digits, `.`, `_` and `-`, starting with a letter or digit: a label value and unit name part that needs no quoting. */
 const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,39}$/u;
 
 export const DEFAULT_CONFIG: SeoriConfig = {
@@ -114,7 +114,7 @@ export function loadConfig(root: string): SeoriConfig {
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
   // talkWithOthers, agentTurnLimit and trusted belonged to the removed talking-with-others: a config.json that still has
   // them loads, and they are ignored.
-  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "talkWithOthers", "agentTurnLimit", "trusted"], path);
+  only(raw, ["name", "agent", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "talkWithOthers", "agentTurnLimit", "trusted"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;

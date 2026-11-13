@@ -23,13 +23,13 @@ export async function adoptLane(d: Deps, key: string, refArg: string, opts: { br
   const existing = d.store.lane(key);
   if (existing && !closed(existing)) throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
   const ref = parseRef(refArg);
-  if (!ref) throw new Refusal(`${refArg} is not a session ref (w1:p3, herdr:w1:p3 or hc:t7)`);
+  if (!ref) throw new Refusal(`${refArg} is not a session ref (hc:t7)`);
   const owner = d.store.lanes().find((l) => !closed(l) && sameSession(l.sessionRef, ref));
   if (owner) throw new Refusal(`session ${refText(ref)} already belongs to lane ${owner.key}`);
   const role = Object.entries(d.store.roles()).find(([, r]) => r !== undefined && sameSession(r, ref));
   if (role) throw new Refusal(`session ${refText(ref)} is the ${role[0]} session`);
   if (opts.brief !== undefined && !existsSync(opts.brief)) throw new Refusal(`brief not found: ${opts.brief}`);
-  const probe = await d.runtimes.for(ref).probe(ref);
+  const probe = await d.runtime.probe(ref);
   if (probe.status === "gone") throw new Refusal(`no session ${refText(ref)}`);
 
   const briefPath = d.store.briefPath(key);
@@ -38,7 +38,7 @@ export async function adoptLane(d: Deps, key: string, refArg: string, opts: { br
   else writeFileSync(briefPath, `Adopted session ${refText(ref)}; it was started before seori and has no brief.\n`);
   const now = d.now();
   const lane: Lane = {
-    key, sessionRef: ref, paneId: ref.id, tabId: ref.container ?? "", brief: briefPath,
+    key, sessionRef: ref, paneId: ref.id, tabId: "", brief: briefPath,
     cwd: resolve(opts.cwd ?? probe.cwd ?? process.cwd()),
     status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
     log: [{ at: now, kind: "start", text: `adopted ${refText(ref)}` }],
@@ -67,7 +67,7 @@ export async function syncRegistry(d: Deps, write: boolean): Promise<SyncResult>
   const lines: string[] = [];
   const lost: string[] = [];
   const lanes = d.store.lanes();
-  const rt = d.runtimes.default;
+  const rt = d.runtime;
   const live = new Set<string>();
   const owned = new Set<string>([...Object.values(d.store.roles()), ...lanes.map((l) => l.sessionRef)].filter((r): r is SessionRef => r !== undefined).map(refText));
   const unregistered: string[] = [];
@@ -93,7 +93,7 @@ export async function syncRegistry(d: Deps, write: boolean): Promise<SyncResult>
     }
     let status: string;
     try {
-      status = (await d.runtimes.for(lane.sessionRef).probe(lane.sessionRef)).status;
+      status = (await d.runtime.probe(lane.sessionRef)).status;
     } catch (e) {
       lines.push(`UNKNOWN lane ${lane.key} session ${text} probe failed (${e instanceof Error ? e.message : String(e)}); untouched`);
       continue;

@@ -8,7 +8,7 @@ import {
   addLesson, BRIEF_LESSONS, formatLessonAdded, formatLessons, GLOBAL_LESSONS, lessonsBlock, lessonsForRepo, lessonsPath,
   listLessons, markLesson,
 } from "../src/lessons.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
 const T0 = Date.parse("2026-11-07T10:00:00.000Z");
 
@@ -23,27 +23,27 @@ async function run(argv: string[], d: Deps): Promise<{ code: number; out: string
   }
 }
 
-/** A lead pane and one open lane, `fix-login`, whose pane is w1:p2. */
+/** A lead pane and one open lane, `fix-login`, whose pane is hc:t2. */
 async function setup() {
   const w = new World();
   const d = w.deps();
-  w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
+  w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix the flaky login test.");
   const cwd = join(d.store.root, "work");
   mkdirSync(cwd);
   w.reviewer = (argv) => ({ code: 0, stdout: argv[2] === "rev-parse" ? "true\n" : "" });
-  const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd });
+  const lane = await startLane(d, "fix-login", brief, { cwd });
   return { w, d, brief, cwd, lane };
 }
 
-/** Runs fn as if inside the terminal of `ref` (herdr pane id), or of nothing when undefined. */
+/** Runs fn as if inside the terminal of `ref` (hc terminal id), or of nothing when undefined. */
 async function inside<T>(pane: string | undefined, fn: () => Promise<T>): Promise<T> {
-  const keys = ["HC_TERMINAL_ID", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID"] as const;
+  const keys = ["HC_TERMINAL_ID"] as const;
   const saved = keys.map((k) => process.env[k]);
   for (const k of keys) delete process.env[k];
-  if (pane !== undefined) process.env["HERDR_PANE_ID"] = pane;
+  if (pane !== undefined) process.env["HC_TERMINAL_ID"] = pane;
   try {
     return await fn();
   } finally {
@@ -112,16 +112,16 @@ describe("global lessons in a lane's brief", () => {
     addLesson(d.store.root, { cwd, rule: "run bun test twice", evidence: "e" }, T0 + 1);
     const other = join(d.store.root, "other");
     mkdirSync(other);
-    const second = await startLane(d, "other-lane", brief, { workspace: "w1", cwd: other });
+    const second = await startLane(d, "other-lane", brief, { cwd: other });
     expect(readFileSync(second.brief, "utf8")).toStartWith("## Lessons for every lane\n- [pending; lead] never force-push\n\nFix the flaky");
     d.store.saveLane({ ...d.store.lane("fix-login")!, status: "lost" });
-    await startLane(d, "fix-login", brief, { workspace: "w1", cwd });
+    await startLane(d, "fix-login", brief, { cwd });
     const first = readFileSync(lane.brief, "utf8");
     expect(first).toStartWith(
       "## Lessons for every lane\n- [pending; lead] never force-push\n\n## Lessons for this repo\n- [pending; lead] run bun test twice\n\nFix the flaky login test.",
     );
     d.store.saveLane({ ...d.store.lane("fix-login")!, status: "lost" });
-    await startLane(d, "fix-login", lane.brief, { workspace: "w1", cwd });
+    await startLane(d, "fix-login", lane.brief, { cwd });
     expect(readFileSync(lane.brief, "utf8")).toBe(first);
   });
 });
@@ -131,7 +131,7 @@ describe("seori lesson add --global (CLI)", () => {
 
   test("the lead adds one; list shows it as global", async () => {
     const { d } = await setup();
-    const added = await inside("w1:p1", () => run(["lesson", "add", "--global", "--rule", "never force-push", "--evidence", "REF-1"], d));
+    const added = await inside("hc:t1", () => run(["lesson", "add", "--global", "--rule", "never force-push", "--evidence", "REF-1"], d));
     expect(added.code).toBe(0);
     expect(added.out).toMatch(/^LESSON [0-9a-f-]{36} pending lead global$/);
     const list = await run(["lesson", "list"], d);
@@ -167,7 +167,7 @@ describe("seori lesson add --global (CLI)", () => {
       .rejects.toThrow(/the lead's to mark; this terminal is lane fix-login/);
     expect(listLessons(d.store.root).lessons.find((l) => l.id === g.id)!.outcome).toBe("pending");
     expect((await inside(lane.sessionRef.id, () => run(["lesson", "mark", repo.id, "--outcome", "helped"], d))).out).toBe(`MARKED ${repo.id} helped`);
-    expect((await inside("w1:p1", () => run(["lesson", "mark", g.id, "--outcome", "harmful"], d))).out).toBe(`MARKED ${g.id} harmful`);
+    expect((await inside("hc:t1", () => run(["lesson", "mark", g.id, "--outcome", "harmful"], d))).out).toBe(`MARKED ${g.id} harmful`);
   });
 
   test("a repo lesson add still needs a lane key or --cwd", async () => {

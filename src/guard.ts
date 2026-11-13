@@ -38,19 +38,6 @@ export function parseDfAvailableKb(stdout: string): number | undefined {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The number of panes in `herdr pane list` JSON (`{"result":{"panes":[...]}}`), or undefined when it is not that shape. */
-export function parsePaneCount(stdout: string): number | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return undefined;
-  }
-  const result = isObj(parsed) ? parsed["result"] : undefined;
-  const panes = isObj(result) ? result["panes"] : undefined;
-  return Array.isArray(panes) ? panes.length : undefined;
-}
-
 /**
  * Where new work lands: the working directory of every open lane that still exists, or the user's home directory
  * (where repos and worktrees live) when no lane is open. $SEORI_HOME is not measured: it only holds small state files
@@ -63,7 +50,7 @@ function workPaths(d: Deps): string[] {
 
 /**
  * Reads the host: load and memory from Deps.host, free disk of the work volumes (lane directories, else $HOME) from `df -k -P`, and the live pane
- * count from the runtime's session list (herdr: `pane list`, in seori's herdr session when SEORI_HERDR_SESSION is set).
+ * count from the runtime's session list (`hc ls`).
  */
 export async function sampleHost(d: Deps): Promise<HostSample> {
   const host = d.host();
@@ -80,11 +67,11 @@ export async function sampleHost(d: Deps): Promise<HostSample> {
   if (diskFreeGb === undefined) unreadable.push(`disk free unreadable (${diskFault ?? "df: no path to measure"})`);
 
   let panes: number | undefined;
-  const rt = d.runtimes.default;
+  const rt = d.runtime;
   try {
     panes = (await rt.list()).length;
   } catch (e) {
-    unreadable.push(`panes unreadable (${rt.kind} pane list: ${e instanceof ToolError ? why(e.result.stderr, e.result.stdout) : e instanceof Error ? why(e.message, "") : String(e)})`);
+    unreadable.push(`panes unreadable (hc ls: ${e instanceof ToolError ? why(e.result.stderr, e.result.stdout) : e instanceof Error ? why(e.message, "") : String(e)})`);
   }
 
   return {
@@ -100,7 +87,7 @@ const gb = (n: number): string => `${Math.floor(n)} GB`;
 
 /**
  * Why a new lane must wait: free memory, free disk or the pane count past its threshold. A figure that could not be
- * read holds nothing (as dori, which counts unknown memory as free): a flaky `df` or herdr call must not stop all work.
+ * read holds nothing (as dori, which counts unknown memory as free): a flaky `df` or hc call must not stop all work.
  * `seori guard` still prints it.
  * CPU load never holds a launch: it moves too fast to plan around (heavy commands wait for it instead, see heavy.ts).
  */
@@ -201,7 +188,7 @@ export async function guardTick(d: Deps): Promise<DutyEvent[]> {
   const s = await sampleHost(d);
   const prev = readGuardState(d.store.root) ?? { alerting: false, loadHigh: false, since: 0, reasons: [] };
   const v = guardVerdict(s, config.guard, prev.loadHigh);
-  // An alert is only cleared by figures read as fine: a figure that could not be read this time (herdr restarting, a
+  // An alert is only cleared by figures read as fine: a figure that could not be read this time (hc restarting, a
   // flaky df) keeps the alert as it was rather than sending a false CLEAR followed by a second ALERT.
   if (prev.alerting && v.reasons.length === 0 && s.unreadable.length > 0) {
     saveGuardState(d.store.root, { ...prev, loadHigh: v.loadHigh });

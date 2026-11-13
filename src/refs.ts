@@ -2,12 +2,23 @@
 import { formatRef, parseRef, type SessionRef } from "./runtime/types.ts";
 
 /**
- * A ref as seori stores and prints it beside records written before runtimes existed: a herdr pane bare (`w1:p3`), any
- * other runtime with its prefix (`hc:t7`). roles.json values, inbox file names and delivery notices use this form.
+ * A record written when seori still ran on herdr (a herdr pane ref such as `w1:p3`): seori runs on hc only and refuses
+ * it with one line naming the file, instead of addressing a terminal that does not exist.
  */
-export const refText = (ref: SessionRef): string => (ref.runtime === "herdr" ? ref.id : formatRef(ref));
+export class HerdrRecord extends Error {
+  constructor(where: string, value: string, fix = `remove ${where}`) {
+    super(`${where} names the herdr pane ${value}; seori runs on hc only: close that pane and ${fix}`);
+  }
+}
 
-/** Reads refText back. A stored value no runtime parses is a pane id an older herdr wrote. */
-export const refFromText = (text: string): SessionRef => parseRef(text) ?? { runtime: "herdr", id: text };
+/** A ref as seori stores and prints it (`hc:t7`): roles.json values, inbox file names and delivery notices use this form. */
+export const refText = (ref: SessionRef): string => formatRef(ref);
+
+/** Reads refText back; a value that is not an hc ref was written for herdr and is refused (HerdrRecord). */
+export const refFromText = (text: string, where: string, fix?: string): SessionRef => {
+  const ref = parseRef(text);
+  if (ref === undefined) throw new HerdrRecord(where, text, fix);
+  return ref;
+};
 
 export const sameSession = (a: SessionRef, b: SessionRef): boolean => a.runtime === b.runtime && a.id === b.id;

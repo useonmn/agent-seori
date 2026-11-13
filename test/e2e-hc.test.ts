@@ -101,7 +101,7 @@ afterAll(async () => {
 test.skipIf(!enabled)(
   "create, list, probe, read, deliver and close one bash terminal in seori.group=<test>",
   async () => {
-    ref = await rt.create({ name: "e2e lane", cwd: root, env: { FOO: "1" }, role: "lane", container: "tab", group });
+    ref = await rt.create({ name: "e2e lane", cwd: root, env: { FOO: "1" }, role: "lane", group });
     log(`created ${JSON.stringify(ref)}`);
     expect(ref.runtime).toBe("hc");
     expect(ref.group).toBe(group);

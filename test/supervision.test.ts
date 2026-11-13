@@ -6,7 +6,7 @@ import { loadConfig } from "../src/config.ts";
 import { spawnExec } from "../src/runtime/exec.ts";
 import { blockedText, fileActivity, laneUsage, reachedCeilings, superviseTick } from "../src/supervision.ts";
 import type { Lane, LaneStatus } from "../src/store.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
 const MIN = 60_000;
 
@@ -17,9 +17,9 @@ const assistant = (totalTokens: number, cost: number) =>
 function setup(status: LaneStatus = "working", extra: Partial<Lane> = {}) {
   const w = new World();
   const d = w.deps();
-  const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
-  const pane = w.addPane("w1:p5", "working");
+  const lead = w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
+  const pane = w.addPane("t5", "working");
   pane.agent = "omp";
   // git in the lane's cwd: a clean tree at HEAD `git.head`.
   const git = { head: "aaa", status: "" };
@@ -30,7 +30,7 @@ function setup(status: LaneStatus = "working", extra: Partial<Lane> = {}) {
     return { code: 1, stdout: "" };
   };
   d.store.saveLane({
-    key: "fix-a", sessionRef: { runtime: "herdr", id: "w1:p5", container: "w1:t5" }, paneId: "w1:p5", tabId: "w1:t5", brief: "/dev/null", cwd: "/repo", status,
+    key: "fix-a", sessionRef: { runtime: "hc", id: "t5" }, paneId: "t5", tabId: "w1:t5", brief: "/dev/null", cwd: "/repo", status,
     createdAt: 0, lastActivityAt: 0, nudges: 0, log: [], ...extra,
   });
   const config = (value: unknown) => writeFileSync(join(d.store.root, "config.json"), JSON.stringify(value));
@@ -97,19 +97,7 @@ describe("ceilings", () => {
     expect(await superviseTick(d)).toEqual([]);
     expect(lead.received).toHaveLength(1);
     expect(pane.received).toEqual([]);
-    expect(w.calls.some((c) => c.argv[1] === "close")).toBe(false);
-  });
-
-  test("a lane being migrated is left unchanged: no report, record identical", async () => {
-    const { w, d, lead, pane } = setup("working", { migration: true, ceilings: { wallMinutes: 60, tokens: null, costUsd: null } });
-    pane.status = "idle";
-    w.clock = 61 * MIN;
-    const file = join(d.store.root, "lanes", "fix-a.json");
-    const before = readFileSync(file, "utf8");
-    expect(await superviseTick(d)).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(before);
-    expect(lead.received).toEqual([]);
-    expect(pane.received).toEqual([]);
+    expect(w.calls.some((c) => c.argv[1] === "kill")).toBe(false);
   });
 
   test("a limit the lead raised is reported again once reached", async () => {
@@ -141,7 +129,7 @@ describe("ceilings", () => {
     const { w, d, pane } = setup();
     pane.status = "idle";
     await superviseTick(d);
-    const gets = w.calls.filter((c) => c.argv[1] === "get" && c.argv[2] === "w1:p5");
+    const gets = w.calls.filter((c) => c.argv[1] === "get" && c.argv[2] === "t5");
     expect(gets).toHaveLength(0);
   });
 
@@ -165,7 +153,7 @@ describe("ceilings", () => {
   test("a gone lead pane: the alert is queued once, not again on every pass", async () => {
     const { w, d, pane } = setup("working", { ceilings: { wallMinutes: 60, tokens: null, costUsd: null }, lastActivityAt: 200 * MIN });
     pane.status = "idle";
-    w.panes.delete("w1:p1");
+    w.panes.delete("t1");
     w.clock = 61 * MIN;
     const first = await superviseTick(d);
     expect(first).toContainEqual({ lane: "fix-a", action: "blocked", detail: "wallMinutes" });
@@ -173,15 +161,15 @@ describe("ceilings", () => {
     await superviseTick(d);
     w.clock = 63 * MIN;
     await superviseTick(d);
-    expect(d.store.queued(herdrRef("w1:p1")).map((m) => m.text)).toEqual([blockedText("fix-a", { which: "wallMinutes", actual: 61, limit: 60 })]);
+    expect(d.store.queued(paneRef("t1")).map((m) => m.text)).toEqual([blockedText("fix-a", { which: "wallMinutes", actual: 61, limit: 60 })]);
     expect(d.store.lane("fix-a")!.log.filter((e) => e.kind === "blocked")).toHaveLength(1);
   });
 });
 
 describe("stalls", () => {
-  const STALL = "[STALLED fix-a] herdr reads it working, but it has sent no report and changed no file for 21 min; the lane keeps running until you decide";
+  const STALL = "[STALLED fix-a] hc reads it working, but it has sent no report and changed no file for 21 min; the lane keeps running until you decide";
 
-  test("herdr working, no report and no file change for hungAfterMin: told once per stall and logged", async () => {
+  test("hc working, no report and no file change for hungAfterMin: told once per stall and logged", async () => {
     const { w, d, lead, pane, lane } = setup();
     w.clock = 19 * MIN;
     expect(await superviseTick(d)).toEqual([]);
@@ -214,10 +202,10 @@ describe("stalls", () => {
     expect(await superviseTick(d)).toEqual([]);
     w.clock = 56 * MIN;
     expect(await superviseTick(d)).toEqual([{ lane: "fix-a", action: "stalled" }]);
-    expect(lead.received).toEqual(["[STALLED fix-a] herdr reads it working, but it has sent no report and changed no file for 21 min; the lane keeps running until you decide"]);
+    expect(lead.received).toEqual(["[STALLED fix-a] hc reads it working, but it has sent no report and changed no file for 21 min; the lane keeps running until you decide"]);
   });
 
-  test("not working in herdr, or a waiting lane: no stall", async () => {
+  test("not working in hc, or a waiting lane: no stall", async () => {
     const idle = setup();
     idle.pane.status = "idle";
     idle.w.clock = 60 * MIN;
@@ -339,7 +327,7 @@ describe("paused lanes", () => {
     expect(await superviseTick(d)).toEqual([]);
     expect(lead.received).toEqual([]);
     expect(await superviseTick(d)).toEqual([{ lane: "fix-a", action: "working-while-paused" }]);
-    const text = "[WORKING-WHILE-PAUSED fix-a] pane w1:p5 reads working on two duty passes in a row while the lane is paused; it stays paused until seori resume fix-a";
+    const text = "[WORKING-WHILE-PAUSED fix-a] pane hc:t5 reads working on two duty passes in a row while the lane is paused; it stays paused until seori resume fix-a";
     expect(lead.received).toEqual([text]);
     expect(await superviseTick(d)).toEqual([]);
     expect(lane().status).toBe("paused");
@@ -365,13 +353,13 @@ describe("paused lanes", () => {
 
   test("a gone pane marks the paused lane lost and tells the lead, so the key can be started again", async () => {
     const { w, d, lead, lane } = setup("paused", { pausedFrom: "working" });
-    w.panes.delete("w1:p5");
+    w.panes.delete("t5");
     w.clock = 5 * MIN;
     expect(await superviseTick(d)).toEqual([{ lane: "fix-a", action: "lost" }]);
     expect(lane().status).toBe("lost");
     expect(lane().pausedFrom).toBeUndefined();
     expect(lane().log.at(-1)).toEqual({ at: 5 * MIN, kind: "lost", text: "pane disappeared while paused" });
-    expect(lead.received).toEqual(["[LOST fix-a] pane w1:p5 closed while the lane was paused"]);
+    expect(lead.received).toEqual(["[LOST fix-a] pane hc:t5 closed while the lane was paused"]);
     expect(await superviseTick(d)).toEqual([]);
   });
 });
@@ -386,12 +374,12 @@ test("a stopped duty loop supervises nothing", async () => {
 
 test("one lane's failure is an event and the others are still supervised", async () => {
   const { w, d, lead } = setup();
-  d.store.saveLane({ key: "broken-b", sessionRef: { runtime: "herdr", id: "w1:p9", container: "w1:t9" }, paneId: "w1:p9", tabId: "w1:t9", brief: "/dev/null", cwd: "/x", status: "paused", createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
-  w.addPane("w1:p9", "working");
-  w.getHook.set("w1:p9", () => { throw new Error("herdr crashed"); });
+  d.store.saveLane({ key: "broken-b", sessionRef: { runtime: "hc", id: "t9" }, paneId: "t9", tabId: "w1:t9", brief: "/dev/null", cwd: "/x", status: "paused", createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
+  w.addPane("t9", "working");
+  w.getHook.set("t9", () => { throw new Error("hc crashed"); });
   w.clock = 21 * MIN;
   const events = await superviseTick(d);
-  expect(events).toContainEqual({ lane: "broken-b", action: "supervise-failed", detail: "herdr crashed" });
+  expect(events).toContainEqual({ lane: "broken-b", action: "supervise-failed", detail: "hc crashed" });
   expect(events).toContainEqual({ lane: "fix-a", action: "stalled" });
   expect(lead.received).toHaveLength(1);
 });

@@ -6,7 +6,7 @@ import { ompProfile, TEST_AGENT_CMD_SWITCH } from "../src/agent/profile.ts";
 import { LEAD_EXTENSION, main, usesSystemdUnits } from "../src/cli.ts";
 import type { Deps } from "../src/harness.ts";
 import { Refusal } from "../src/harness.ts";
-import { Runtimes, shq } from "../src/runtime/index.ts";
+import { shq } from "../src/runtime/index.ts";
 import {
   homeTag, legacyUnitName, removeUnits, UNIT_KINDS, UnitError, unitFile, unitHome, unitInstance, unitName, unitPath, writeUnits,
 } from "../src/systemd.ts";
@@ -18,7 +18,7 @@ import { rig, terminal } from "./helpers/hc-rig.ts";
 // systemd --user units. A fake hc (test/helpers/fake-hc.ts) and a fake systemctl that records its argv; nothing
 // reaches a real hc core or the real user manager.
 
-const CLEARED = ["HC_TERMINAL_ID", "HC_SCOPE", "HC_TERMINAL_SOCKET", "HC_SESSION", "HC_SOCKET", "SEORI_MODEL", "SEORI_HERDR_SESSION", "SEORI_SYSTEMD_DIR", "SEORI_SYSTEMCTL", "PI_CONFIG_FILES"];
+const CLEARED = ["HC_TERMINAL_ID", "HC_SCOPE", "HC_TERMINAL_SOCKET", "HC_SESSION", "HC_SOCKET", "SEORI_MODEL", "SEORI_SYSTEMD_DIR", "SEORI_SYSTEMCTL", "PI_CONFIG_FILES"];
 let saved: Record<string, string | undefined> = {};
 let unitDir = "";
 let ctlLog = "";
@@ -70,7 +70,7 @@ async function captureLog(fn: () => Promise<unknown>): Promise<string> {
 function setup(initial = {}, platform = "linux") {
   const r = rig(initial, {}, { agentReports: true });
   const w = new World();
-  const d: Deps = { ...w.deps(), runtimes: new Runtimes("hc", () => r.rt), agent: ompProfile, platform };
+  const d: Deps = { ...w.deps(), runtime: r.rt, agent: ompProfile, platform };
   writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ name: "seori-two" }));
   w.heartbeat(d.store.root, 0);
   return { r, d };
@@ -97,7 +97,6 @@ describe("unit files", () => {
         "[Service]",
         "Type=simple",
         'Environment="SEORI_HOME=/h/seori two"',
-        'Environment="SEORI_RUNTIME=hc"',
         'Environment="PATH=/b:/usr/bin"',
         'Environment="SEORI_MODEL=m%%1"',
         'Environment="XDG_RUNTIME_DIR=/run/user/1000"',
@@ -475,6 +474,5 @@ describe("down and uninstall on hc close only this home's terminals", () => {
     expect(Object.keys(r.terminals())).toEqual(["t1"]);
     expect(r.calls().filter((c) => c[0] === "kill").map((c) => c[1])).toEqual(["t2"]);
     expect(out).toContain("unlinked the seori command");
-    expect(out).not.toMatch(/herdr/);
   });
 });

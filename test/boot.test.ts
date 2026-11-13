@@ -5,32 +5,25 @@ import { bootReport } from "../src/boot.ts";
 import { Channel } from "../src/channel.ts";
 import type { Deps } from "../src/harness.ts";
 import type { Exec } from "../src/runtime/exec.ts";
-import { Herdr } from "../src/runtime/herdr/client.ts";
-import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { Lane } from "../src/store.ts";
 import { WatchStore } from "../src/watch/store.ts";
 import { worklogAdd, worklogNext } from "../src/worklog.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
-/** World plus `herdr pane list` (all World panes; `listFails` makes it exit 1). */
+/** World whose `hc ls` exits 1 while `listFails` is on. */
 function setup(): { w: World; d: Deps; listFails: { on: boolean } } {
   const w = new World();
   const listFails = { on: false };
   const exec: Exec = async (cmd, argv) => {
-    if (cmd === "herdr" && argv[0] === "pane" && argv[1] === "list") {
-      w.calls.push({ cmd, argv });
-      if (listFails.on) return { code: 1, stdout: "", stderr: "server not running" };
-      const panes = [...w.panes].map(([id, p]) => ({ pane_id: id, agent: p.status === "shell" ? null : (p.agent ?? "omp"), agent_status: p.status }));
-      return { code: 0, stdout: JSON.stringify({ result: { panes } }), stderr: "" };
-    }
+    if (cmd === "hc" && argv[1] === "ls" && listFails.on) return { code: 1, stdout: "", stderr: "server not running" };
     return w.exec(cmd, argv);
   };
-  const d: Deps = { ...w.deps(), exec, runtimes: defaultRuntimes(new Herdr(exec, "")) };
+  const d: Deps = { ...w.deps(), exec, runtime: w.runtime(exec) };
   return { w, d, listFails };
 }
 
 const lane = (key: string, paneId: string, status: Lane["status"], extra: Partial<Lane> = {}): Lane => ({
-  key, sessionRef: { runtime: "herdr", id: paneId, container: "w1:t1" }, paneId, tabId: "w1:t1", brief: `/b/${key}.md`, cwd: "/repo", status, createdAt: 1_000, lastActivityAt: 1_000, nudges: 0,
+  key, sessionRef: { runtime: "hc", id: paneId }, paneId, tabId: "w1:t1", brief: `/b/${key}.md`, cwd: "/repo", status, createdAt: 1_000, lastActivityAt: 1_000, nudges: 0,
   log: [{ at: 1_000, kind: "start", text: "brief" }], ...extra,
 });
 
@@ -54,22 +47,22 @@ describe("bootReport", () => {
     const { w, d } = setup();
     const root = d.store.root;
     const now = w.clock;
-    w.addPane("w1:p1", "idle"); // lead
-    w.addPane("w1:p2", "working"); // duty
-    w.addPane("w1:p3", "working"); // lane api
-    w.addPane("w1:p5", "idle"); // lane review (ready)
-    w.addPane("w1:p6", "idle"); // lane slow (paused)
-    w.addPane("w1:p8", "working"); // an agent no one registered
-    w.addPane("w1:p9", "shell"); // the daemon pane: no agent, not flagged
-    d.store.setRole("lead", herdrRef("w1:p1"));
-    d.store.setRole("duty", herdrRef("w1:p2"));
-    d.store.saveLane(lane("api", "w1:p3", "working", {
+    w.addPane("t1", "idle"); // lead
+    w.addPane("t2", "working"); // duty
+    w.addPane("t3", "working"); // lane api
+    w.addPane("t5", "idle"); // lane review (ready)
+    w.addPane("t6", "idle"); // lane slow (paused)
+    w.addPane("t8", "working"); // an agent no one registered
+    w.addPane("t9", "shell"); // the daemon pane: no agent, not flagged
+    d.store.setRole("lead", paneRef("t1"));
+    d.store.setRole("duty", paneRef("t2"));
+    d.store.saveLane(lane("api", "t3", "working", {
       log: [{ at: 1_000, kind: "start", text: "b" }, { at: now - 60_000, kind: "report", text: "tests green, opening PR" }],
     }));
-    d.store.saveLane(lane("gone-lane", "w1:p4", "waiting"));
-    d.store.saveLane(lane("review", "w1:p5", "ready", { done: "merged acme/web#1", final: { text: "PR merged", evidence: ["acme/web#1"], at: now - 120_000 } }));
-    d.store.saveLane(lane("slow", "w1:p6", "paused", { pausedFrom: "working", log: [{ at: 2_000, kind: "pause", text: "owner said wait" }] }));
-    d.store.saveLane(lane("old", "w1:p7", "done"));
+    d.store.saveLane(lane("gone-lane", "t4", "waiting"));
+    d.store.saveLane(lane("review", "t5", "ready", { done: "merged acme/web#1", final: { text: "PR merged", evidence: ["acme/web#1"], at: now - 120_000 } }));
+    d.store.saveLane(lane("slow", "t6", "paused", { pausedFrom: "working", log: [{ at: 2_000, kind: "pause", text: "owner said wait" }] }));
+    d.store.saveLane(lane("old", "t7", "done"));
 
     const item = worklogAdd(root, "Ship the release", "telegram:42:9", now);
     worklogNext(root, item.id, "wait for api lane", now);
@@ -96,12 +89,13 @@ describe("bootReport", () => {
     expect(r.lines).toEqual([
       `CONFIG ok ${join(root, "config.json")}`,
       "MESSENGERS telegram slack",
-      "LEAD pane=w1:p1 status=idle",
-      "DUTY pane=w1:p2 status=working",
+      "LEAD pane=hc:t1 status=idle",
+      "DUTY pane=hc:t2 status=working",
       "PANES live=7 lanesOpen=4 vanished=1 unregistered=1",
-      "VANISHED gone-lane pane=w1:p4 status=waiting; lane record kept, nothing relaunched",
-      "UNREGISTERED w1:p8 agent=omp status=working",
-      "DRIFT lane gone-lane has no session w1:p4 (status=waiting); lane record kept, nothing relaunched",
+      "VANISHED gone-lane pane=hc:t4 status=waiting; lane record kept, nothing relaunched",
+      "UNREGISTERED hc:t8 agent=omp status=working",
+      "DRIFT lane gone-lane has no session hc:t4 (status=waiting); lane record kept, nothing relaunched",
+      "DRIFT session hc:t8 is in group seori but has no lane or role record (agent=omp status=working); nothing closed",
       `REPORT api status=working at=${iso(now - 60_000)} "tests green, opening PR"`,
       `NO-REPORT gone-lane status=waiting started=${iso(1_000)}`,
       `READY review since=${iso(now - 120_000)} waiting=2min done=signals "PR merged"`,
@@ -117,7 +111,7 @@ describe("bootReport", () => {
       "DAEMON heartbeat age=5s fresh",
       `MESSENGER slack failing since=${iso(now - 300_000)} failures=4 error="invalid_auth"`,
       "MESSENGER telegram receiving (no failure recorded)",
-      "BOOT failed (1 drift) read-only; nothing restarted, written or stopped",
+      "BOOT failed (2 drift) read-only; nothing restarted, written or stopped",
     ]);
   });
 
@@ -147,8 +141,8 @@ describe("bootReport", () => {
     const { w, d, listFails } = setup();
     const root = d.store.root;
     listFails.on = true;
-    d.store.setRole("lead", herdrRef("w1:p1"));
-    d.store.saveLane(lane("api", "w1:p3", "working"));
+    d.store.setRole("lead", paneRef("t1"));
+    d.store.saveLane(lane("api", "t3", "working"));
     writeFileSync(join(root, "lanes", "broken.json"), "{not json");
     writeFileSync(join(root, "config.json"), JSON.stringify({ toknes: 1 }));
     writeFileSync(join(root, "messengers.json"), "{oops");
@@ -164,8 +158,8 @@ describe("bootReport", () => {
     has(`CONFIG invalid: ${join(root, "config.json")}: unknown field "toknes"`);
     has("MESSENGERS invalid: ");
     expect(r.lines).toContain(`LANES unreadable ${join(root, "lanes", "broken.json")}`);
-    expect(r.lines).toContain("PANES unavailable (herdr pane list exited 1: server not running)");
-    expect(r.lines).toContain("LEAD pane=w1:p1 status=unknown");
+    expect(r.lines).toContain("PANES unavailable (hc ls exited 1: server not running)");
+    expect(r.lines).toContain("LEAD pane=hc:t1 status=unknown");
     expect(r.lines.some((l) => l.startsWith("VANISHED"))).toBe(false);
     expect(r.lines).toContain(`NO-REPORT api status=working started=${new Date(1_000).toISOString()}`);
     has(`WORKLOG damaged ${join(root, "worklog.jsonl")}:1: `);

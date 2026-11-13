@@ -14,13 +14,13 @@ import { World } from "./fake.ts";
 function setup(config?: Record<string, unknown>) {
   const w = new World();
   const d = w.deps();
-  w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", { runtime: "herdr", id: "w1:p1" });
+  w.addPane("t1", "idle");
+  d.store.setRole("lead", { runtime: "hc", id: "t1" });
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix the flaky login test.");
   if (config) writeFileSync(join(d.store.root, "config.json"), JSON.stringify(config));
   // the pane `seori start` opens next
-  const id = `w1:p${w.next + 1}`;
+  const id = `t${w.next + 1}`;
   return { w, d, brief, id };
 }
 
@@ -29,7 +29,7 @@ async function start(d: Deps, brief: string): Promise<{ code: number; out: strin
   const log = console.log;
   console.log = (...args: unknown[]) => void out.push(args.join(" "));
   try {
-    const code = await main(["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force"], d);
+    const code = await main(["start", "fix-login", "--brief", brief, "--force"], d);
     return { code, out };
   } finally {
     console.log = log;
@@ -38,7 +38,7 @@ async function start(d: Deps, brief: string): Promise<{ code: number; out: strin
 
 /** After the kickoff reached the pane, the agent reports `before` until `at` ms after it, then `after`. */
 function statusAfterKickoff(w: World, id: string, at: number, before: "unknown" | "idle", after: "working" | "idle"): () => number | undefined {
-  w.kickoffDead = true; // no working report of its own: the hook below decides every status
+  w.kickoffIgnored = true; // no working report of its own: the hook below decides every status
   let kicked: number | undefined;
   w.getHook.set(id, () => {
     const pane = w.panes.get(id)!;
@@ -55,21 +55,19 @@ describe("seori start: startup verdict", () => {
     w.getHook.set(id, () => {
       w.panes.get(id)!.screen = ["omp", "Error: 429 Too Many Requests", "> "];
     });
-    const rt = d.runtimes.default;
+    const rt = d.runtime;
     const read = rt.read.bind(rt);
     const asked: unknown[] = [];
     rt.read = (ref, lines, opts) => (asked.push(opts), read(ref, lines, opts));
     const { code, out } = await start(d, brief);
     expect(asked).toEqual([{ unwrapped: true }]);
-    expect(out[0]).toStartWith(`STARTED fix-login pane=${id} brief=`);
-    expect(out[1]).toBe(`STARTUP_ERROR fix-login ${id}: 429 Too Many Requests`);
+    expect(out[0]).toStartWith(`STARTED fix-login pane=hc:${id} brief=`);
+    expect(out[1]).toBe(`STARTUP_ERROR fix-login hc:${id}: 429 Too Many Requests`);
     expect(code).toBe(3);
     expect(d.store.lane("fix-login")?.status).toBe("working");
     expect(w.panes.has(id)).toBe(true);
-    // the screen is read unwrapped (herdr: recent-unwrapped)
-    const reads = w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "read" && c.argv[2] === id);
-    expect(reads.length).toBeGreaterThan(0);
-    expect(reads.every((c) => c.argv.join(" ").includes("--source recent-unwrapped"))).toBe(true);
+    // the screen is read through hc read
+    expect(w.calls.some((c) => c.argv[1] === "read" && c.argv[2] === id)).toBe(true);
   });
 
   test("a clean screen with omp working on the kickoff is STARTUP_OK at the first check, 20 s after the kickoff", async () => {
@@ -77,7 +75,7 @@ describe("seori start: startup verdict", () => {
     let kickedAt: number | undefined;
     w.getHook.set(id, () => void (w.panes.get(id)!.kicked && (kickedAt ??= w.clock)));
     const { code, out } = await start(d, brief);
-    expect(out[1]).toBe(`STARTUP_OK fix-login ${id}`);
+    expect(out[1]).toBe(`STARTUP_OK fix-login hc:${id}`);
     expect(code).toBe(0);
     expect(w.clock - kickedAt!).toBe(20_000);
   });
@@ -86,7 +84,7 @@ describe("seori start: startup verdict", () => {
     const { w, d, brief, id } = setup({ startupWaitSeconds: 180 });
     statusAfterKickoff(w, id, 60_000, "unknown", "working");
     const { code, out } = await start(d, brief);
-    expect(out[1]).toBe(`STARTUP_OK fix-login ${id}`);
+    expect(out[1]).toBe(`STARTUP_OK fix-login hc:${id}`);
     expect(code).toBe(0);
   });
 
@@ -94,18 +92,17 @@ describe("seori start: startup verdict", () => {
     const { w, d, brief, id } = setup({ startupWaitSeconds: 30 });
     statusAfterKickoff(w, id, 60_000, "unknown", "working");
     const { code, out } = await start(d, brief);
-    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login ${id}: no ready agent status (unknown) after `);
+    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login hc:${id}: no ready agent status (unknown) after `);
     expect(code).toBe(3);
     expect(d.store.lane("fix-login")?.status).toBe("working");
   });
 
-  test("omp idle and never working on the kickoff, even after the Enter, is STARTUP_UNCONFIRMED", async () => {
+  test("omp idle and never working on the kickoff is STARTUP_UNCONFIRMED", async () => {
     const { w, d, brief, id } = setup({ startupWaitSeconds: 60 });
-    w.kickoffDead = true;
+    w.kickoffIgnored = true;
     const { code, out } = await start(d, brief);
-    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login ${id}: omp has not started on the kickoff after `);
+    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login hc:${id}: omp has not started on the kickoff after `);
     expect(code).toBe(3);
-    expect(w.calls.filter((c) => c.argv[1] === "send-keys")).toHaveLength(1);
   });
 
   test("a lane that sends READY during the wait is STARTUP_DONE, exit 0", async () => {
@@ -139,7 +136,7 @@ describe("seori start: startup verdict", () => {
       if (pane().kicked && pane().status === "idle") pane().screen = ["No API key found for provider anthropic", "> "];
     });
     const failed = await start(late.d, late.brief);
-    expect(failed.out[1]).toBe(`STARTUP_ERROR fix-login ${late.id}: No API key`);
+    expect(failed.out[1]).toBe(`STARTUP_ERROR fix-login hc:${late.id}: No API key`);
     expect(failed.code).toBe(3);
 
     // The screen read just before the status read that says working shows a quoted phrase: omp's own output, no failure.
@@ -151,7 +148,7 @@ describe("seori start: startup verdict", () => {
       if (busy.w.clock - (kicked() ?? busy.w.clock) >= 50_000) busy.w.panes.get(busy.id)!.screen = ["grep: Rate limit reached in logs/app.log", "> "];
     });
     const ok = await start(busy.d, busy.brief);
-    expect(ok.out[1]).toBe(`STARTUP_OK fix-login ${busy.id}`);
+    expect(ok.out[1]).toBe(`STARTUP_OK fix-login hc:${busy.id}`);
     expect(ok.code).toBe(0);
   });
 
@@ -167,7 +164,7 @@ describe("seori start: startup verdict", () => {
     const log = console.log;
     console.log = (...args: unknown[]) => void at.push({ line: args.join(" "), clock: w.clock });
     try {
-      await main(["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force"], d);
+      await main(["start", "fix-login", "--brief", brief, "--force"], d);
     } finally {
       console.log = log;
     }
@@ -190,7 +187,7 @@ describe("seori start: startup verdict", () => {
     };
     const { code, out } = await start(deps, brief);
     expect(out[0]).toStartWith("STARTED fix-login");
-    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login ${id}: verdict failed: clock broke`);
+    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login hc:${id}: verdict failed: clock broke`);
     expect(code).toBe(3);
   });
 
@@ -203,7 +200,7 @@ describe("seori start: startup verdict", () => {
       if (w.panes.get(id)!.kicked) w.panes.get(id)!.status = "blocked";
     });
     const { code, out } = await start(d, brief);
-    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login ${id}: no ready agent status (blocked)`);
+    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login hc:${id}: no ready agent status (blocked)`);
     expect(code).toBe(3);
   });
 });

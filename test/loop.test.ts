@@ -6,14 +6,14 @@ import { main } from "../src/cli.ts";
 import { done, dutyTick, memFreePct, ready, Refusal, report, startLane } from "../src/harness.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, HOUR, importId, loopTick, msUntilNext, restore } from "../src/loop.ts";
 import type { Exec } from "../src/runtime/exec.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
 function setup(opts: { lead?: boolean; exec?: (inner: Exec) => Exec } = {}) {
   const w = new World();
   if (opts.exec) w.exec = opts.exec(w.exec);
   const d = w.deps();
-  const lead = w.addPane("w1:p1", "idle");
-  if (opts.lead !== false) d.store.setRole("lead", herdrRef("w1:p1"));
+  const lead = w.addPane("t1", "idle");
+  if (opts.lead !== false) d.store.setRole("lead", paneRef("t1"));
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Do the thing.");
   const add = (id: string, o: Parameters<typeof backlogAdd>[3] = {}) => backlogAdd(d, id, brief, { cwd: d.store.root, ...o });
@@ -120,8 +120,8 @@ describe("hourly loop", () => {
     const { w, d, brief, add, tick } = setup();
     add("next");
     add("blocked", { priority: 1, decision: "which database?" });
-    await startLane(d, "hand-a", brief, { workspace: "w1" });
-    await startLane(d, "hand-b", brief, { workspace: "w1" });
+    await startLane(d, "hand-a", brief, {});
+    await startLane(d, "hand-b", brief, {});
     const full = await tick({ maxLanes: 2 });
     expect(full.started).toEqual([]);
     expect(full.held[0]).toContain("0 free of 2 lanes");
@@ -135,20 +135,6 @@ describe("hourly loop", () => {
     w.host = { load1: 1, cores: 8, memFreePct: 50 };
     expect((await tick({ maxLanes: 5 })).started).toEqual(["next (p5)"]);
     expect(d.store.item("blocked")!.status).toBe("open");
-  });
-
-  test("without herdr's omp integration a loop start opens no tab and records the failure", async () => {
-    const { w, d, add, tick } = setup();
-    add("next");
-    w.ompIntegration = false;
-    const panes = new Set(w.panes.keys());
-    const run = await tick({ maxLanes: 3 });
-    expect(run.started).toEqual([]);
-    expect(run.findings[0]).toContain("start next failed");
-    expect([...w.panes.keys()]).toEqual([...panes]);
-    expect(w.calls.filter((c) => c.argv[0] === "tab" || c.argv[0] === "workspace")).toEqual([]);
-    expect(d.store.lane("next")).toBeUndefined();
-    expect(d.store.item("next")!.status).toBe("open");
   });
 
   test("sync: done lane closes the item, a lost lane reopens it and asks after two losses, a merged PR closes it", async () => {
@@ -199,12 +185,12 @@ describe("hourly loop", () => {
 
   test("audit flags stale, long-waiting, unclosed-READY and vanished lanes without touching them", async () => {
     const { w, d, brief, tick, destructive } = setup();
-    const quiet = await startLane(d, "quiet", brief, { workspace: "w1" });
-    const busy = await startLane(d, "busy", brief, { workspace: "w1" });
-    const wait = await startLane(d, "wait-ci", brief, { workspace: "w1" });
-    const fin = await startLane(d, "finished", brief, { workspace: "w1" });
-    const gone = await startLane(d, "vanished", brief, { workspace: "w1" });
-    await startLane(d, "fresh", brief, { workspace: "w1" });
+    const quiet = await startLane(d, "quiet", brief, {});
+    const busy = await startLane(d, "busy", brief, {});
+    const wait = await startLane(d, "wait-ci", brief, {});
+    const fin = await startLane(d, "finished", brief, {});
+    const gone = await startLane(d, "vanished", brief, {});
+    await startLane(d, "fresh", brief, {});
     await report(d, "wait-ci", "WAITING: CI on acme/app#3", "waiting");
     await ready(d, "finished", "done", ["https://github.com/acme/app/pull/3"]);
     for (const l of [quiet, wait, fin]) w.panes.get(l.paneId)!.status = "idle";
@@ -213,7 +199,7 @@ describe("hourly loop", () => {
     w.gh = () => ({ code: 0, stdout: JSON.stringify({ state: "OPEN" }) });
 
     w.clock += 30 * 60_000;
-    expect((await tick({ maxStarts: 0 })).findings).toEqual(["vanished pane " + gone.paneId + " is gone"]);
+    expect((await tick({ maxStarts: 0 })).findings).toEqual(["vanished pane hc:" + gone.paneId + " is gone"]);
     w.clock += 4 * HOUR;
     await dutyTick(d);
     expect(d.store.lane("busy")!.lastActivityAt).toBe(busy.createdAt);
@@ -281,7 +267,7 @@ describe("hourly loop", () => {
 
   test("failed lane starts are recorded, each uses a slot, and the run still reports what is waiting; with no lead nothing starts", async () => {
     const failing = setup({
-      exec: (inner) => async (cmd, argv) => (cmd === "herdr" && argv[0] === "tab" ? { code: 1, stdout: "", stderr: "server down" } : inner(cmd, argv)),
+      exec: (inner) => async (cmd, argv) => (cmd === "hc" && argv[1] === "run" ? { code: 1, stdout: "", stderr: "server down" } : inner(cmd, argv)),
     });
     failing.add("one");
     failing.add("two");
@@ -289,8 +275,8 @@ describe("hourly loop", () => {
     const run = await failing.tick({ maxStarts: 2 });
     expect(run.started).toEqual([]);
     expect(run.findings).toEqual([
-      expect.stringContaining("start one failed: herdr tab create"),
-      expect.stringContaining("start three failed: herdr tab create"),
+      expect.stringContaining("start one failed: hc --json run"),
+      expect.stringContaining("start three failed: hc --json run"),
     ]);
     expect(run.held).toEqual(["1 item(s) waiting: 3 free of 3 lanes, max 2/run"]);
     expect(failing.d.store.item("one")).toMatchObject({ status: "open", attempts: 0, startFailures: 1 });
@@ -359,7 +345,7 @@ describe("hardening", () => {
   test("a lane that opened but whose [START] could not reach the lead counts as started", async () => {
     const { d, add, tick } = setup({
       exec: (inner) => async (cmd, argv) =>
-        cmd === "herdr" && argv[0] === "agent" && argv[2] === "w1:p1" ? { code: 1, stdout: "", stderr: "lead pane hung" } : inner(cmd, argv),
+        cmd === "hc" && argv[1] === "send" && argv[2] === "t1" ? { code: 1, stdout: "", stderr: "lead pane hung" } : inner(cmd, argv),
     });
     add("solo");
     const run = await tick({ maxStarts: 1 });
@@ -377,7 +363,7 @@ describe("hardening", () => {
     let home = "";
     const { d, add, tick } = setup({
       exec: (inner) => async (cmd, argv) => {
-        if (cmd === "herdr" && argv[0] === "tab") {
+        if (cmd === "hc" && argv[1] === "run") {
           writeFileSync(join(home, "loop", "lock"), JSON.stringify({ pid: process.ppid, at: 0, nonce: "usurper" }));
         }
         return inner(cmd, argv);

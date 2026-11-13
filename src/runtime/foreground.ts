@@ -7,7 +7,7 @@ const baseName = (value: unknown): string => String(value ?? "").replace(/^-/, "
 const runsCommand = (arg: string): boolean => /^-[A-Za-z]*c[A-Za-z]*$/.test(arg);
 
 /**
- * True when the process info (`{ foreground_processes: [{ name, argv }] }`, herdr's `pane process-info` shape) shows an
+ * True when the process info (`{ foreground_processes: [{ name, argv }] }`, built from `hc get`'s foreground) shows an
  * interactive shell in the session's foreground process group, or cannot be read. An agent suspended with Ctrl+Z is
  * still reported `idle` while its shell is in front (#66). A shell that runs a command flag (`sh -c ...`) is an agent's
  * child, not a prompt, and does not count; any other shell, a script runner such as `bash script.sh` included, is held.

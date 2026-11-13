@@ -2,7 +2,7 @@
 import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync, linkSync, statSync } from "node:fs";
 import { homedir, hostname, uptime } from "node:os";
 import { join } from "node:path";
-import { refFromText, refText, sameSession } from "./refs.ts";
+import { HerdrRecord, refFromText, refText, sameSession } from "./refs.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import type { Workflow } from "./workflow.ts";
 
@@ -20,8 +20,8 @@ export type LaneLogKind =
   | "object" | "pause" | "resume" | "blocked" | "stalled" | "posted";
 
 /**
- * One lane record. `sessionRef` is the session it runs in, on whichever runtime opened it; `paneId`/`tabId` are written
- * beside it (the ref's id and container) so an older binary still reads the file. Read `sessionRef`, never `paneId`.
+ * One lane record. `sessionRef` is the hc terminal it runs in; `paneId`/`tabId` are written beside it (the ref's id and
+ * "") so an older binary still reads the file. Read `sessionRef`, never `paneId`.
  */
 export type Lane = {
   key: string;
@@ -46,9 +46,9 @@ export type Lane = {
   ceilings?: Ceilings;
   /** `seori start --activity-path`: files or directories (relative to cwd) whose change counts as progress (src/supervision.ts). */
   activityPaths?: string[];
-  /** `seori start --model`: the model this lane's omp runs with instead of SEORI_MODEL (kept by seori migrate). */
+  /** `seori start --model`: the model this lane's omp runs with instead of SEORI_MODEL. */
   model?: string;
-  /** The workflow this lane's kickoff named (src/workflow.ts); a migrated replacement gets the same one. */
+  /** The workflow this lane's kickoff named (src/workflow.ts). */
   workflow?: Workflow;
   /** Once-per-change alert marks (ceiling reached, stalled, ...): key -> when it was raised. */
   alerts?: Record<string, number>;
@@ -56,21 +56,16 @@ export type Lane = {
   blockedSince?: number;
   /** The last report posted to `thread`, and when. */
   posted?: { at: number; text: string };
-  /** The sessions the lane ran in before a `seori migrate`, oldest first. */
-  migratedFrom?: SessionRef[];
-  /** A `seori migrate` handover is in progress: the duty loop leaves the record alone (no nudge, no lost). */
-  migration?: true;
   log: { at: number; kind: LaneLogKind; text: string }[];
 };
 
 export type Role = "lead" | "duty";
 
 /**
- * A delivery that failed after the message may have reached the pane (#89). `typed`: the text is in the pane's input
- * and only Enter is retried; `agent` and `pgid` record which agent it was typed into (#108, see AgentIdentity).
- * `ambiguous`: it may or may not have arrived; it is held, never resent automatically.
+ * A delivery that failed after the message may have reached the session (#89): it may or may not have arrived, so it
+ * is held, never resent automatically.
  */
-export type DeliveryAttempt = { at: number; state: "typed" | "ambiguous"; detail?: string; agent?: string; pgid?: number };
+export type DeliveryAttempt = { at: number; state: "ambiguous"; detail?: string };
 
 /** A flush lock from another host (or an unreadable one) older than this is taken over; on this host only a dead pid frees it (#108). */
 export const INBOX_LOCK_STALE_MS = 60_000;
@@ -138,31 +133,28 @@ export const RESERVED_KEYS: readonly Role[] = ["lead", "duty"];
 export const reservedKey = (key: string): string | undefined =>
   (RESERVED_KEYS as readonly string[]).includes(key) ? `lane key "${key}" is reserved for the ${key} role` : undefined;
 
-/** A lane file as any binary wrote it: one from before runtimes existed has no `sessionRef`. */
-export type StoredLane = Omit<Lane, "sessionRef"> & { sessionRef?: SessionRef };
+/** A lane file as any binary wrote it: one from a herdr seori has no `sessionRef`, or a herdr one. */
+export type StoredLane = Omit<Lane, "sessionRef"> & { sessionRef?: { runtime: string; id: string } };
 
-/** Reads a record without `sessionRef` as the herdr pane it names; the same input always gives the same lane. */
-export const upgradeLane = (raw: StoredLane): Lane =>
-  raw.sessionRef !== undefined
-    ? (raw as Lane)
-    : { ...raw, sessionRef: { runtime: "herdr", id: raw.paneId, ...(raw.tabId ? { container: raw.tabId } : {}) } };
+/** The lane of an hc record; a record of a herdr pane is refused (HerdrRecord) with the file it came from. */
+export const checkedLane = (raw: StoredLane, file: string): Lane => {
+  const ref = raw.sessionRef;
+  if (ref?.runtime !== "hc") throw new HerdrRecord(file, ref?.id ?? raw.paneId);
+  return raw as Lane;
+};
 
-// Inbox files: one JSONL queue per session. A herdr pane keeps the name it had before runtimes existed (`w1_p3.jsonl`),
-// so queues written by an older binary drain; every other runtime is prefixed (`hc--t7.jsonl`).
+// Inbox files: one JSONL queue per session, `hc--t7.jsonl`. A file without that prefix is a herdr pane's queue.
 const HC_INBOX_PREFIX = "hc--";
 
-const inboxName = (ref: SessionRef): string =>
-  ref.runtime === "herdr" ? ref.id.replaceAll(":", "_") : `${HC_INBOX_PREFIX}${ref.id}`;
+const inboxName = (ref: SessionRef): string => `${HC_INBOX_PREFIX}${ref.id}`;
 
-const inboxRef = (stem: string): SessionRef =>
-  stem.startsWith(HC_INBOX_PREFIX)
-    ? { runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) }
-    : { runtime: "herdr", id: stem.replaceAll("_", ":") };
+const inboxRef = (stem: string, file: string): SessionRef => {
+  if (!stem.startsWith(HC_INBOX_PREFIX)) throw new HerdrRecord(file, stem.replaceAll("_", ":"));
+  return { runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) };
+};
 
 const readQueue = (path: string): QueuedMessage[] =>
   existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as QueuedMessage) : [];
-
-const queueKey = (m: QueuedMessage): string => `${m.at}\u0000${m.from}\u0000${m.text}`;
 
 const checkedId = (id: string): string => {
   if (!KEY_RE.test(id)) throw new Error(`invalid id ${JSON.stringify(id)}: must match ${KEY_RE}`);
@@ -211,7 +203,7 @@ function lockStale(path: string, content: string, now: number): boolean {
       return now;
     }
   };
-  // On this host the pid decides: a live holder keeps its lock however long a herdr call takes, or a second flush
+  // On this host the pid decides: a live holder keeps its lock however long an hc call takes, or a second flush
   // would deliver the same batch again. The age rule is only for locks from another host or locks that can't be read.
   // A lock written before this boot is stale whatever its pid says: after a reboot an unrelated process may own that
   // pid, and long-lived locks (daemon, lead consumer) would otherwise stay held forever. The file's mtime is the wall
@@ -281,22 +273,24 @@ export class Store {
   }
 
   lane(key: string): Lane | undefined {
-    const raw = this.readJson<StoredLane>(join(this.root, "lanes", `${key}.json`));
-    return raw && upgradeLane(raw);
+    const file = join(this.root, "lanes", `${key}.json`);
+    const raw = this.readJson<StoredLane>(file);
+    return raw && checkedLane(raw, file);
   }
 
-  /** Writes `paneId`/`tabId` from `sessionRef` beside it, so an older binary still reads the record. */
+  /** Writes `paneId`/`tabId` beside `sessionRef`, so an older binary still reads the record. */
   saveLane(lane: Lane): void {
-    const { id, container } = lane.sessionRef;
-    this.writeJson(join(this.root, "lanes", `${lane.key}.json`), { ...lane, paneId: id, tabId: container ?? "" });
+    this.writeJson(join(this.root, "lanes", `${lane.key}.json`), { ...lane, paneId: lane.sessionRef.id, tabId: "" });
   }
 
   lanes(): Lane[] {
     return readdirSync(join(this.root, "lanes"))
       .filter((f) => f.endsWith(".json"))
-      .map((f) => this.readJson<StoredLane>(join(this.root, "lanes", f)))
-      .filter((l): l is StoredLane => l !== undefined)
-      .map(upgradeLane)
+      .flatMap((f) => {
+        const file = join(this.root, "lanes", f);
+        const raw = this.readJson<StoredLane>(file);
+        return raw === undefined ? [] : [checkedLane(raw, file)];
+      })
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
   }
 
@@ -304,10 +298,11 @@ export class Store {
     return this.lanes().find((l) => sameSession(l.sessionRef, ref) && l.status !== "done");
   }
 
-  /** roles.json holds ref strings (refText), so an older binary still parses it; a bare value is a herdr pane. */
+  /** roles.json holds ref strings (refText); a value that is not an hc ref (a herdr pane) is refused. */
   roles(): Partial<Record<Role, SessionRef>> {
-    const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
-    return Object.fromEntries(Object.entries(raw).map(([role, text]) => [role, refFromText(text)]));
+    const file = join(this.root, "roles.json");
+    const raw = this.readJson<Partial<Record<Role, string>>>(file) ?? {};
+    return Object.fromEntries(Object.entries(raw).map(([role, text]) => [role, refFromText(text, file)]));
   }
 
   setRole(role: Role, ref: SessionRef): void {
@@ -323,21 +318,11 @@ export class Store {
     return join(this.root, "inbox", `${inboxName(ref)}.jsonl`);
   }
 
-  /**
-   * Appends to the inbox of the session `ref` was forwarded to by a migration, if it was. Under ref's append lock, so
-   * seori migrate never writes the forward marker or moves the file aside between the lookup and the append, and under
-   * the forwarded session's append lock too, so a rewrite of that inbox (rewriteInbox) never drops the entry.
-   */
+  /** Appends under the session's append lock, so a rewrite of that inbox (rewriteInbox) never drops the entry. */
   enqueue(ref: SessionRef, msg: QueuedMessage): void {
     const release = this.waitAppend(ref);
     try {
-      const to = this.forwardOf(ref);
-      const releaseTo = to && this.waitAppend(to);
-      try {
-        appendFileSync(this.inboxPath(to ?? ref), JSON.stringify(msg) + "\n");
-      } finally {
-        releaseTo?.();
-      }
+      appendFileSync(this.inboxPath(ref), JSON.stringify(msg) + "\n");
     } finally {
       release();
     }
@@ -368,9 +353,8 @@ export class Store {
   }
 
   /**
-   * The session's append lock (`<inbox>.append.lock`): enqueue holds it across the forward lookup and the append, seori
-   * migrate across writing or removing the forward marker and moving the inbox aside, rewriteInbox across its read and
-   * write. Never held across a delivery.
+   * The session's append lock (`<inbox>.append.lock`): enqueue holds it across the append, rewriteInbox across its
+   * read and write. Never held across a delivery.
    */
   lockAppend(ref: SessionRef, now: number): (() => void) | undefined {
     return lockFile(`${this.inboxPath(ref)}.append.lock`, now);
@@ -378,62 +362,6 @@ export class Store {
 
   queued(ref: SessionRef): QueuedMessage[] {
     return readQueue(this.inboxPath(ref));
-  }
-
-  // A `.forward` file beside an inbox (`w1_p3.jsonl.forward`, holding a ref) says that session moved (seori migrate):
-  // new messages go to the ref's inbox, and entries a sender still appended to the old file are merged by the next flush.
-
-  /** The session this one's inbox was forwarded to by a migration (its `.forward` marker), or undefined. */
-  forwardOf(ref: SessionRef): SessionRef | undefined {
-    const marker = `${this.inboxPath(ref)}.forward`;
-    const text = readOrUndefined(marker)?.trim();
-    return text ? refFromText(text) : undefined;
-  }
-
-  /** The old inbox files whose `.forward` marker names `ref`. */
-  private forwardedInto(ref: SessionRef): string[] {
-    const dir = join(this.root, "inbox");
-    return readdirSync(dir)
-      .filter((f) => f.endsWith(".jsonl.forward"))
-      .map((f) => join(dir, f.slice(0, -".forward".length)))
-      .filter((old) => {
-        const to = readOrUndefined(`${old}.forward`)?.trim();
-        return Boolean(to) && sameSession(refFromText(to!), ref);
-      });
-  }
-
-  /** True when an old inbox forwarded into `ref` still holds entries. */
-  forwardPending(ref: SessionRef): boolean {
-    return this.forwardedInto(ref).some((old) => readQueue(old).length > 0 || readQueue(`${old}.merging`).length > 0);
-  }
-
-  /**
-   * Moves the entries of every old inbox forwarded into `ref` to the end of ref's inbox; call it under ref's inbox lock.
-   * The old file is renamed aside first, so an append racing the merge lands in a fresh old file for the next one; an
-   * entry ref's inbox already holds (a merge cut short after its append) is not added again.
-   */
-  mergeForwarded(ref: SessionRef): void {
-    const into = this.inboxPath(ref);
-    for (const old of this.forwardedInto(ref)) {
-      const aside = `${old}.merging`;
-      for (let pass = 0; pass < 2; pass++) {
-        if (!existsSync(aside)) {
-          try {
-            renameSync(old, aside);
-          } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === "ENOENT") break;
-            throw e;
-          }
-        }
-        const seen = new Set(readQueue(into).map(queueKey));
-        for (const m of readQueue(aside)) {
-          if (seen.has(queueKey(m))) continue;
-          seen.add(queueKey(m));
-          appendFileSync(into, JSON.stringify(m) + "\n");
-        }
-        rmSync(aside, { force: true });
-      }
-    }
   }
 
   saveInbox(ref: SessionRef, msgs: readonly QueuedMessage[]): void {
@@ -449,7 +377,7 @@ export class Store {
   inboxPanes(): SessionRef[] {
     return readdirSync(join(this.root, "inbox"))
       .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => inboxRef(f.slice(0, -".jsonl".length)))
+      .map((f) => inboxRef(f.slice(0, -".jsonl".length), join(this.root, "inbox", f)))
       .filter((r) => this.queued(r).length > 0);
   }
 

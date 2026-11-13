@@ -14,10 +14,10 @@ describe("agent: omp only", () => {
     const home = tmp();
     expect(selectAgent(home, {})).toEqual({ profile: ompProfile, source: "default" });
     expect(selectAgent(home, { SEORI_AGENT: "omp" })).toEqual({ profile: ompProfile, source: "env" });
-    writeFileSync(join(home, "config.json"), JSON.stringify({ agent: "omp", runtime: "hc", name: "x" }));
+    writeFileSync(join(home, "config.json"), JSON.stringify({ agent: "omp", name: "x" }));
     expect(selectAgent(home, {})).toEqual({ profile: ompProfile, source: "config" });
     expect(selectAgent(home, { SEORI_AGENT: "" }).source).toBe("config");
-    // the rest of seori reads the same config.json: agent and runtime are known keys there
+    // the rest of seori reads the same config.json: agent is a known key there
     expect(loadConfig(home).name).toBe("x");
     expect(ompProfile.command).toBe("omp");
   });
@@ -37,8 +37,8 @@ describe("agent: omp only", () => {
 
   test("the CLI refuses another agent before running any command: one stderr line, exit 2", async () => {
     const cli = join(import.meta.dir, "..", "src", "cli.ts");
-    // never address a real hc core or herdr session from here
-    const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("HC_") && !k.startsWith("HERDR_")));
+    // never address a real hc core from here
+    const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("HC_")));
     const run = async (home: string, extra: Record<string, string>) => {
       const p = Bun.spawn(["bun", cli, "lessons"], { env: { ...base, SEORI_HOME: home, ...extra }, stdout: "pipe", stderr: "pipe" });
       const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);

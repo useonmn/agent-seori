@@ -27,8 +27,6 @@ const {
   HC_SCOPE: _scope,
   HC_SOCKET: _hcSock,
   HC_SESSION: _session,
-  HERDR_PANE_ID: _pane,
-  HERDR_WORKSPACE_ID: _ws,
   SEORI_HOME: _home,
   SEORI_CMD: _cmd,
   SEORI_LANE: _lane,
@@ -36,8 +34,6 @@ const {
   SEORI_AGENT_CMD: _agentCmd,
   [TEST_AGENT_CMD_SWITCH]: _anyAgentCmd,
   SEORI_MODEL: _model,
-  SEORI_RUNTIME: _runtime,
-  SEORI_HERDR_SESSION: _herdr,
   SEORI_SYSTEMD_DIR: _units,
   SEORI_SYSTEMCTL: _ctl,
   ...outer

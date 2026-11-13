@@ -4,11 +4,6 @@ import { type HcError, hcCall } from "../src/runtime/hc/exec.ts";
 import { rig, T1, terminal } from "./helpers/hc-rig.ts";
 
 describe("typed text, shells, keys, read", () => {
-  test("submitTyped is always changed and touches nothing (hc sends paste+Enter atomically)", async () => {
-    const r = rig({ t1: terminal() });
-    expect(await r.rt.submitTyped(T1, { agent: "omp", pgid: 4242 })).toBe("changed");
-    expect(r.calls()).toEqual([]);
-  });
 
   test("typeIntoShell sends into a silent shell without a status gate", async () => {
     const r = rig({ t1: terminal({ status: null, foreground: { name: "zsh", argv: ["-zsh"], pid: 2 } }) });
@@ -36,9 +31,9 @@ describe("typed text, shells, keys, read", () => {
 });
 
 describe("close, list, groups, self", () => {
-  test("close kills then removes, whatever the scope", async () => {
+  test("close kills then removes", async () => {
     const r = rig({ t1: terminal() });
-    await r.rt.close(T1, "container");
+    await r.rt.close(T1);
     expect(r.calls()).toEqual([
       ["kill", "t1"],
       ["rm", "t1"],
@@ -110,10 +105,8 @@ describe("close, list, groups, self", () => {
     expect(rig({}, { HC_TERMINAL_ID: "" }).rt.self()).toBeUndefined();
   });
 
-  test("kind is hc; the agent integration is hc itself; no agent session file", async () => {
+  test("no agent session file", async () => {
     const r = rig({ t1: terminal() });
-    expect(r.rt.kind).toBe("hc");
-    expect(await r.rt.agentIntegration()).toBe(true);
     expect(await r.rt.agentSession(T1)).toBeUndefined();
     expect(r.calls()).toEqual([]);
   });
@@ -122,7 +115,7 @@ describe("close, list, groups, self", () => {
 describe("startAgent", () => {
   test("types the quoted agent command and returns once the agent reports", async () => {
     const r = rig({ t1: terminal({ status: null, foreground: { name: "bash", argv: ["bash"], pid: 3 } }) }, {}, { agentReports: true });
-    await r.rt.startAgent(T1, "lane-k", ["--append-system-prompt", "it's me"]);
+    await r.rt.startAgent(T1, ["--append-system-prompt", "it's me"]);
     expect(r.calls()).toEqual([
       ["send", "t1", "--", `'omp' '--append-system-prompt' 'it'\\''s me'`],
       ["get", "t1"],
@@ -131,13 +124,13 @@ describe("startAgent", () => {
 
   test("throws when nothing reports within the timeout", async () => {
     const r = rig({ t1: terminal({ status: null, foreground: { name: "bash", argv: ["bash"], pid: 3 } }) });
-    await expect(r.rt.startAgent(T1, "x", [], 1000)).rejects.toThrow(/did not report/);
+    await expect(r.rt.startAgent(T1, [], 1000)).rejects.toThrow(/did not report/);
     expect(r.sleeps).toEqual([500, 500]);
   });
 
   test("throws when the terminal is gone", async () => {
     const r = rig({ t1: terminal({ status: null, state: "finished" }) });
-    await expect(r.rt.startAgent(T1, "x", [])).rejects.toThrow(/gone|finished/);
+    await expect(r.rt.startAgent(T1, [])).rejects.toThrow(/gone|finished/);
   });
 });
 

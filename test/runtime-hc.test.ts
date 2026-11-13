@@ -55,7 +55,7 @@ describe("create / start / createGroup", () => {
 
   test("no group labels seori.group=seori; a non-lane role has no seori.lane label; no SHELL runs sh", async () => {
     const r = rig();
-    const ref = await r.rt.create({ name: "lead", cwd: "/r", env: {}, role: "lead", container: "workspace-root" });
+    const ref = await r.rt.create({ name: "lead", cwd: "/r", env: {}, role: "lead" });
     expect(ref).toEqual({ runtime: "hc", id: "t1", group: "seori" });
     expect(r.calls()[1]).toEqual([
       "run",
@@ -84,7 +84,7 @@ describe("create / start / createGroup", () => {
     const TOKENS = [
       "SEORI_TELEGRAM_TOKEN", "SEORI_DISCORD_TOKEN", "SEORI_SLACK_BOT_TOKEN", "SEORI_SLACK_APP_TOKEN", "SEORI_SLACK_USER_TOKEN", "SEORI_SLACK_COOKIE",
     ];
-    const argv = (role: SessionRole) => createArgv({ name: "x", cwd: "/w", env: { SEORI_LANE: "x" }, role, container: "tab" }, "sh", undefined);
+    const argv = (role: SessionRole) => createArgv({ name: "x", cwd: "/w", env: { SEORI_LANE: "x" }, role }, "sh", undefined);
     const unset = (a: string[]) => a.flatMap((v, i) => (v === "-u" ? [a[i + 1] ?? ""] : []));
     for (const role of ["lane", "lead", "duty", "hourly-loop"] as const) {
       const a = argv(role);
@@ -131,12 +131,6 @@ describe("create / start / createGroup", () => {
     expect(await openSession(r.rt, lane, "omp")).toEqual({ runtime: "hc", id: "t1", group: "g1" });
     expect(r.calls().map((c) => c[0])).toEqual(["ls", "run", "send"]);
     expect(r.calls()[2]).toEqual(["send", "t1", "--", "omp"]);
-  });
-
-  test("createGroup returns the label and makes no call", async () => {
-    const r = rig();
-    expect(await r.rt.createGroup("abcd1234", "/w")).toBe("abcd1234");
-    expect(r.calls()).toEqual([]);
   });
 
   test("a live terminal holding the slug drops --name (hc names are unique among live terminals)", async () => {

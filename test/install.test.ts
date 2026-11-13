@@ -55,15 +55,6 @@ describe("uninstall (I6)", () => {
     expect(existsSync(home)).toBe(false);
   });
 
-  test("an hc home is not told to close a herdr workspace; herdr, or no runtime known, is", async () => {
-    const hc = await uninstall({ skillsDir: dir(), home: dir(), purge: false, unlink, runtime: "hc" });
-    expect(hc.some((l) => /herdr/.test(l))).toBe(false);
-    const herdr = await uninstall({ skillsDir: dir(), home: dir(), purge: false, unlink, runtime: "herdr" });
-    expect(herdr.some((l) => /herdr/.test(l))).toBe(true);
-    const unknown = await uninstall({ skillsDir: dir(), home: dir(), purge: false, unlink });
-    expect(unknown.some((l) => /herdr/.test(l))).toBe(true);
-  });
-
   test("a directory that is not a link or a seori copy is never deleted", async () => {
     const skills = dir();
     mkdirSync(skill(skills));

@@ -659,7 +659,7 @@ function checksRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "checks"
   });
 }
 
-/** herdr reports a lane that finished its turn unwatched as `done`; like the harness, that counts as idle. */
+/** hc reports a lane that finished its turn unwatched as `done`; like the harness, that counts as idle. */
 function paneRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "pane" }>): Runner {
   return poll(ctx, ctx.timing.panePollMs, async () => {
     const status = await ctx.deps.paneStatus(src.pane);

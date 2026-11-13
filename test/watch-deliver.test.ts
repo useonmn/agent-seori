@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Channel } from "../src/channel.ts";
 import { deliverWatchEvent } from "../src/watch/deliver.ts";
 import type { Watch, WatchOwner } from "../src/watch/store.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
 const watch = (id: string, owner: WatchOwner): Watch => ({
   id,
@@ -22,8 +22,8 @@ describe("deliverWatchEvent", () => {
   test("a lead watch appends watch rows to the lead channel, seq counting per watch from 1", async () => {
     const w = new World();
     const d = w.deps();
-    const lead = w.addPane("w1:p1", "working");
-    d.store.setRole("lead", herdrRef("w1:p1"));
+    const lead = w.addPane("t1", "working");
+    d.store.setRole("lead", paneRef("t1"));
     await deliverWatchEvent(d, watch("a1", { kind: "lead" }), "[watch ci a1] one");
     await deliverWatchEvent(d, watch("b2", { kind: "lead" }), "[watch ci b2] other");
     w.clock += 5;
@@ -41,8 +41,8 @@ describe("deliverWatchEvent", () => {
   test("a lane watch is sent to the lane's pane (mid-turn too) and leaves the lead channel alone", async () => {
     const w = new World();
     const d = w.deps();
-    const pane = w.addPane("w1:p9", "working");
-    d.store.saveLane({ key: "fix-1", sessionRef: { runtime: "herdr", id: "w1:p9", container: "w1:t9" }, paneId: "w1:p9", tabId: "w1:t9", brief: "b", cwd: "/", status: "working", createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
+    const pane = w.addPane("t9", "working");
+    d.store.saveLane({ key: "fix-1", sessionRef: { runtime: "hc", id: "t9" }, paneId: "t9", tabId: "w1:t9", brief: "b", cwd: "/", status: "working", createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
     await deliverWatchEvent(d, watch("c3", { kind: "lane", key: "fix-1" }), "[watch ci c3] checks passed");
     expect(pane.received).toHaveLength(1);
     expect(pane.received[0]).toContain("[watch ci c3] checks passed");

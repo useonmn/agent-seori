@@ -29,7 +29,7 @@ const DESCRIPTION: Readonly<Record<UnitKind, string>> = {
 };
 
 /** Variables a unit passes on from the `seori up` that wrote it, when set there (never the caller's HC_TERMINAL_*). */
-const PASSED_ON = ["SEORI_MODEL", "SEORI_AGENT", "SEORI_AGENT_CMD", "SEORI_CMD", "SEORI_HERDR_SESSION", "HC_SESSION", "HC_SOCKET", "XDG_RUNTIME_DIR"] as const;
+const PASSED_ON = ["SEORI_MODEL", "SEORI_AGENT", "SEORI_AGENT_CMD", "SEORI_CMD", "HC_SESSION", "HC_SOCKET", "XDG_RUNTIME_DIR"] as const;
 
 /** Where unit files go: SEORI_SYSTEMD_DIR, else ~/.config/systemd/user (XDG_CONFIG_HOME honoured). */
 export function unitDir(env: Env = process.env): string {
@@ -102,7 +102,7 @@ export type UnitSpec = {
 
 /** The unit file text for one resident process. */
 export function unitFile(spec: UnitSpec, kind: UnitKind): string {
-  const vars: [string, string][] = [["SEORI_HOME", spec.home], ["SEORI_RUNTIME", "hc"]];
+  const vars: [string, string][] = [["SEORI_HOME", spec.home]];
   const path = unitPath(spec.env["PATH"] ?? "");
   if (path) vars.push(["PATH", path]);
   for (const key of PASSED_ON) {

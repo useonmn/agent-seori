@@ -5,11 +5,11 @@ description: Sets up and runs seori (서리), an always-on harness where one omp
 
 # seori mode
 
-seori is one lead session that stays up, listens to its owner on a messenger (and talks with other people and agents there too), and gets work done by handing it to lanes (omp sessions in hc terminals, or herdr tabs on herdr) and following them to the end. The owner talks to one bot. Lanes finish with READY plus evidence; a lane with a Done line is closed by seori a few minutes later, after every signal in it reads back live, unless the lead objects.
+seori is one lead session that stays up, listens to its owner on a messenger (and talks with other people and agents there too), and gets work done by handing it to lanes (omp sessions in hc terminals) and following them to the end. The owner talks to one bot. Lanes finish with READY plus evidence; a lane with a Done line is closed by seori a few minutes later, after every signal in it reads back live, unless the lead objects.
 
 This skill is the setup guide and the operating summary. Steps are in `references/`; read the one you need when you reach it:
 
-- `references/setup.md`: install, hc (or herdr), `seori up`, config.
+- `references/setup.md`: install, hc, `seori up`, config.
 - `references/messengers.md`: creating the bot, secrets, owner pairing, the first greeting.
 - `references/onboarding.md`: learning the owner's work, with consent, into omp memory.
 - `references/writing.md`: how to write to the owner.
@@ -26,14 +26,14 @@ These files are in English. Talk to the owner in the language they use (often Ko
 ## Setup
 
 1. **Name.** Ask what to call it. "서리" / "seori" is fine, and so is any other name (several can run side by side, each with its own `SEORI_HOME`). For any instance other than the first, write `"name": "<name>"` into `$SEORI_HOME/config.json` (1 to 40 letters, digits, `.`, `_` or `-`, starting with a letter or digit). Remember the name and the trigger "<name> mode" so the owner can switch it on again in one line, and use the name as the bot's display name.
-2. **Runtime.** seori runs its sessions in hc (herdr-core) terminals: hc must be on PATH and its `config.toml` must say `notes = false`. On Linux `seori up` also needs a running systemd user session. herdr works instead of hc, with its omp integration installed. Details: `references/setup.md`.
+2. **Runtime.** seori runs its sessions in hc (herdr-core) terminals: hc must be on PATH and its `config.toml` must say `notes = false`. On Linux `seori up` also needs a running systemd user session. Details: `references/setup.md`.
 3. **Install.** Run `install.sh` (one command in `references/setup.md`). It puts `seori` on PATH, links this skill and creates `~/.seori` (mode 700). It never writes secrets or config.
 4. **Messenger.** Ask which messenger: Telegram, Slack or Discord. Wait for the answer. seori runs on a bot token on each (on Slack a bot app in Socket Mode).
 5. **agent-messenger.** Ask whether to install agent-messenger (github.com/agent-messenger/agent-messenger, MIT) for what seori does not do itself (sending files, the eyes reaction, reading a replied-to message, thread names and closing): `npm install -g agent-messenger`. Recommend its bot command for the chosen messenger (`agent-slackbot`, `agent-discordbot`, `agent-telegrambot`), given seori's bot token with `auth set`. Wait for the answer.
 6. **Bot.** Create it in the browser with the owner (`references/messengers.md` has the clicks per platform); agent-messenger can drive this when installed.
 7. **Secrets.** Write the tokens into `~/.seori/secrets.json` and `chmod 600` it. Never echo a token back to the owner, into a log, a brief or memory. Then `seori msg check <source>` must print `OK <source>: ...` (it works before the owner is known).
 8. **Owner.** Run `seori msg pair <source> --write` and ask the owner to send the bot any message. seori prints `CANDIDATE ...` for the sender and writes them as the owner into `~/.seori/messengers.json`. Greet the owner through the bot: `seori msg send --to <source>:<chat> --text '...'`, with the chat id from the CANDIDATE line.
-9. **Start.** From a shell: `seori up`. On hc it opens the lead and duty terminals and runs the duty loop, hourly loop and messenger daemon as systemd --user units on Linux (as hc terminals on macOS); on herdr it opens one workspace with all five panes. From now on the lead answers the owner's messages.
+9. **Start.** From a shell: `seori up`. It opens the lead and duty terminals and runs the duty loop, hourly loop and messenger daemon as systemd --user units on Linux (as hc terminals on macOS). From now on the lead answers the owner's messages.
 10. **Onboarding.** Unless it has been done before (recall memory first), run `references/onboarding.md` with the owner: consent, a read-only look through each tool they allow, memory written with omp's `retain` tool, and a short summary.
 
 ## How the lead works
@@ -69,7 +69,7 @@ The lead runs with `prompts/lead.md` appended to its system prompt, which holds 
 
 | Command | Does |
 |---|---|
-| `seori up` | start lead, duty, duty loop, hourly loop and daemon (hc terminals and systemd --user units, or herdr panes) |
+| `seori up` | start lead, duty, duty loop, hourly loop and daemon (hc terminals and systemd --user units) |
 | `seori msg pair <source> [--write]` | find the owner's sender id from their first message; write it as owner |
 | `seori msg check` / `msg send` / `msg list` | messenger credentials, replies and notices, open messages |
 | `seori msg edit (--reply-of ID \| --to SOURCE:CHAT[:THREAD] --message MID) --text T` | grow a sent message, such as a job's status message |

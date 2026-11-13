@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
+  defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, review, send, sendToShell,
   startAgent, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
@@ -18,8 +18,7 @@ import {
   flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgSend, parseTo,
 } from "./msg.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
-import { statusOf, type SessionRef } from "./runtime/index.ts";
-import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
+import type { SessionRef } from "./runtime/index.ts";
 import { pidAlive, type Lane, type Role } from "./store.ts";
 import { parsePr, promptsDir } from "./harness.ts";
 import { hooksSettled, loadHooks } from "./hooks.ts";
@@ -39,46 +38,40 @@ import { verifyPr } from "./verify-pr.ts";
 import { adoptLane, syncRegistry } from "./adopt-sync.ts";
 import { ownerText, WATCH_USAGE, watchAdd, watchList, watchLog, watchRearm, watchStop } from "./watch/cli.ts";
 import { WatchRefusal } from "./watch/store.ts";
-import { refText } from "./refs.ts";
+import { HerdrRecord, refText } from "./refs.ts";
 import { parseRef } from "./runtime/types.ts";
 import { homeTag, removeUnits, systemctl, unitDir, writeUnits, type UnitKind } from "./systemd.ts";
-import { runMigrate } from "./migrate.ts";
 
-const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is an option)
+const USAGE = `seori - a proactive multi-session harness for omp on hc
 
-  seori up [--cwd DIR]                         start this home's lead, duty, duty loop, hourly loop and daemon (once per home);
-                                              hc: lead and duty terminals labelled seori.group=<name> (cwd default $SEORI_HOME);
+  seori up [--cwd DIR]                         start this home's lead, duty, duty loop, hourly loop and daemon (once per home):
+                                              lead and duty terminals labelled seori.group=<name> (cwd default $SEORI_HOME);
                                               daemon, duty loop and hourly loop as systemd --user units
-                                              seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS;
-                                              herdr: one workspace with five panes
-  seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
-  seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
+                                              seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS
+  seori role <lead|duty> [REF]                 register a session (hc:t7) as lead or duty (default: this one)
+  seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal, agent session, lessons + brief + lane rules
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
               [--activity-path PATH ...] [--model M] [--workflow W|none]
                                               Done line read back live before close; ID = lead channel id for progress posts;
                                               ceilings block (report to lead); exits 4 with HOLD when the host is full;
                                               a written activity file (or an entry added to or removed from an
                                               activity directory) counts as progress in the stall check; M = this lane's
-                                              omp model instead of SEORI_MODEL (kept by seori migrate); --workflow W (ulw,
+                                              omp model instead of SEORI_MODEL; --workflow W (ulw,
                                               mass-ulw, ulw-research, ulw-plan, ulw-loop, ulw-execute): the kickoff is
                                               /goal W <keyword> ... (needs the omp-ulw extension), none: plain goal mode
                                               whatever config workflow says;
                                               prints STARTED, then waits for the start (config startupWaitSeconds, 180 s):
                                               STARTUP_OK|STARTUP_DONE exit 0, STARTUP_ERROR|STARTUP_UNCONFIRMED exit 3 (lane kept)
-  seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
+  seori adopt <key> --ref <hc:tN> [--brief FILE] [--cwd DIR]
                                               register an already-running session as a lane (types nothing into it)
   seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
                                               vanished lane is marked lost (no session is ever closed)
-  seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
-                                              hand sessions over to another runtime (default: the selected one): checkpoint,
-                                              handoff brief, replacement verified, inbox moved; prints MIGRATED, DEFERRED,
-                                              SKIP or PLAN per session, exits 3 after a MIGRATE_ROLLBACK
   seori transcribe <audio-file>                run hooks.transcribe (config.json, argv template with {file}) and print the text
   seori report <key> --text T [--status working|waiting]
   seori ready <key> --text T --evidence LINK [--evidence LINK ...]
   seori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane's agent is idle
                   [--to-shell]                operator only: type this one message into a pane with no agent
-  seori inbox list <pane|role|key>             queued entries: index, state (queued|typed|held), sender, time, first 60 chars
+  seori inbox list <pane|role|key>             queued entries: index, state (queued|held), sender, time, first 60 chars
   seori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
   seori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
   seori duty [--once] [--interval SECONDS]     flush inboxes, nudge silent lanes, escalate, detect lost lanes, close Done lanes,
@@ -146,14 +139,13 @@ SEORI_MODEL=M passes --model M to every agent seori starts (lead, duty, lanes) a
 seori runs omp only: SEORI_AGENT or "agent" in $SEORI_HOME/config.json naming anything else is refused (exit 2); SEORI_AGENT_CMD overrides the omp command and must name omp (its basename is omp).
 watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), else for the lead; refusals exit 2.
 watch stop, rearm and log take a name of that same owner's live watches (--for picks another owner) or any watch's id.
-SEORI_RUNTIME=hc|herdr picks the runtime (else "runtime" in config.json, else the terminal seori runs in, else hc, then herdr, on PATH).
-On herdr, up and start need herdr's omp integration (herdr integration install omp).`;
+seori runs its sessions in hc (herdr-core) terminals; hc must be on PATH.`;
 
 type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after a bare `--`, verbatim (seori heavy). */ rest: string[] };
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -255,85 +247,41 @@ async function runDaemonLoop(root: string): Promise<number> {
 
 /**
  * What `seori up` finds before it opens anything, so an autostart script can call it every logon. This home is up when
- * one of its loops or its daemon is alive, or its lead pane is: then the ALREADY UP line is returned and nothing opens.
- * Otherwise a workspace that already has this home's name belongs to someone else (another home with the same name, or
- * a workspace left from this home's loops that are gone): opening a second one under that label is refused. Undefined:
- * up may open.
+ * one of its loops or its daemon is alive, or its lead terminal is: then the ALREADY UP line is returned and nothing
+ * opens. Otherwise terminals that already carry this home's seori.group label belong to someone else (another home
+ * with the same name, or terminals left from this home's loops that are gone): opening a second set under that label
+ * is refused. Undefined: up may open.
  */
 export async function upCheck(d: Deps, name: string, alive: (pid: number) => boolean = pidAlive): Promise<string | undefined> {
   const root = d.store.root;
   const runners = liveRunners(root, alive);
-  const rt = d.runtimes.default;
+  const rt = d.runtime;
   const named = (await rt.groups()).filter((w) => w.label === name);
   const lead = d.store.roles().lead;
-  // herdr pane ids are `<workspace>:p<n>`. The lead counts only inside a workspace with this home's name: herdr ids start
-  // over after a herdr restart, and an old id can then name another instance's pane. hc terminal ids start over after a
-  // core restart too: the lead counts only while a live terminal with its id carries this home's seori.group label.
-  const leadLive = lead !== undefined && (rt.kind === "hc"
-    ? lead.runtime === "hc" && named.length > 0 && (await rt.list({ group: name })).some((s) => s.ref.id === lead.id)
-    : named.some((w) => w.id === lead.id.split(":")[0]) && (await statusOf(d.runtimes, lead)) !== "gone");
+  // hc terminal ids start over after a core restart: the lead counts only while a live terminal with its id carries
+  // this home's seori.group label.
+  const leadLive = lead !== undefined && named.length > 0 && (await rt.list({ group: name })).some((s) => s.ref.id === lead.id);
   if (runners.length > 0 || leadLive) {
     const hint = leadLive ? "" : "; the lead pane is gone: run seori down, then seori up, to open a new set";
     return `ALREADY UP name=${name} home=${root} lead=${leadLive ? refText(lead) : "gone"} running=${runners.join(",") || "none"}; nothing opened${hint}`;
   }
   if (named.length > 0) {
     throw new Refusal(
-      `${rt.kind === "hc" ? "hc terminals labelled seori.group=" : "a herdr workspace labelled "}"${name}" (${named.map((w) => w.id).join(", ")}) ${rt.kind === "hc" ? "are" : "is"} open, but this home (${root}) has no live lead, ` +
-        `loop or daemon in it. Close that workspace if it is a leftover of this home, or give this home its own name in ${configPath(root)}`,
+      `hc terminals labelled seori.group="${name}" (${named.map((w) => w.id).join(", ")}) are open, but this home (${root}) has no live lead, ` +
+        `loop or daemon in it. Close those terminals if they are a leftover of this home, or give this home its own name in ${configPath(root)}`,
     );
   }
   return undefined;
 }
 
 async function up(d: Deps, cwdFlag: string | undefined): Promise<void> {
-  await requireOmpIntegration(d);
   const name = loadConfig(d.store.root).name;
   const already = await upCheck(d, name);
   if (already) {
     console.log(already);
     return;
   }
-  if (d.runtimes.default.kind === "hc") return upHc(d, name, cwdFlag === undefined ? d.store.root : resolve(cwdFlag));
-  const cwd = resolve(cwdFlag ?? process.cwd());
-  // Every pane gets seori's environment from herdr (--env), so its commands need no shell-specific env prefix.
-  const env = paneEnv(d.store.root);
-  // The extension reads its home and how to run seori from the environment of the shell omp starts in. The lead's omp
-  // also gets PI_CONFIG_FILES with advisor.syncBacklog: strict, so the advisor's agent-end review finishes before
-  // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets that file;
-  // the lead, duty and lanes all get agent-omp.yml (no setup wizard in an agent pane). See src/agent/profile.ts.
-  const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, ...d.agent.leadEnv(d.store.root) };
-  const rt = d.runtimes.default;
-  const below = (near: SessionRef, role: "duty-loop" | "hourly-loop" | "daemon", paneEnv: Record<string, string>) =>
-    rt.create({ name: role, cwd, env: paneEnv, role, container: "split-below", near });
-  const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root" });
-  const lead = { paneId: refText(leadRef), workspaceId: leadRef.group ?? "" };
-  await startAgent(d, "lead", leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
-  d.store.setRole("lead", leadRef);
-  const dutyRef = await rt.create({
-    name: "duty", cwd, env: { ...env, ...d.agent.agentEnv(d.store.root) }, role: "duty", container: "tab", group: lead.workspaceId,
-  });
-  const duty = { paneId: refText(dutyRef) };
-  await startAgent(d, "duty", dutyRef, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
-  d.store.setRole("duty", dutyRef);
-  const loopRef = await below(dutyRef, "duty-loop", env);
-  const hourlyRef = await below(loopRef, "hourly-loop", { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
-  const daemonRef = await below(hourlyRef, "daemon", env);
-  const [loop, hourly, daemon] = [{ paneId: refText(loopRef) }, { paneId: refText(hourlyRef) }, { paneId: refText(daemonRef) }];
-  const daemonStarted = d.now();
-  await rt.start(daemonRef, `${d.seoriCmd} daemon-loop`);
-  // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
-  // daemon is up; a daemon that does not come up is reported here and left to duty's outage alert.
-  const beat = await heartbeatSince(d.store.root, daemonStarted, {
-    onSlow: () => console.error(`waiting for the messenger daemon in ${daemon.paneId} to start (a first start can be slow)...`),
-  });
-  if (!beat) {
-    console.error(`WARNING: the messenger daemon in ${daemon.paneId} wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check that pane`);
-  }
-  await rt.start(loopRef, `${d.seoriCmd} duty --interval 60`);
-  await rt.start(hourlyRef, `${d.seoriCmd} loop`);
-  console.log(
-    `UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} hourly=${hourly.paneId} daemon=${daemon.paneId} home=${d.store.root} name=${name}`,
-  );
+  return upHc(d, name, cwdFlag === undefined ? d.store.root : resolve(cwdFlag));
 }
 
 /** This file, which the units' ExecStart runs with bun. */
@@ -345,11 +293,11 @@ export const usesSystemdUnits = (d: Deps): boolean => (d.platform ?? process.pla
 /**
  * `seori up` on hc: the lead and duty agents in hc terminals labelled `seori.group=<name>`, recorded as roles; on Linux
  * the daemon, duty loop and hourly loop as systemd --user units (src/systemd.ts), enabled so they start after a boot; on
- * macOS, which has no systemd, they run in hc terminals of the same group as on herdr (upHcTerminals). The agents start
+ * macOS, which has no systemd, they run in hc terminals of the same group (upHcTerminals). The agents start
  * in `cwd`, which defaults to $SEORI_HOME.
  */
 async function upHc(d: Deps, name: string, cwd: string): Promise<void> {
-  const rt = d.runtimes.default;
+  const rt = d.runtime;
   const env = paneEnv(d.store.root);
   const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, ...d.agent.leadEnv(d.store.root) };
   // The unit files are written first: one that cannot be written (a line break in a value, a unit of another home under
@@ -371,18 +319,18 @@ async function upHc(d: Deps, name: string, cwd: string): Promise<void> {
     });
   }
   const home = d.store.root;
-  const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root", group: name, home });
-  await startAgent(d, "lead", leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
+  const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", group: name, home });
+  await startAgent(d, leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", leadRef);
-  const dutyRef = await rt.create({ name: `${name}-duty`, cwd, env: { ...env, ...d.agent.agentEnv(d.store.root) }, role: "duty", container: "tab", group: name, home });
-  await startAgent(d, "duty", dutyRef, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
+  const dutyRef = await rt.create({ name: `${name}-duty`, cwd, env: { ...env, ...d.agent.agentEnv(d.store.root) }, role: "duty", group: name, home });
+  await startAgent(d, dutyRef, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
   d.store.setRole("duty", dutyRef);
   if (!usesSystemdUnits(d)) return upHcTerminals(d, name, cwd, env, leadRef, dutyRef);
   const [daemonUnit, dutyUnit, hourlyUnit] = units;
   await ctl(["daemon-reload"]);
   const daemonStarted = d.now();
   await ctl(["enable", "--now", daemonUnit!]);
-  // As on herdr: the duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
+  // The duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
   const beat = await heartbeatSince(d.store.root, daemonStarted, {
     onSlow: () => console.error(`waiting for the messenger daemon (${daemonUnit}) to start (a first start can be slow)...`),
   });
@@ -402,14 +350,14 @@ async function upHc(d: Deps, name: string, cwd: string): Promise<void> {
 async function upHcTerminals(
   d: Deps, name: string, cwd: string, env: Record<string, string>, leadRef: SessionRef, dutyRef: SessionRef,
 ): Promise<void> {
-  const rt = d.runtimes.default;
-  const open = (role: "duty-loop" | "hourly-loop" | "daemon") => rt.create({ name: `${name}-${role}`, cwd, env, role, container: "tab", group: name, home: d.store.root });
+  const rt = d.runtime;
+  const open = (role: "duty-loop" | "hourly-loop" | "daemon") => rt.create({ name: `${name}-${role}`, cwd, env, role, group: name, home: d.store.root });
   const loopRef = await open("duty-loop");
   const hourlyRef = await open("hourly-loop");
   const daemonRef = await open("daemon");
   const daemonStarted = d.now();
   await rt.start(daemonRef, `${d.seoriCmd} daemon-loop`);
-  // As on herdr: the duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
+  // The duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
   const beat = await heartbeatSince(d.store.root, daemonStarted, {
     onSlow: () => console.error(`waiting for the messenger daemon in ${refText(daemonRef)} to start (a first start can be slow)...`),
   });
@@ -444,8 +392,8 @@ async function downHome(d: Deps, which: string, opts: { keepSelf?: boolean } = {
   if (name === undefined) return r;
   // No systemd off Linux: there `seori up` wrote no units, and the processes stopped above are all there is.
   const lines = usesSystemdUnits(d) ? [...r.lines, ...(await removeUnits(unitDir(), name, d.store.root, DOWN_UNITS[which]!, systemctl()))] : [...r.lines];
-  if (which === "all" && runtimeKind(d) === "hc") {
-    const rt = d.runtimes.default;
+  if (which === "all") {
+    const rt = d.runtime;
     const self = process.env["HC_TERMINAL_ID"];
     const open = (await homeTerminals(d, name)).sort((a, b) => Number(a.id === self) - Number(b.id === self));
     for (const ref of open) {
@@ -475,19 +423,9 @@ async function homeTerminals(d: Deps, name: string): Promise<SessionRef[]> {
       .filter((r): r is SessionRef => r !== undefined && r.runtime === "hc")
       .map((r) => r.id),
   );
-  return (await d.runtimes.default.list({ group: name, homes: true }))
+  return (await d.runtime.list({ group: name, homes: true }))
     .filter((s) => s.home === mine || (s.home === undefined && recorded.has(s.ref.id)))
     .map((s) => s.ref);
-}
-
-/** The selected runtime kind, or undefined when none can be chosen (down and uninstall still stop the processes). */
-function runtimeKind(d: Deps): string | undefined {
-  try {
-    return d.runtimes.choice().kind;
-  } catch (e) {
-    if (e instanceof RuntimeChoiceError || e instanceof RuntimeConfigError) return undefined;
-    throw e;
-  }
 }
 
 /**
@@ -749,16 +687,8 @@ async function watch(d: Deps, a: Args, sub: string | undefined): Promise<number>
 }
 
 function status(d: Deps): void {
-  let choice;
-  try {
-    choice = d.runtimes.choice();
-  } catch (e) {
-    if (e instanceof RuntimeChoiceError || e instanceof RuntimeConfigError) throw new Refusal(e.message);
-    throw e;
-  }
   const roles = d.store.roles();
   console.log(`lead=${roles.lead ? refText(roles.lead) : "-"} duty=${roles.duty ? refText(roles.duty) : "-"} home=${d.store.root}`);
-  console.log(`RUNTIME ${choice.kind} (from ${choice.source})`);
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);
@@ -773,13 +703,13 @@ function laneKey(d: Deps, key: string): string {
 }
 
 /**
- * The open lane whose session is the caller's (HC_TERMINAL_ID or HERDR_PANE_ID), if any. A global lesson reaches every
+ * The open lane whose session is the caller's (HC_TERMINAL_ID), if any. A global lesson reaches every
  * future brief, so it is the lead's: this stops a lane from adding or reviving one by accident or on routine
  * instruction. It is a convenience check, not a security boundary: it reads only the env, and a direct write to
  * lessons.jsonl skips the CLI.
  */
 function callerLane(d: Deps): Lane | undefined {
-  const self = d.runtimes.selfAny(process.env);
+  const self = d.runtime.self();
   return self === undefined ? undefined : d.store.laneBySession(self);
 }
 
@@ -850,9 +780,9 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const role = need(x, "role") as Role;
       if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
       const given = a.pos[2];
-      const ref = given === undefined ? d.runtimes.selfAny(process.env) : parseRef(given);
-      if (given !== undefined && ref === undefined) throw new Refusal(`${given} is not a session ref (w1:p3, herdr:w1:p3 or hc:t7)`);
-      if (ref === undefined) throw new Refusal(`missing session ref (not inside herdr or hc?)\n\n${USAGE}`);
+      const ref = given === undefined ? d.runtime.self() : parseRef(given);
+      if (given !== undefined && ref === undefined) throw new Refusal(`${given} is not a session ref (hc:t7)`);
+      if (ref === undefined) throw new Refusal(`missing session ref (not inside an hc terminal?)\n\n${USAGE}`);
       d.store.setRole(role, ref);
       console.log(`ROLE ${role}=${refText(ref)}`);
       return 0;
@@ -860,8 +790,6 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "start": {
       const key = need(x, "lane key");
       const config = loadConfig(d.store.root);
-      // Nothing is read about the host before the omp integration check: without it no lane can start anyway.
-      await requireOmpIntegration(d);
       if (one(a, "force") !== "true") {
         const room = await canLaunch(d, config);
         if (!room.ok) {
@@ -880,7 +808,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const defaults = config.supervision.defaults;
       const anyCeiling = ["wall-minutes", "token-limit", "cost-limit"].some((f) => one(a, f) !== undefined);
       const { startup } = await launchLane(d, key, need(one(a, "brief"), "--brief"), {
-        cwd: one(a, "cwd"), workspace: one(a, "workspace"),
+        cwd: one(a, "cwd"),
         ...(one(a, "done") !== undefined ? { done: one(a, "done")! } : {}),
         ...(one(a, "thread") !== undefined ? { thread: one(a, "thread")! } : {}),
         ...(a.flags.has("activity-path") ? { activityPaths: a.flags.get("activity-path")! } : {}),
@@ -897,8 +825,6 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       console.log(startup);
       return startupExit(startup);
     }
-    case "migrate":
-      return runMigrate(d, (name) => one(a, name), LEAD_EXTENSION);
     case "adopt": {
       const lane = await adoptLane(d, need(x, "lane key"), need(one(a, "ref"), "--ref"), { brief: one(a, "brief"), cwd: one(a, "cwd") });
       console.log(`ADOPTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);
@@ -1143,16 +1069,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       // Its loops and daemon run from this checkout: stop them before their command goes away.
       // Run from the lead or duty terminal, closing it would end this command before the uninstall: it is left open.
       console.log((await downHome(d, "all", { keepSelf: true })).lines.join("\n"));
-      const name = (() => {
-        try {
-          return loadConfig(d.store.root).name;
-        } catch {
-          return undefined; // a broken config.json must not stop an uninstall
-        }
-      })();
-      const lines = await uninstall({
-        skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, name, purge: a.flags.has("purge"), runtime: runtimeKind(d),
-      });
+      const lines = await uninstall({ skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, purge: a.flags.has("purge") });
       for (const line of lines) console.log(line);
       return 0;
     }
@@ -1253,7 +1170,7 @@ if (import.meta.main) {
       console.log(e.message);
       process.exit(3);
     }
-    if (!(e instanceof Refusal || e instanceof WatchRefusal || e instanceof ConfigError)) throw e;
+    if (!(e instanceof Refusal || e instanceof WatchRefusal || e instanceof ConfigError || e instanceof HerdrRecord)) throw e;
     console.error(e.message);
     code = 2;
   } finally {

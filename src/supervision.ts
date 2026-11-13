@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, statSync, readFileSyn
 import { join, resolve } from "node:path";
 import { ConfigError, loadConfig, type SeoriConfig } from "./config.ts";
 import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
-import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
+import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
 import { type Ceilings, type Lane, type LaneLogKind, lockFile } from "./store.ts";
 
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
@@ -25,7 +25,7 @@ export type LaneUsage = { tokens?: number; costUsd?: number };
  * unreadable or no assistant message carries that number; damaged lines (a torn last write) are skipped.
  */
 export async function laneUsage(d: Deps, lane: Lane): Promise<LaneUsage> {
-  const { rt, ref } = session(d.runtimes, lane.sessionRef);
+  const { rt, ref } = { rt: d.runtime, ref: lane.sessionRef };
   const path = await rt.agentSession(ref);
   if (!path) return {};
   let text: string;
@@ -134,7 +134,7 @@ export function blockedText(key: string, hit: CeilingHit): string {
 
 /** The lead's message for a stalled lane. */
 export const stalledText = (key: string, quietMin: number): string =>
-  `[STALLED ${key}] herdr reads it working, but it has sent no report and changed no file for ${quietMin} min; the lane keeps running until you decide`;
+  `[STALLED ${key}] hc reads it working, but it has sent no report and changed no file for ${quietMin} min; the lane keeps running until you decide`;
 
 /** The lead's message for a paused lane whose pane read working on two duty passes in a row. */
 export const workingWhilePausedText = (key: string, paneId: string): string =>
@@ -230,7 +230,7 @@ async function gitActivity(d: Deps, cwd: string): Promise<{ fingerprint: string;
 
 /** A short one-line reason. A ToolError message carries the whole argv, so use the runtime's own output. */
 function reason(e: unknown): string {
-  if (e instanceof ToolError) return (e.result.stderr || e.result.stdout).trim().split("\n")[0] ?? "herdr failed";
+  if (e instanceof ToolError) return (e.result.stderr || e.result.stdout).trim().split("\n")[0] ?? "hc failed";
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -262,7 +262,7 @@ function mark(d: Deps, key: string, change: (lane: Lane) => void, log?: { kind: 
  * - working/waiting lanes: each ceiling (lane.ceilings ?? config defaults) is reported once when reached, as
  *   `[BLOCKED <key>] ...` with a "blocked" log entry; a raised limit can be reported again. Tokens and cost are read
  *   only when such a ceiling is set; an unknown reading is shown once as a `usage-unknown` event.
- * - working lanes that herdr reads working: no report (lastActivityAt) and no file change in lane.cwd (see
+ * - working lanes that hc reads working: no report (lastActivityAt) and no file change in lane.cwd (see
  *   fileActivity) for config.supervision.hungAfterMin is a stall, reported once per stretch as `[STALLED <key>] ...`
  *   with a "stalled" log entry. A waiting lane said it waits, so its quiet is no stall (as it gets no nudge).
  * - paused lanes: no ceiling or stall report; a pane read working on two passes in a row is reported once per working
@@ -283,11 +283,6 @@ export async function superviseTick(d: Deps): Promise<DutyEvent[]> {
   const activity = readActivity(d.store.root);
   const seen = new Set<string>();
   for (const lane of d.store.lanes()) {
-    // A lane being migrated (seori migrate) is left alone until the handover ends; its change history is kept.
-    if (lane.migration === true) {
-      seen.add(lane.key);
-      continue;
-    }
     try {
       if (lane.status === "paused") await pausedCheck(d, lane, events);
       else if (lane.status === "working" || lane.status === "waiting") {
@@ -307,7 +302,7 @@ export async function superviseTick(d: Deps): Promise<DutyEvent[]> {
 
 async function pausedCheck(d: Deps, lane: Lane, events: DutyEvent[]): Promise<void> {
   const [seenMark, toldMark] = PAUSED_WORKING_MARKS;
-  const st = await statusOf(d.runtimes, lane.sessionRef);
+  const st = await d.runtime.status(lane.sessionRef);
   if (st === "gone") {
     // As dutyTick does for running lanes: otherwise the key stays paused with no pane, and done/start both refuse it.
     mark(d, lane.key, (l) => { l.status = "lost"; delete l.pausedFrom; }, { kind: "lost", text: "pane disappeared while paused" });
@@ -367,7 +362,7 @@ async function stallCheck(d: Deps, lane: Lane, config: SeoriConfig, activity: Ac
   // Once per stall: progress after it makes a new mark.
   const key = `stalled:${Math.round(lastProgress)}`;
   if (lane.alerts?.[key] !== undefined) return;
-  if ((await statusOf(d.runtimes, lane.sessionRef)) !== "working") return;
+  if ((await d.runtime.status(lane.sessionRef)) !== "working") return;
   const text = stalledText(lane.key, Math.floor(quietMs / 60_000));
   await tell(d, text, lane.key, events);
   mark(d, lane.key, (l) => {
