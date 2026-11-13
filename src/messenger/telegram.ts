@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import {
   ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
@@ -46,7 +46,7 @@ type Message = {
 type Update = { update_id: number; message?: Message; edited_message?: Message };
 type ApiBody = { ok?: boolean; result?: unknown; description?: string; error_code?: number; parameters?: { retry_after?: number } };
 type Cursor = { offset: number };
-/** How many forum topics the bot remembers having joined (mentioned in or posted in); the oldest are forgotten first. */
+/** How many forum topics the bot remembers having joined (mentioned in or posted in); older lines are not read. */
 const TOPICS_KEPT = 500;
 
 export type TelegramDeps = {
@@ -92,9 +92,10 @@ export class TelegramAdapter implements MessengerAdapter {
   private readonly warn: (line: string) => void;
   /**
    * Forum topics (`<chat>:<topic>`) the bot was mentioned in or posted in, where others' messages pass without a mention.
-   * A file under root, because `seori msg send` posts from another process than the daemon's receive.
+   * A file under root, because `seori msg send` posts from another process than the daemon's receive: one line per
+   * topic, only ever appended (O_APPEND), so two processes joining at once never drop each other's line.
    */
-  private readonly topics: CursorFile<string[]>;
+  private readonly topicsPath: string;
   /** The bot itself, learned with getMe when receive starts. */
   private me: User | undefined;
 
@@ -112,17 +113,28 @@ export class TelegramAdapter implements MessengerAdapter {
     this.transcribe = deps.pairing === true ? undefined : deps.transcribe;
     this.deadline = deps.deadline ?? ((ms) => AbortSignal.timeout(ms));
     this.warn = deps.warn ?? ((line) => void process.stderr.write(`${line}\n`));
-    this.topics = CursorFile.for<string[]>(root, config.source, "topics.json");
+    this.topicsPath = join(root, "messenger", config.source, "topics");
   }
 
   private joined(chat: string, topic: string): boolean {
-    return (this.topics.load() ?? []).includes(`${chat}:${topic}`);
+    let lines: string[];
+    try {
+      lines = readFileSync(this.topicsPath, "utf8").split("\n");
+    } catch {
+      return false;
+    }
+    return lines.slice(-TOPICS_KEPT - 1).includes(`${chat}:${topic}`);
   }
 
+  /** Notes a topic as joined; a failure only warns (the message it came with is handled already). */
   private join(chat: string, topic: string): void {
-    const key = `${chat}:${topic}`;
-    const list = this.topics.load() ?? [];
-    if (!list.includes(key)) this.topics.save([...list, key].slice(-TOPICS_KEPT));
+    if (this.joined(chat, topic)) return;
+    try {
+      mkdirSync(join(this.root, "messenger", this.source), { recursive: true });
+      appendFileSync(this.topicsPath, `${chat}:${topic}\n`);
+    } catch (e) {
+      this.warn(`seori: telegram (${this.source}): could not note topic ${topic} of chat ${chat} as joined: ${(e as Error).message}`);
+    }
   }
 
   private token(): string {
@@ -211,11 +223,14 @@ export class TelegramAdapter implements MessengerAdapter {
       if (!Array.isArray(result)) continue;
       for (const update of result as Update[]) {
         if (signal.aborted) return;
-        const m = await this.withTranscript(update, token, this.inbound(update), signal);
+        const seen = this.inbound(update);
+        const m = await this.withTranscript(update, token, seen?.message, signal);
         // Stopped mid-transcription: neither deliver nor commit, so the next receive offers this update again.
         if (signal.aborted) return;
         // A rejection propagates before the save, so this update is fetched again on the next receive.
         if (m) await onMessage(m);
+        // Only once the mention was handled: a rejected one is offered again and must not have joined the topic.
+        if (seen?.joins) this.join(seen.joins.chat, seen.joins.topic);
         offset = update.update_id + 1;
         this.cursor.save({ offset });
       }
@@ -267,13 +282,14 @@ export class TelegramAdapter implements MessengerAdapter {
    * the bot, reply to one of its messages, or are in a forum topic the bot was mentioned in or posted in; src/daemon.ts
    * drops them again unless config.json talkWithOthers is on. The bot's own messages and channel posts never pass.
    */
-  private inbound(update: Update): InboundMessage | undefined {
+  private inbound(update: Update): { message: InboundMessage; joins?: { chat: string; topic: string } } | undefined {
     const edited = update.edited_message !== undefined;
     const msg = update.edited_message ?? update.message;
     if (!msg?.from) return undefined;
     const chat = String(msg.chat.id);
     const topic = msg.is_topic_message && msg.message_thread_id !== undefined ? String(msg.message_thread_id) : undefined;
     let kind: "owner" | "person" | "agent" = "owner";
+    let joins: { chat: string; topic: string } | undefined;
     if (this.pairing) {
       // Pairing: a new direct message from anyone; the owner is whoever pair accepts.
       if (msg.from.is_bot || edited || msg.chat.type !== "private" || msg.chat.id !== msg.from.id) return undefined;
@@ -284,7 +300,7 @@ export class TelegramAdapter implements MessengerAdapter {
         if (msg.chat.type === "private" && chat !== this.owner) return undefined;
       } else if (msg.chat.type !== "private") {
         if (this.addressed(msg)) {
-          if (topic !== undefined) this.join(chat, topic);
+          if (topic !== undefined) joins = { chat, topic };
         } else if (topic === undefined || !this.joined(chat, topic)) return undefined;
       }
     }
@@ -298,7 +314,7 @@ export class TelegramAdapter implements MessengerAdapter {
     const parent = msg.reply_to_message;
     const isTopicRoot = parent !== undefined && (parent.forum_topic_created !== undefined || (msg.is_topic_message === true && parent.message_id === msg.message_thread_id));
     const parentText = parent && !isTopicRoot ? [parent.text ?? parent.caption ?? "", ...attachments(parent)].filter((l) => l).join("\n") : "";
-    return {
+    const message: InboundMessage = {
       ...(parent && !isTopicRoot ? { replyTo: { id: messageId(this.source, chat, String(parent.message_id)), ...(parentText ? { text: parentText } : {}) } } : {}),
       id: edited ? editId(this.source, chat, id, String(stamp)) : messageId(this.source, chat, id),
       source: this.source,
@@ -310,6 +326,7 @@ export class TelegramAdapter implements MessengerAdapter {
       at: (edited ? stamp : msg.date) * 1000,
       text: edited ? `(edited) ${text}` : text,
     };
+    return { message, ...(joins ? { joins } : {}) };
   }
 
   /** The message mentions the bot (@username or a text mention of its id) or replies to one of the bot's messages. */
@@ -351,13 +368,7 @@ export class TelegramAdapter implements MessengerAdapter {
     }
     // A topic the bot posted in: others' messages there pass without a mention (receive reads this file). The message
     // is out already, so failing to note the topic only warns.
-    if (target.thread !== undefined) {
-      try {
-        this.join(target.chat, target.thread);
-      } catch (e) {
-        this.warn(`seori: telegram (${this.source}): could not note topic ${target.thread} as joined: ${(e as Error).message}`);
-      }
-    }
+    if (target.thread !== undefined) this.join(target.chat, target.thread);
     return { messageId: first! };
   }
 
