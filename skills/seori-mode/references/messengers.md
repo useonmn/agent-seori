@@ -9,7 +9,7 @@ Do every login and every click in the browser with the owner; never ask them to 
 Ask which token seori should use, give the trade-off as one short list, and wait for the choice. Record it.
 
 - **Slack**
-  - **User token**: seori acts as a real member of the workspace. It needs a paid seat, which the owner pays for; it reads everything that member can see (onboarding can learn from all of it); it can show a green online dot (`seori presence slack`); its picture is that member's profile photo.
+  - **User token**: seori acts as a real member of the workspace, its own account (never the owner's: seori refuses that, since it would read its own replies as the owner's). It needs a paid seat, which the owner pays for; it reads everything that member can see (onboarding can learn from all of it); it checks for news once a minute; it can show a green online dot (`seori presence slack`); its picture is that member's profile photo.
   - **Bot token**: seori is a Slack app in Socket Mode. No seat cost; it only sees DMs with it and channels it is invited to, within the app's scopes (invite it where the real work happens); it shows as an app.
 - **Discord**
   - **Bot token** (recommended): seori's own bot. It only sees the servers and channels it is invited to.
@@ -20,7 +20,7 @@ Ask which token seori should use, give the trade-off as one short list, and wait
 
 agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself, such as sending files. Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use the command that matches the token chosen above, given the same token seori uses:
 
-- Slack bot: `agent-slackbot auth set <xoxb-token>`; user token: `agent-slack auth extract` (reads the token and cookie from the logged-in Slack app or browser).
+- Slack bot: `agent-slackbot auth set <xoxb-token>`; user token: `agent-slack auth extract` (reads the token and cookie from the Slack app or browser where seori's account is signed in).
 - Discord bot: `agent-discordbot auth set <token>`; user token: `agent-discord auth extract`, only after the warning above.
 - Telegram: `agent-telegrambot auth set <token>`.
 
@@ -39,7 +39,7 @@ One program per bot token: two programs reading the same bot make Telegram answe
 
 ### Slack
 
-Two ways; ask the owner which one and wait:
+Two ways, chosen with the owner in step 0:
 
 - **Bot app** (below): no paid seat, shows as an app, only sees DMs with the bot and channels it is invited to.
 - **User token**: seori acts as a real member of the workspace (see "Slack with a user token" below). It needs a member seat the owner pays for, sees everything that member can see, and checks for news once a minute instead of getting events live.
