@@ -380,7 +380,7 @@ export async function msgReact(root: string, id: string, on: boolean, d: MsgDeps
 
 /** `seori msg edit --to`: new text for a message seori sent (its id as `msg send` printed it). */
 export async function msgEdit(to: NoticeTarget, message: string, text: string, d: MsgDeps): Promise<void> {
-  if (!/^[\w.-]+$/.test(message)) throw new Refusal(`--message must be a message id (letters, digits, dot, dash), got "${message}"`);
+  if (!/^[\w.-]+$/.test(message) || /^\.+$/.test(message)) throw new Refusal(`--message must be a message id (letters, digits, dot, dash), got "${message}"`);
   if (!text.trim()) throw new Refusal("refusing to edit a message to empty text");
   await adapterFor(d, to.source).edit({ chat: to.chat, ...(to.thread !== undefined ? { thread: to.thread } : {}) }, message, text);
 }

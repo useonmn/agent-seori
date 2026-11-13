@@ -211,21 +211,28 @@ describe("Discord action limits", () => {
     expect(t.sleeps).toEqual([2000]);
   });
 
-  test("a closed thread is not renamed without --reopen, and says so", async () => {
+  test("a closed thread is not renamed without --reopen or --close, and says so", async () => {
     const t = setup(true);
     expect(await t.a.thread({ chat: "T9" }, { name: "Fix login", status: "working" })).toEqual({
-      notes: ["discord: thread T9 is closed; pass --reopen to rename it"],
-    });
-    expect(await t.a.thread({ chat: "T9" }, { name: "Fix login", status: "done", state: "close" })).toEqual({
       notes: ["discord: thread T9 is closed; pass --reopen to rename it"],
     });
     expect(t.calls.filter((c) => c.method === "PATCH")).toEqual([]);
   });
 
-  test("ids are path segments, never paths", async () => {
+  test("closing a closed thread is already done; renaming it with --close reopens, renames and closes it again", async () => {
+    const t = setup(true);
+    expect(await t.a.thread({ chat: "T9" }, { state: "close" })).toEqual({ state: "close", notes: [] });
+    expect(t.calls.filter((c) => c.method === "PATCH")).toEqual([]);
+    expect(await t.a.thread({ chat: "T9" }, { name: "Fix login", status: "done", state: "close" })).toEqual({ name: "✅ Fix login", state: "close", notes: [] });
+    expect(t.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "✅ Fix login", archived: false }, { archived: true }]);
+  });
+
+  test("ids are path segments, never paths: slashes are encoded and dot segments refused", async () => {
     const t = setup(false);
     await t.a.react("../../guilds/1", "5", true);
     expect(t.calls[0]!.path).toBe("/api/channels/../../guilds/1/messages/5/reactions/👀/@me");
+    await expect(t.a.edit({ chat: "C1" }, "..", "x")).rejects.toThrow(/".." is not an id/);
+    await expect(t.a.thread({ chat: "." }, { state: "close" })).rejects.toThrow(/"." is not an id/);
     expect(t.calls).toHaveLength(1);
   });
 });
@@ -287,6 +294,22 @@ describe("Slack actions", () => {
       ["reactions.remove", { channel: "C1", timestamp: "1700000000.000100", name: "double_vertical_bar" }],
       ["reactions.add", { channel: "C1", timestamp: "1700000000.000100", name: "white_check_mark" }],
     ]);
+  });
+
+  test("a long rate limit fails at once with when to retry, whether Slack answers ratelimited or 429", async () => {
+    const sleeps: number[] = [];
+    const r = recorder(() => Response.json({ ok: true }));
+    const a = new SlackAdapter({ source: "slack", owner: "U1", options: { apiBase: `${r.base}/api` } }, home(), {
+      env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1", SEORI_SLACK_APP_TOKEN: "xapp-1" },
+      sleep: async (ms) => void sleeps.push(ms),
+    });
+    r.answers.push(() => Response.json({ ok: false, error: "ratelimited" }, { headers: { "retry-after": "300" } }));
+    await expect(a.react("D1", "1", true)).rejects.toThrow(/retry after 300 s/);
+    r.answers.length = 0;
+    r.answers.push(() => Response.json({ ok: false, error: "ratelimited" }, { status: 429, headers: { "retry-after": "120" } }));
+    await expect(a.edit({ chat: "D1" }, "1", "x")).rejects.toThrow(/retry after 120 s/);
+    expect(sleeps).toEqual([]);
+    expect(r.calls).toHaveLength(2);
   });
 
   test("no thread and no message is a NOTE like on the other platforms", async () => {

@@ -59,8 +59,11 @@ type Outcome = { healthy: boolean; delayMs?: number; error?: string };
 /** A configuration problem retrying cannot fix; receive() rejects with it. */
 class Fatal extends Error {}
 
-/** An id as one URL path segment, so a value with a slash can never reach another endpoint. */
-const seg = (id: string): string => encodeURIComponent(id);
+/** An id as one URL path segment, so a value with a slash or a dot segment can never reach another endpoint. */
+function seg(id: string): string {
+  if (/^\.+$/.test(id)) throw new Error(`discord: ${JSON.stringify(id)} is not an id`);
+  return encodeURIComponent(id);
+}
 
 /** Snowflake order (numeric, as BigInt: ids exceed 2^53). */
 function snowflakeCmp(a: string, b: string): number {
@@ -534,9 +537,19 @@ export class DiscordAdapter implements MessengerAdapter {
     const id = target.thread ?? target.chat;
     const channel = (await this.act("GET", `/channels/${seg(id)}`)) as { type?: unknown; thread_metadata?: { archived?: unknown } } | undefined;
     if (!THREAD_TYPES.has(Number(channel?.type))) return { notes: [`${this.source}: channel ${id} is not a thread, so there is no thread to rename or close; the status message carries the status`] };
-    // Discord refuses any change to an archived thread but unarchiving it.
-    if (channel?.thread_metadata?.archived === true && change.state !== "reopen") {
+    // Discord refuses any change to an archived thread but unarchiving it: a rename with --close unarchives in the same
+    // PATCH and archives again after; without --close or --reopen a closed thread is left as it is.
+    const archived = channel?.thread_metadata?.archived === true;
+    if (archived && change.state === undefined) {
       return { notes: change.name !== undefined || change.status !== undefined ? [`${this.source}: thread ${id} is closed; pass --reopen to rename it`] : [] };
+    }
+    if (archived && change.state === "close") {
+      if (change.name === undefined) return { state: "close", notes: [] };
+      const name = threadName(change.name, change.status);
+      if (name.length > THREAD_NAME_LIMIT) throw new Error(`${this.source}: a thread name holds at most ${THREAD_NAME_LIMIT} characters, got ${name.length}`);
+      await this.act("PATCH", `/channels/${seg(id)}`, { name, archived: false });
+      await this.act("PATCH", `/channels/${seg(id)}`, { archived: true });
+      return { name, state: "close", notes: [] };
     }
     const notes: string[] = [];
     const patch: Record<string, unknown> = {};
