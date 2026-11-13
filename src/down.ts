@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { uptime } from "node:os";
 import { join } from "node:path";
+import { Refusal } from "./harness.ts";
 import { pidAlive } from "./store.ts";
 
 // `seori down`: a stop for every long-running seori process that works in every pane shell.
@@ -34,6 +36,22 @@ const readPid = (path: string): number | undefined => {
   }
 };
 
+/** Same slack and rule as store.ts's lock staleness: a record clearly older than this boot names a pid that may belong to someone else now. */
+const BOOT_SLACK_MS = 60_000;
+
+/** The pid of a live duty loop already recorded in this home, or undefined (no record, this pid, a dead pid, or a pre-boot record). */
+function otherLiveLoop(root: string, name: Runner, pid: number): number | undefined {
+  const path = recordPath(root, name);
+  const other = readPid(path);
+  if (other === undefined || other === pid || !pidAlive(other)) return undefined;
+  try {
+    if (statSync(path).mtimeMs < Date.now() - uptime() * 1000 - BOOT_SLACK_MS) return undefined;
+  } catch {
+    return undefined;
+  }
+  return other;
+}
+
 export type Running = {
   /** Aborts when `seori down` asks this process to stop. */
   readonly stopped: AbortSignal;
@@ -44,7 +62,8 @@ export type Running = {
 /**
  * Records this process as the running `name` and polls for a stop request addressed to its pid. A request left for
  * an earlier process is removed on start, so it can never stop this one. `every` runs the check every `ms` until the
- * returned stop is called (an unref'd setInterval by default; tests check by hand).
+ * returned stop is called (an unref'd setInterval by default; tests check by hand). Two duty loops in one home would
+ * flush and nudge twice, so a duty start refuses (exit 2) while another live loop is recorded.
  */
 export function running(
   root: string,
@@ -55,6 +74,8 @@ export function running(
   every: (tick: () => void, ms: number) => () => void = unrefInterval,
 ): Running {
   mkdirSync(runDir(root), { recursive: true });
+  const live = name === "duty" ? otherLiveLoop(root, name, pid) : undefined;
+  if (live !== undefined) throw new Refusal(`a duty loop is already running in this home (pid ${live}); stop it with: seori down duty`);
   if (existsSync(stopPath(root, name)) && readPid(stopPath(root, name)) !== pid) rmSync(stopPath(root, name), { force: true });
   writeFileSync(recordPath(root, name), JSON.stringify({ pid, startedAt: now() }));
   const ctl = new AbortController();
