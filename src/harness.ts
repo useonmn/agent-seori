@@ -14,7 +14,7 @@ import {
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { KEY_RE, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
-import { DEFAULT_CONFIG, loadConfig, type SeoriConfig } from "./config.ts";
+import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { OMP_ULW_URL, type Workflow, workflowPrefix } from "./workflow.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
@@ -112,16 +112,6 @@ export function defaultSeoriCmd(home: string, env: Record<string, string | undef
 }
 
 export class Refusal extends Error {}
-
-/**
- * A ulw-plan lane started without ceiling flags: the configured defaults, with supervision.ulwPlan filling the wall-clock
- * ceiling they leave off (its review rounds have no cap of their own). Undefined when nothing changes.
- */
-export function ulwPlanCeilings(config: SeoriConfig): Ceilings | undefined {
-  const defs = config.supervision.defaults;
-  const c: Ceilings = { wallMinutes: defs.wallMinutes ?? config.supervision.ulwPlan.wallMinutes, tokens: defs.tokens, costUsd: defs.costUsd };
-  return c.wallMinutes === defs.wallMinutes ? undefined : c;
-}
 
 /**
  * Refuses a workflow whose omp extension is not enabled, before any pane opens: a kickoff with the keyword but without
@@ -416,7 +406,6 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
   if (workflow !== undefined) await requireWorkflowExtension(d, workflow, opts.workflow === undefined);
-  const ceilings = opts.ceilings ?? (workflow === "ulw-plan" ? ulwPlanCeilings(loadConfig(d.store.root)) : undefined);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
   const closeAfterMin = doneLine === undefined ? 0 : loadConfig(d.store.root).closeAfterMin;
@@ -449,7 +438,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
     ...(doneLine !== undefined ? { done: doneLine } : {}),
     ...(opts.thread !== undefined ? { thread: opts.thread.trim() } : {}),
-    ...(ceilings ? { ceilings } : {}),
+    ...(opts.ceilings ? { ceilings: opts.ceilings } : {}),
     ...(opts.activityPaths?.length ? { activityPaths: [...opts.activityPaths] } : {}),
     ...(opts.model !== undefined ? { model: opts.model.trim() } : {}),
     ...(workflow !== undefined ? { workflow } : {}),

@@ -502,7 +502,7 @@ A lane runs in omp goal mode: its kickoff is `/goal Read your brief at ...`. A h
 
 The keyword turns on the omp mode the workflow's own command (`/mass-ulw` and the like) would turn on; seori never sends those commands, because they run without omp's goal and seori could not track the lane. Each workflow keeps its own state files and closes the goal when they say it is done.
 
-`ulw-plan` is the exception: it closes its goal once the reviewed plan is written, while the plan still waits for the owner's approval. Its READY means "plan delivered, approval needed": the lead shows the plan to the owner and asks before any `ulw-execute`. Its review rounds have no cap of their own, so a ulw-plan lane started without ceiling flags gets the `supervision.ulwPlan` wall-clock ceiling (default 60 minutes; `supervision.defaults.wallMinutes` wins when set) and seori reports `[BLOCKED <key>]` when it is reached.
+`ulw-plan` is the exception: it closes its goal once the reviewed plan is written, while the plan still waits for the owner's approval. Its READY means "plan delivered, approval needed": the lead shows the plan to the owner and asks before any `ulw-execute`.
 
 Before it opens a pane, `seori start` checks `omp plugin list --json` and refuses `--workflow` when omp-ulw is not enabled, so a lane never gets a goal that starts with a word nothing understands. omp-ulw is a separate install that seori never bundles or installs; see the seori-mode skill's `references/setup.md`.
 
@@ -518,7 +518,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
   "startupWaitSeconds": 180,
-  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [], "ulwPlan": { "wallMinutes": 60 } },
+  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
 }
@@ -540,7 +540,6 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 | `supervision.defaults.costUsd` | `null` | cost ceiling per lane, in US dollars; `null` is off |
 | `supervision.hungAfterMin` | `20` | minutes with no report and no file change before a working lane is reported stalled |
 | `supervision.activityPaths` | `[]` | files or directories (relative to each lane's cwd) whose change counts as every lane's progress (a directory: an entry added, removed or renamed) |
-| `supervision.ulwPlan.wallMinutes` | `60` | wall-clock ceiling in minutes for a ulw-plan lane started without ceiling flags, unless `supervision.defaults.wallMinutes` is set; `null` is off |
 | `guard.loadAlertPct` | `150` | 1-minute load per core (%) above which the guard alerts |
 | `guard.loadOkPct` | `80` | load per core (%) it must fall under to clear |
 | `guard.memFreeMinPct` | `10` | free memory (%) under which new lanes are held and the guard alerts |
