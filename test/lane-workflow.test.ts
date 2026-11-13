@@ -100,6 +100,7 @@ describe("seori start --workflow", () => {
     await start(set.d, set.brief, "--workflow", "ulw-plan");
     expect(set.d.store.lane("fix-login")!.ceilings).toEqual({ wallMinutes: 30, tokens: 100_000, costUsd: null });
     expect(() => loadConfig(setup({ supervision: { ulwPlan: { wallMinutes: -1 } } }).d.store.root)).toThrow(/supervision.ulwPlan.wallMinutes/);
+    expect(() => loadConfig(setup({ supervision: { ulwPlan: { tokens: 1 } } }).d.store.root)).toThrow(/supervision.ulwPlan: unknown field "tokens"/);
   });
 
   test("unset: the kickoff is stock omp goal mode, exactly as before, and omp's plugins are not asked", async () => {
