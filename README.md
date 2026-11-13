@@ -162,8 +162,9 @@ seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--a
                                             lead extension runs it is drafted and goes out when the lead's turn ends
                                             (--now: send at once); a second send to the same ids replaces the draft
 seori msg send --replace DRAFT --text T      change the text of an open draft (reply or notice)
-seori msg edit --to SOURCE:CHAT[:THREAD] --message MID --text T
-                                            edit a message seori sent (MID is the message= value msg send printed)
+seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
+                                            edit a message seori sent: --reply-of edits seori's first reply to that
+                                            lead channel message (drafted or not); MID is the message= send printed
 seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
 seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
                                             show the typing indicator once, right before sending

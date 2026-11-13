@@ -149,8 +149,9 @@ seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--a
                                             리드 확장이 돌고 있으면 초안으로 두었다가 리드의 차례가 끝나면 보냅니다
                                             (--now: 바로 보냄). 같은 id로 다시 보내면 초안을 바꿉니다
 seori msg send --replace DRAFT --text T      열린 초안(답이나 알림)의 내용을 바꿉니다
-seori msg edit --to SOURCE:CHAT[:THREAD] --message MID --text T
-                                            seori가 보낸 메시지를 고칩니다 (MID는 msg send가 출력한 message= 값)
+seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
+                                            seori가 보낸 메시지를 고칩니다. --reply-of는 그 리드 채널 메시지에 seori가
+                                            처음 보낸 답을 고칩니다(초안이었어도 됩니다). MID는 msg send가 출력한 message= 값
 seori msg react <id> [--remove]              리드 채널 메시지에 눈 리액션을 답니다 (--remove: 뗍니다)
 seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
                                             보내기 직전에 입력 중 표시를 한 번 띄웁니다
