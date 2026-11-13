@@ -918,11 +918,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const interval = Number(one(a, "interval") ?? "60") * 1000;
       // Bun.sleep(NaN) and any Bun.sleep under 1 ms return at once, so a bad value would run duty passes back to back.
       if (!(Number.isFinite(interval) && interval >= 1)) throw new Refusal("--interval must be a number of seconds, 0.001 or more");
-      const tick = async () => {
-        for (const e of await dutyTick(d)) console.log(dutyLine(e));
-      };
       if (one(a, "once")) {
-        await tick();
+        await dutyPass(d);
         return 0;
       }
       const me = running(d.store.root, "duty");

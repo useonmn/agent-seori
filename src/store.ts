@@ -274,10 +274,18 @@ export class Store {
     renameSync(tmp, path);
   }
 
+  /**
+   * One lane by key. A closed (done or lost) herdr record reads back as the history it is, so `seori done` says it is
+   * already closed; its ref keeps the herdr pane id and is never addressed (only open lanes are). lanes() skips it.
+   */
   lane(key: string): Lane | undefined {
     const file = join(this.root, "lanes", `${key}.json`);
     const raw = this.readJson<StoredLane>(file);
-    return raw && checkedLane(raw, file);
+    if (raw === undefined) return undefined;
+    if (raw.sessionRef?.runtime !== "hc" && (raw.status === "done" || raw.status === "lost")) {
+      return { ...raw, sessionRef: { runtime: "hc", id: raw.sessionRef?.id ?? raw.paneId } };
+    }
+    return checkedLane(raw, file);
   }
 
   /** Writes `paneId`/`tabId` beside `sessionRef`, so an older binary still reads the record. */
@@ -287,7 +295,9 @@ export class Store {
 
   /**
    * A view of this store whose lanes() and inboxPanes() skip a live herdr record, reporting it to `report`, instead of
-   * refusing it: the duty pass names the file and still supervises every hc lane.
+   * refusing it: the duty pass names the file and still supervises every hc lane. The view inherits from this store, so
+   * every Store method must keep its state on `this` (no `#private` fields or arrow-function properties): a test checks
+   * that writes through the view reach the same files.
    */
   skippingHerdr(report: (e: HerdrRecord) => void): Store {
     return Object.assign(Object.create(this) as Store, { onHerdr: report });

@@ -524,7 +524,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 }
 ```
 
-`"agent"` may only be `"omp"`, and any other value is refused; `hooks` is described under [Hooks](#hooks).
+`"agent"` may only be `"omp"`, and any other value is refused; `hooks` is described under [Hooks](#hooks). A `"runtime": "hc"` left from an older seori is ignored; any other `"runtime"` is refused, since seori runs on hc only.
 
 | field | default | meaning |
 |---|---|---|

@@ -3,7 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dutyPass, main } from "../src/cli.ts";
-import { dutyTick, send } from "../src/harness.ts";
+import { done, dutyTick, Refusal, send } from "../src/harness.ts";
+import { ConfigError, loadConfig } from "../src/config.ts";
 import { HerdrRecord } from "../src/refs.ts";
 import { World } from "./fake.ts";
 
@@ -36,7 +37,9 @@ describe("closed herdr history next to live hc work", () => {
     lead.status = "working";
     expect(await send(d, "lead", "for the lead", "cli")).toBe("QUEUED");
     expect(d.store.lanes()).toEqual([]);
-    expect(d.store.lane("old-done")).toBeUndefined();
+    expect(d.store.lane("old-done")?.status).toBe("done");
+    await expect(done(d, "old-done")).rejects.toThrow("lane old-done is already closed");
+    await expect(done(d, "old-done")).rejects.toThrow(Refusal);
     lead.status = "idle";
     expect(await dutyTick(d)).toContainEqual({ pane: "hc:t1", action: "flushed" });
     expect(lead.received).toEqual(["for the lead"]);
@@ -100,6 +103,39 @@ describe("records a herdr seori wrote", () => {
     const file = join(d.store.root, "inbox", "w1_p3.jsonl");
     writeFileSync(file, `${JSON.stringify({ at: 1, from: "cli", text: "a" })}\n${JSON.stringify({ at: 2, from: "cli", text: "b" })}\n`);
     expect(() => d.store.inboxPanes()).toThrow(`read its 2 queued message(s), then remove ${file} (they are dropped with it)`);
+  });
+
+  test("seori duty --once skips a live herdr record with one DUTY ERROR line and exits 0", async () => {
+    const d = home();
+    const file = join(d.store.root, "lanes", "old-lane.json");
+    writeFileSync(file, JSON.stringify(OLD_LANE));
+    const err: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => void err.push(a.join(" "));
+    try {
+      expect(await main(["duty", "--once"], d)).toBe(0);
+    } finally {
+      console.error = orig;
+    }
+    expect(err).toEqual([`DUTY ERROR ${file} names the herdr pane w1:p3; seori runs on hc only: close that pane and remove ${file}`]);
+  });
+
+  test("the skipping view writes to the same home: a lane saved and a message queued through it read back from the store", () => {
+    const d = home();
+    const view = d.store.skippingHerdr(() => {});
+    view.saveLane({ ...OLD_LANE, key: "via-view", sessionRef: { runtime: "hc", id: "t4" }, paneId: "t4", tabId: "", status: "working" } as never);
+    view.enqueue({ runtime: "hc", id: "t4" }, { at: 1, from: "cli", text: "x" });
+    expect(d.store.lane("via-view")?.sessionRef).toEqual({ runtime: "hc", id: "t4" });
+    expect(d.store.queued({ runtime: "hc", id: "t4" }).map((m) => m.text)).toEqual(["x"]);
+  });
+
+  test("config.json \"runtime\": \"hc\" left from before loads and is ignored; any other runtime is refused naming the fix", () => {
+    const d = home();
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ runtime: "hc", name: "seori" }));
+    expect(loadConfig(d.store.root).name).toBe("seori");
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ runtime: "herdr" }));
+    expect(() => loadConfig(d.store.root)).toThrow(ConfigError);
+    expect(() => loadConfig(d.store.root)).toThrow(`"runtime" "herdr" is not supported; seori runs on hc only: remove "runtime" from config.json`);
   });
 
   test("seori status refuses a herdr home with one line, exit 2 at the CLI", async () => {
