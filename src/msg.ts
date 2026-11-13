@@ -133,6 +133,7 @@ function checkReply(channel: Channel, ids: readonly string[], again: boolean): I
     const s = states.find((x) => x.row.id === id);
     if (!s) throw new Refusal(`unknown message id ${id}`);
     if (s.row.kind === "watch") throw new Refusal(`${id} is a watch event: watch events need no reply (msg close closes one)`);
+    if (fromOther(s.row)) throw new Refusal(`${id} came from someone other than the owner; seori answers only the owner`);
     return { ...s, row: s.row };
   });
   const first = picked[0]!;

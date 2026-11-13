@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { main } from "../src/cli.ts";
-import { Channel } from "../src/channel.ts";
+import { Channel, type InboundRow } from "../src/channel.ts";
 import { Refusal, type Deps } from "../src/harness.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
 import { World } from "./fake.ts";
@@ -68,6 +68,13 @@ describe("seori msg edit", () => {
 });
 
 describe("seori msg", () => {
+  test("a reply to a message an earlier seori stored from someone other than the owner is refused", async () => {
+    const { w, d, channel, fake } = setup();
+    channel.appendInbound({ id: "fake:c1:9", kind: "messenger", source: "fake", chat: "c1", from: "u2", sender: { kind: "person", id: "u2" }, at: w.clock, text: "hi" } as unknown as InboundRow);
+    await expect(main(["msg", "send", "--reply-to", "fake:c1:9", "--now", "--text", "x"], d)).rejects.toThrow(/fake:c1:9 came from someone other than the owner/);
+    expect(fake.sent()).toEqual([]);
+  });
+
   test("send --reply-to with comma-separated ids sends one reply and exits 0; a second reply is refused unless --again", async () => {
     const { d, fake } = setup();
     expect(await run(["msg", "send", "--reply-to", "fake:c1:1,fake:c1:2", "--text", "both done"], d)).toEqual({
