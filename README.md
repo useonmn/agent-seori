@@ -196,6 +196,21 @@ seori watch log <id|name> [-n N]             the watch's last events
 
 `--text` may be left off to read the message from stdin. `send`, `report` and `ready` exit 3 and print `HELD <target>` when a delivery may or may not have reached the pane; a held message is never resent, so check the pane, then `seori inbox ack` or `seori inbox resend` it. `QUEUED` (exit 0) means it waits in the pane's inbox. `object` prints `OBJECTED <key>` and reports its message to the lane the same way. `msg send` exits 0 with `SENT`, or with `DRAFTED` or `REPLACED` while the lead extension runs (see [Reply drafts](#reply-drafts)), 3 with `HELD` when the messenger may or may not have the reply (check the chat, then pass `--again` to send it anyway), and 2 when it refuses, for example a second reply to an id that is already answered. A notice (`msg send --to`) is HELD (exit 3) the same way when it may have arrived, but it has no ledger: sending it again sends a second copy, and `--again` is for replies only. `start` and `can-launch` exit 4 with `HOLD <reasons>` when the host has no room for a lane; `pause` and `resume` exit 3 when the pane did not confirm; `verify-pr` exits 2 on FAIL; `boot` exits 1 when something could not be read or the registry drifted. `transcribe` exits 2 when no `hooks.transcribe` is set, the file is missing or the hook failed. Refusals, including a broken `config.json` for the commands that read it, exit 2. The commands the agents see are rendered with the full path to `src/cli.ts` and `SEORI_HOME` set, so `seori` does not need to be on their PATH.
 
+### If a migration gets stuck
+
+`seori migrate` writes a journal for each lane or role it moves, `$SEORI_HOME/migrate/<name>.json` (`<name>` is the lane key, `lead` or `duty`), and rewrites it before every step. While that file exists, the inbox of the old session and of its replacement is held: messages are queued, not typed in, and a lane can't be paused, resumed or auto-closed (`lane <key> is being migrated`). A journal left behind by a run that died or was killed is what a stuck migration looks like. `seori migrate --to <runtime> --lane <key> --dry-run` (or `--role lead|duty`) shows it as `PLAN <name> ... (resume at <phase>)`.
+
+First, run the same command again, with the same `--to`. A run toward a different runtime is refused until this one is finished. The re-run picks up at the journal's `phase`:
+
+- `hold`: nothing has moved yet. The re-run asks for a checkpoint again (unless the handoff brief was already written) and opens the replacement.
+- `creating`: a replacement (`newRef`) exists, but omp may not have started in it. The re-run closes it and opens a fresh one.
+- `opened`: the replacement is up. The re-run checks it reaches idle or working within 3 minutes, then moves the inbox and points the lane or role at it. If the check fails, it rolls back (`MIGRATE_ROLLBACK`, exit 3): the replacement is closed and the old session keeps its inbox.
+- `switched`: the record already names the replacement. Only closing the old session (`from`) and draining its inbox are left, which is what the re-run does.
+
+When the journal doesn't parse, seori names the file and stops. Open it: if it's readable enough to show the phase and refs, fix it and re-run, otherwise treat it as the last resort below.
+
+Last resort, when re-running keeps failing: make sure no `seori migrate` for that name is still running, then delete `$SEORI_HOME/migrate/<name>.json` (and a `<name>.lock` next to it, if one is left). Close by hand, in hc or herdr, whichever of `from` and `newRef` the lane or role does not name any more: before `switched` that is usually `newRef`, at `switched` it's `from`. For a lane, also remove `"migration": true` from `$SEORI_HOME/lanes/<key>.json`, or it stays held. For a role, if it points at the wrong session, set it with `seori role lead|duty <REF>`.
+
 ## How a lane starts
 
 `seori start <key> --brief FILE` first checks that the host has room for a lane (see [Host guard](#host-guard-can-launch-and-heavy-slots); `--force` skips the room check) and refuses a Done line (`--done`) it cannot parse. It writes the lessons for the lane's directory (see [Lessons](#lessons)), the brief and the lane rules to `~/.seori/briefs/<key>.md` and opens a new terminal with a plain shell.
