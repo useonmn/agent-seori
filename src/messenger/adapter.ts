@@ -17,6 +17,31 @@ export type InboundMessage = {
 
 export type SendTarget = { readonly chat: string; readonly thread?: string; readonly replyTo?: string };
 
+/** A job thread's state, shown as an emoji at the start of its name (on Slack, as a reaction on its first message). */
+export type ThreadStatus = "working" | "waiting" | "done";
+export const STATUS_EMOJI: Readonly<Record<ThreadStatus, string>> = { working: "🔄", waiting: "⏸", done: "✅" };
+/** The reaction seori puts on each owner message while it handles it. */
+export const EYES = "👀";
+
+/**
+ * A thread to act on: `thread` is the platform's thread or topic (Slack: the root ts; Discord: the thread channel, or
+ * `chat` itself when the message came in inside a thread), `message` the message it was asked from.
+ */
+export type ThreadTarget = { readonly chat: string; readonly thread?: string; readonly message?: string };
+export type ThreadChange = { readonly name?: string; readonly status?: ThreadStatus; readonly state?: "close" | "reopen" };
+/** One line per part of an action the platform cannot do; empty when everything was done. */
+export type ActionNotes = readonly string[];
+
+/** `name` with the status emoji in front, replacing a status emoji already there. */
+export function threadName(name: string, status: ThreadStatus | undefined): string {
+  const marks = Object.values(STATUS_EMOJI);
+  const trimmed = name.trim();
+  const mark = marks.find((m) => trimmed.startsWith(m));
+  if (!status) return trimmed;
+  const bare = mark ? trimmed.slice(mark.length).replace(/^\uFE0F/, "").trimStart() : trimmed;
+  return `${STATUS_EMOJI[status]} ${bare}`;
+}
+
 /** The request may have reached the messenger (a timeout after sending, a dropped connection). Never retried automatically. */
 export class SendUncertain extends Error {}
 
@@ -43,6 +68,17 @@ export interface MessengerAdapter {
   send(target: SendTarget, text: string): Promise<{ messageId: string }>;
   /** Verifies credentials and returns who the bot is (e.g. "@seori_bot (id 123)"), for `seori messenger check`. */
   check(): Promise<string>;
+  /**
+   * Adds (`on`) or removes the bot's eyes reaction on `message` in `chat`. This and the actions below are idempotent, so
+   * a request that may have arrived is simply retried; a definite refusal rejects with the platform's reason.
+   */
+  react(chat: string, message: string, on: boolean): Promise<void>;
+  /** Replaces the text of a message the bot sent; text longer than one platform message is refused. */
+  edit(target: SendTarget, message: string, text: string): Promise<void>;
+  /** Shows the typing indicator once. */
+  typing(target: ThreadTarget): Promise<ActionNotes>;
+  /** Sets a thread's name (with the status emoji in front) and closes or reopens it, as far as the platform can. */
+  thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes>;
 }
 
 export type MessengerConfig = {

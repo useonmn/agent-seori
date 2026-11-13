@@ -1,6 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { extname, join } from "node:path";
-import { ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
+import {
+  type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  type ThreadChange, threadName, type ThreadTarget,
+} from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
 import type { VoiceTranscriber } from "./voice.ts";
 
@@ -9,6 +12,7 @@ import type { VoiceTranscriber } from "./voice.ts";
 // keeps unconfirmed ones for 24 hours, so the saved offset is the whole at-least-once story.
 
 const TEXT_LIMIT = 4096;
+const TOPIC_NAME_LIMIT = 128;
 const MAX_BACKOFF_MS = 30_000;
 
 type User = { id: number; is_bot?: boolean; username?: string };
@@ -264,6 +268,57 @@ export class TelegramAdapter implements MessengerAdapter {
       }
     }
     return { messageId: first! };
+  }
+
+  /** One idempotent Bot API action; a refusal whose description matches `harmless` (nothing to change) counts as done. */
+  private async act(method: string, body: Record<string, unknown>, harmless?: RegExp): Promise<void> {
+    const token = this.token();
+    try {
+      const res = await httpJson(this.url(token, method), { body }, { mutating: false, timeoutMs: 30_000, retries: 2, sleep: this.sleepFn });
+      const b = res.body as ApiBody | undefined;
+      if (b?.ok !== true) throw new Error(`telegram (${this.source}): ${method} failed: ${b?.description ?? "not ok"}`);
+    } catch (e) {
+      if (!(e instanceof HttpError)) throw new Error(String((e as Error)?.message ?? e).replaceAll(token, "<token>"));
+      const description = (e.body as ApiBody | undefined)?.description ?? e.message;
+      if (harmless?.test(description)) return;
+      throw new Error(`telegram (${this.source}): ${method} failed: ${description}`);
+    }
+  }
+
+  async react(chat: string, message: string, on: boolean): Promise<void> {
+    await this.act("setMessageReaction", { chat_id: chat, message_id: Number(message), reaction: on ? [{ type: "emoji", emoji: EYES }] : [] });
+  }
+
+  async edit(target: SendTarget, message: string, text: string): Promise<void> {
+    if (!text.trim()) throw new Error(`telegram (${this.source}): refusing to edit a message to empty text`);
+    if (text.length > TEXT_LIMIT) throw new Error(`telegram (${this.source}): an edited message holds at most ${TEXT_LIMIT} characters, got ${text.length}`);
+    const body = { chat_id: target.chat, message_id: Number(message), text, link_preview_options: { is_disabled: true } };
+    await this.act("editMessageText", body, /message is not modified/);
+  }
+
+  async typing(target: ThreadTarget): Promise<ActionNotes> {
+    await this.act("sendChatAction", { chat_id: target.chat, action: "typing", ...(target.thread !== undefined ? { message_thread_id: Number(target.thread) } : {}) });
+    return [];
+  }
+
+  /** Topics: renamed in forum supergroups and private chats with topics; closed and reopened only in forum supergroups. */
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
+    if (target.thread === undefined) throw new Error(`telegram (${this.source}): the message is not in a topic; only a topic has a name and can be closed`);
+    const topic = { chat_id: target.chat, message_thread_id: Number(target.thread) };
+    const notes: string[] = [];
+    if (change.name !== undefined) {
+      const name = threadName(change.name, change.status);
+      if (name.length > TOPIC_NAME_LIMIT) throw new Error(`telegram (${this.source}): a topic name holds at most ${TOPIC_NAME_LIMIT} characters, got ${name.length}`);
+      await this.act("editForumTopic", { ...topic, name }, /TOPIC_NOT_MODIFIED/);
+    } else if (change.status !== undefined) {
+      notes.push(`telegram: a topic's name cannot be read back; pass --name with --status`);
+    }
+    if (change.state !== undefined) {
+      // Private chat ids are the user's id (positive); groups and supergroups are negative.
+      if (target.chat.startsWith("-")) await this.act(change.state === "close" ? "closeForumTopic" : "reopenForumTopic", topic, /TOPIC_NOT_MODIFIED/);
+      else notes.push("telegram: a topic in a private chat cannot be closed or reopened; the ✅ at the start of its name marks it done");
+    }
+    return notes;
   }
 
   async check(): Promise<string> {

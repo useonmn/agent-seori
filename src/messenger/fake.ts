@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain } from "./adapter.ts";
+import { type ActionNotes, type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain, type ThreadChange, type ThreadTarget } from "./adapter.ts";
 
 // A messenger made of files under $SEORI_HOME/messenger/fake/, so tests and humans can drive the whole channel without a
 // platform account: append a row to in.jsonl to "send" a message to the lead; read out.jsonl to see what was sent back;
@@ -11,6 +11,8 @@ export type FakeInboundRow = { msgId: string; chat: string; thread?: string; fro
 /** One line of out.jsonl. */
 export type FakeOutboundRow = { messageId: string; chat: string; thread?: string; replyTo?: string; text: string; at: number };
 export type FakeSendMode = "ok" | "timeout" | "error";
+/** One line of actions.jsonl: a react, edit, typing or thread call, as it was asked. */
+export type FakeActionRow = { action: "react" | "edit" | "typing" | "thread"; at: number } & Record<string, unknown>;
 
 export const fakeDir = (root: string): string => join(root, "messenger", "fake");
 
@@ -131,6 +133,39 @@ export class FakeAdapter implements MessengerAdapter {
 
   async check(): Promise<string> {
     return `fake messenger (${this.dir})`;
+  }
+
+  get actionsPath(): string {
+    return join(this.dir, "actions.jsonl");
+  }
+
+  actions(): FakeActionRow[] {
+    if (!existsSync(this.actionsPath)) return [];
+    return readFileSync(this.actionsPath, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as FakeActionRow);
+  }
+
+  /** send-mode error makes every action fail too; the others always succeed. */
+  private act(action: FakeActionRow["action"], detail: Record<string, unknown>): void {
+    if (this.sendMode() === "error") throw new Error(`fake messenger: ${action} failed (send-mode error)`);
+    appendFileSync(this.actionsPath, `${JSON.stringify({ action, ...detail, at: this.now() })}\n`);
+  }
+
+  async react(chat: string, message: string, on: boolean): Promise<void> {
+    this.act("react", { chat, message, on });
+  }
+
+  async edit(target: SendTarget, message: string, text: string): Promise<void> {
+    this.act("edit", { ...target, message, text });
+  }
+
+  async typing(target: ThreadTarget): Promise<ActionNotes> {
+    this.act("typing", { ...target });
+    return [];
+  }
+
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
+    this.act("thread", { ...target, ...change });
+    return [];
   }
 
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {

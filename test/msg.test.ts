@@ -6,6 +6,7 @@ import { Channel, type MessengerRow } from "../src/channel.ts";
 import { Refusal } from "../src/harness.ts";
 import { SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "../src/messenger/adapter.ts";
 import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "../src/msg.ts";
+import { noActions } from "./fake.ts";
 
 const T0 = 1_700_000_000_000;
 
@@ -16,6 +17,7 @@ function setup() {
   let mode: "ok" | "uncertain" | "error" = "ok";
   let n = 0;
   const adapterFor = (c: MessengerConfig): MessengerAdapter => ({
+    ...noActions,
     source: c.source,
     receive: async () => {},
     send: async (target, text) => {
@@ -131,6 +133,7 @@ describe("msg send --reply-to", () => {
     const slow: MsgDeps = {
       ...d,
       adapterFor: (c) => ({
+        ...noActions,
         source: c.source,
         receive: async () => {},
         send: async () => {

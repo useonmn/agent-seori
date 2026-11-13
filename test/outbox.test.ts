@@ -7,6 +7,7 @@ import { DeliverySchedule } from "../src/lead-delivery.ts";
 import { SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "../src/messenger/adapter.ts";
 import { flushLine, msgDrafts, msgDrop, msgFlush, msgList, msgSend, type MsgDeps } from "../src/msg.ts";
 import { Outbox } from "../src/outbox.ts";
+import { noActions } from "./fake.ts";
 
 // Reply drafts: while the lead extension consumes, `msg send` records a draft that `msg flush` (the extension at the
 // end of the lead's turn) sends later.
@@ -22,6 +23,7 @@ function setup(o: { consumer?: boolean } = {}) {
   let n = 0;
   let clock = T0;
   const adapterFor = (c: MessengerConfig): MessengerAdapter => ({
+    ...noActions,
     source: c.source,
     receive: async () => {},
     send: async (target, text) => {

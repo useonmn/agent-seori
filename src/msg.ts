@@ -1,8 +1,11 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { randomBytes } from "node:crypto";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
+import { replyTarget } from "./messenger/common.ts";
 import { Refusal } from "./harness.ts";
-import { loadMessengers, SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
+import {
+  type ActionNotes, loadMessengers, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain, type ThreadChange, type ThreadTarget,
+} from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 import { type Draft, type DraftTarget, Outbox, targetLabel } from "./outbox.ts";
 
@@ -337,6 +340,58 @@ export function flushLine(o: FlushOutcome): string {
   if (o.status === "SENT") return `SENT ${what} message=${o.messageId}`;
   if (o.status === "HELD") return `HELD ${what}: the messenger may or may not have it${o.detail ? ` (${o.detail})` : ""}; check the chat, it is not sent again`;
   return `FAILED ${what}: ${o.detail}; the draft stays open: flush again, or drop it`;
+}
+
+// ---------- react, edit, typing, thread ----------
+// These act on the messenger at once (never drafted) and never touch the ledger: none of them answers an id.
+
+/** Where typing or a thread change goes: a chat and thread, plus the message it was asked from (`--of`). */
+export type Where = { readonly source: string; readonly target: ThreadTarget };
+
+function messengerRow(root: string, id: string): MessengerRow {
+  const row = new Channel(root).inbound().find((r) => r.id === id);
+  if (!row) throw new Refusal(`unknown message id ${id}`);
+  if (row.kind !== "messenger") throw new Refusal(`${id} is a watch event, not a messenger message`);
+  return row;
+}
+
+/** The platform's id of the message (an `:edit:` suffix dropped); chat ids may contain colons, so slice by known parts. */
+const upstreamId = (row: MessengerRow): string => replyTarget(row.id.slice(row.source.length + row.chat.length + 2));
+
+/** `--to source:chat[:thread]`, or `--of <id>`: the chat and thread that lead channel message came in. */
+export function whereOf(root: string, o: { readonly to?: string; readonly of?: string }): Where {
+  if ((o.to === undefined) === (o.of === undefined)) throw new Refusal("give exactly one of --to or --of");
+  if (o.to !== undefined) {
+    const t = parseTo(o.to);
+    return { source: t.source, target: { chat: t.chat, ...(t.thread !== undefined ? { thread: t.thread } : {}) } };
+  }
+  const row = messengerRow(root, o.of!);
+  return { source: row.source, target: { chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}), message: upstreamId(row) } };
+}
+
+export const whereLabel = (w: Where): string => [w.source, w.target.chat, ...(w.target.thread !== undefined ? [w.target.thread] : [])].join(":");
+
+/** `seori msg react`: the eyes reaction on an owner's message, added or removed. */
+export async function msgReact(root: string, id: string, on: boolean, d: MsgDeps): Promise<void> {
+  const row = messengerRow(root, id);
+  await adapterFor(d, row.source).react(row.chat, upstreamId(row), on);
+}
+
+/** `seori msg edit`: new text for a message seori sent (its id as `msg send` printed it). */
+export async function msgEdit(to: NoticeTarget, message: string, text: string, d: MsgDeps): Promise<void> {
+  if (!text.trim()) throw new Refusal("refusing to edit a message to empty text");
+  await adapterFor(d, to.source).edit({ chat: to.chat, ...(to.thread !== undefined ? { thread: to.thread } : {}) }, message, text);
+}
+
+export async function msgTyping(w: Where, d: MsgDeps): Promise<ActionNotes> {
+  return adapterFor(d, w.source).typing(w.target);
+}
+
+export async function msgThread(w: Where, change: ThreadChange, d: MsgDeps): Promise<ActionNotes> {
+  if (change.name === undefined && change.status === undefined && change.state === undefined) {
+    throw new Refusal("nothing to change: give --name, --status, --close or --reopen");
+  }
+  return adapterFor(d, w.source).thread(w.target, change);
 }
 
 /** Closes an id without replying (handled elsewhere, not worth an answer). */

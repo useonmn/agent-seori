@@ -6,6 +6,7 @@ import { Channel } from "../src/channel.ts";
 import type { MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
 import { msgFlush, msgSend, type MsgDeps } from "../src/msg.ts";
 import { isAdvisorMessage, RELEASE_GRACE_MS, ReleaseScheduler } from "../src/release.ts";
+import { noActions } from "./fake.ts";
 
 /** Fake clock and timers: `advance` moves the clock and runs what is due. */
 function timers(start = 1_000_000) {
@@ -165,6 +166,7 @@ describe("ReleaseScheduler with the real outbox", () => {
     const sent: string[] = [];
     let n = 0;
     const adapterFor = (c: MessengerConfig): MessengerAdapter => ({
+      ...noActions,
       source: c.source,
       receive: async () => {},
       send: async (_target, text) => {
