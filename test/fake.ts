@@ -7,7 +7,7 @@ import type { Exec } from "../src/runtime/exec.ts";
 import { Herdr } from "../src/runtime/herdr/client.ts";
 import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { AgentStatus } from "../src/runtime/types.ts";
-import type { MessengerConfig, SendTarget } from "../src/messenger/adapter.ts";
+import type { MessengerAdapter, MessengerConfig, SendTarget } from "../src/messenger/adapter.ts";
 import { Store, type HostLoad } from "../src/store.ts";
 import type { SessionRef } from "../src/runtime/index.ts";
 
@@ -209,3 +209,11 @@ export class World {
     };
   }
 }
+
+/** The actions beyond send, doing nothing: for test adapters that only care about receive and send. */
+export const noActions: Pick<MessengerAdapter, "react" | "edit" | "typing" | "thread"> = {
+  react: async () => {},
+  edit: async () => {},
+  typing: async () => [],
+  thread: async () => [],
+};

@@ -11,10 +11,12 @@ import { heartbeatPath, runDaemon } from "./daemon.ts";
 import { down, DOWN_GROUPS, liveRunners, running, sleepUnless } from "./down.ts";
 import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
-import { loadMessengers } from "./messenger/adapter.ts";
+import { type ActionNotes, loadMessengers, type ThreadChange, threadName, type ThreadStatus } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
-import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList, msgSend, parseTo } from "./msg.ts";
+import {
+  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgFlush, msgList, msgReact, msgSend, msgThread, msgTyping, parseTo, whereLabel, whereOf,
+} from "./msg.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
 import { pidAlive, type Lane, type Role } from "./store.ts";
@@ -117,6 +119,15 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
+  seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
+  seori msg edit --to SOURCE:CHAT[:THREAD] --message MID --text T
+                                              replace the text of a message seori sent (MID: the message= that send printed)
+  seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
+                                              show the typing indicator once, right before a message goes out
+  seori msg thread (--to SOURCE:CHAT:THREAD | --of ID) [--name T] [--status working|waiting|done] [--close|--reopen]
+                                              name a job's thread with its status emoji in front (🔄 ⏸ ✅), close or reopen it;
+                                              --of ID: the thread that message came in. NOTE lines say what the platform
+                                              cannot do (Slack: status as a reaction on the first message, no close)
   seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
   seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                               setup: print the sender of the next DM to the bot; --write makes them the owner;
@@ -133,6 +144,7 @@ it is held and never resent, so do not send it again: check the pane, then seori
 QUEUED (exit 0) means it waits in the pane's inbox.
 msg send exits 3 with HELD when the messenger may or may not have the reply: check the chat, then pass --again.
 msg flush prints SENT, HELD or FAILED per draft; it exits 1 if a draft failed (it stays open), else 3 if one is HELD.
+msg react, edit, typing and thread act at once (never drafted) and are safe to repeat; a messenger error prints FAILED and exits 1.
 A second reply to an id is refused (exit 2) unless --again is given.
 SEORI_MODEL=M passes --model M to every agent seori starts (lead, duty, lanes) and is the reviewer's default model.
 seori runs omp only: SEORI_AGENT or "agent" in $SEORI_HOME/config.json naming anything else is refused (exit 2); SEORI_AGENT_CMD overrides the omp command and must name omp (its basename is omp).
@@ -145,7 +157,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume", "remove", "close", "reopen"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -622,7 +634,68 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
       process.off("SIGINT", onInt);
     }
   }
+  if (sub === "react" || sub === "edit" || sub === "typing" || sub === "thread") return msgAction(root, d, a, sub);
   throw new Refusal(`unknown msg command ${sub}\n\n${USAGE}`);
+}
+
+const STATUSES: readonly ThreadStatus[] = ["working", "waiting", "done"];
+
+/** react, edit, typing and thread: one line saying what was done (then NOTE lines), or FAILED and exit 1. */
+async function msgAction(root: string, d: Deps, a: Args, sub: "react" | "edit" | "typing" | "thread"): Promise<number> {
+  const deps = msgDepsFor(root, d.now);
+  let what = "";
+  let done = "";
+  let act: () => Promise<ActionNotes | void>;
+  if (sub === "react") {
+    const id = need(a.pos[2], "message id");
+    const on = one(a, "remove") !== "true";
+    what = id;
+    done = `${on ? "REACTED" : "UNREACTED"} ${id}`;
+    act = () => msgReact(root, id, on, deps);
+  } else if (sub === "edit") {
+    const to = parseTo(need(one(a, "to"), "--to"));
+    const message = need(one(a, "message"), "--message");
+    const text = await textOf(a);
+    what = need(one(a, "to"), "--to");
+    done = `EDITED ${what} message=${message}`;
+    act = () => msgEdit(to, message, text, deps);
+  } else {
+    const where = whereOf(root, { to: one(a, "to"), of: one(a, "of") });
+    what = whereLabel(where);
+    if (sub === "typing") {
+      done = `TYPING ${what}`;
+      act = () => msgTyping(where, deps);
+    } else {
+      const status = one(a, "status");
+      if (status !== undefined && !STATUSES.includes(status as ThreadStatus)) throw new Refusal(`--status must be working, waiting or done, got "${status}"`);
+      const close = one(a, "close") === "true";
+      const reopen = one(a, "reopen") === "true";
+      if (close && reopen) throw new Refusal("give --close or --reopen, not both");
+      const name = one(a, "name");
+      const change: ThreadChange = {
+        ...(name !== undefined ? { name } : {}),
+        ...(status !== undefined ? { status: status as ThreadStatus } : {}),
+        ...(close ? { state: "close" as const } : reopen ? { state: "reopen" as const } : {}),
+      };
+      done = [
+        `THREAD ${what}`,
+        ...(name !== undefined ? [`name=${JSON.stringify(threadName(name, change.status))}`] : status !== undefined ? [`status=${status}`] : []),
+        ...(close ? ["closed"] : reopen ? ["reopened"] : []),
+      ].join(" ");
+      act = () => msgThread(where, change, deps);
+    }
+  }
+  let notes: ActionNotes;
+  try {
+    notes = (await act()) ?? [];
+  } catch (e) {
+    if (e instanceof Refusal) throw e;
+    console.log(`FAILED ${sub} ${what}: ${redact((e as Error)?.message ?? String(e))}`);
+    return 1;
+  }
+  console.log(done);
+  for (const n of notes) console.log(`NOTE ${n}`);
+  return 0;
 }
 
 async function watch(d: Deps, a: Args, sub: string | undefined): Promise<number> {

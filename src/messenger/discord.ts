@@ -1,4 +1,7 @@
-import { ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
+import {
+  type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  type ThreadChange, threadName, type ThreadTarget,
+} from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, secret, splitText } from "./common.ts";
 
 // Discord: inbound over the gateway websocket (owner DMs and guild channels the owner writes in), catch-up and sends over
@@ -10,6 +13,9 @@ const DEFAULT_API = "https://discord.com/api/v10";
 /** DIRECT_MESSAGES | GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT. */
 const DEFAULT_INTENTS = 4096 | 1 | 512 | 32768;
 const MESSAGE_LIMIT = 2000;
+const THREAD_NAME_LIMIT = 100;
+/** Channel types of an announcement, public and private thread. */
+const THREAD_TYPES = new Set([10, 11, 12]);
 /** Flag on a created message: no link previews. */
 const SUPPRESS_EMBEDS = 1 << 2;
 /** Minimum time between two IDENTIFYs, across adapter instances too (persisted in cursor.json). */
@@ -487,6 +493,56 @@ export class DiscordAdapter implements MessengerAdapter {
       }
     }
     return { messageId: first! };
+  }
+
+  /** One idempotent REST action; a refusal rejects with Discord's answer. */
+  private async act(method: string, path: string, body?: unknown): Promise<unknown> {
+    const token = this.token();
+    try {
+      const res = await httpJson(`${this.api}${path}`, { method, headers: this.headers(token), ...(body !== undefined ? { body } : {}) }, { mutating: false, retries: 2, sleep: this.sleepFn, timeoutMs: this.timeoutMs });
+      return res.body;
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 401) throw new Error(this.tokenRejected(`401 on ${method} ${path}`).message);
+      if (e instanceof HttpError) throw new Error(`${this.source}: ${method} ${path} failed: ${e.message}`);
+      throw e;
+    }
+  }
+
+  async react(chat: string, message: string, on: boolean): Promise<void> {
+    await this.act(on ? "PUT" : "DELETE", `/channels/${chat}/messages/${message}/reactions/${encodeURIComponent(EYES)}/@me`);
+  }
+
+  async edit(target: SendTarget, message: string, text: string): Promise<void> {
+    if (!text.trim()) throw new Error(`${this.source}: refusing to edit a message to empty text`);
+    if (text.length > MESSAGE_LIMIT) throw new Error(`${this.source}: an edited message holds at most ${MESSAGE_LIMIT} characters, got ${text.length}`);
+    await this.act("PATCH", `/channels/${target.thread ?? target.chat}/messages/${message}`, { content: text, allowed_mentions: { parse: [] } });
+  }
+
+  async typing(target: ThreadTarget): Promise<ActionNotes> {
+    await this.act("POST", `/channels/${target.thread ?? target.chat}/typing`);
+    return [];
+  }
+
+  /**
+   * A thread is a channel: renamed and archived with one PATCH. The channel type is read first, so a message that came
+   * in outside a thread can never rename the channel it was posted in.
+   */
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
+    const id = target.thread ?? target.chat;
+    const channel = (await this.act("GET", `/channels/${id}`)) as { type?: unknown } | undefined;
+    if (!THREAD_TYPES.has(Number(channel?.type))) throw new Error(`${this.source}: channel ${id} is not a thread; only a thread is renamed or archived`);
+    const notes: string[] = [];
+    const patch: Record<string, unknown> = {};
+    if (change.name !== undefined) {
+      const name = threadName(change.name, change.status);
+      if (name.length > THREAD_NAME_LIMIT) throw new Error(`${this.source}: a thread name holds at most ${THREAD_NAME_LIMIT} characters, got ${name.length}`);
+      patch["name"] = name;
+    } else if (change.status !== undefined) {
+      notes.push(`${this.source}: pass --name with --status; the status is part of the thread's name`);
+    }
+    if (change.state !== undefined) patch["archived"] = change.state === "close";
+    if (Object.keys(patch).length) await this.act("PATCH", `/channels/${id}`, patch);
+    return notes;
   }
 
   async check(): Promise<string> {

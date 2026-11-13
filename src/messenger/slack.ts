@@ -1,4 +1,7 @@
-import { ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
+import {
+  type ActionNotes, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  type ThreadChange, type ThreadStatus, type ThreadTarget,
+} from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
 
 // Slack over Socket Mode: a bot token (xoxb-) for the Web API and an app-level token (xapp-, connections:write) to open
@@ -30,6 +33,8 @@ const UNREADABLE_ERRORS = new Set(["missing_scope", "not_allowed_token_type"]);
 /** chat.postMessage errors after which "some aspect of the operation" may have succeeded (Slack's docs): uncertain. */
 const UNCERTAIN_SEND_ERRORS = new Set(["internal_error", "fatal_error"]);
 const MAX_RATELIMIT_RETRIES = 5;
+/** Slack threads have no names: a thread's status is one of these reactions on its first message. */
+const STATUS_REACTIONS: Readonly<Record<ThreadStatus, string>> = { working: "arrows_counterclockwise", waiting: "double_vertical_bar", done: "white_check_mark" };
 /** Agent mode: the working status shown under an owner's DM thread until seori replies (Slack renders "<app> <status>"). */
 const DEFAULT_AGENT_STATUS = "is working on it...";
 /** Slack drops a status after two minutes without a message, so it is set again this often while the lead works... */
@@ -645,6 +650,51 @@ export class SlackAdapter implements MessengerAdapter {
       }
     }
     return { messageId: first };
+  }
+
+  /** Adds or removes one reaction; already there (or already gone) counts as done. */
+  private async reaction(channel: string, ts: string, name: string, on: boolean): Promise<void> {
+    try {
+      await this.api(on ? "reactions.add" : "reactions.remove", this.botToken(), { channel, timestamp: ts, name }, "POST");
+    } catch (e) {
+      if (e instanceof SlackApiError && e.error === (on ? "already_reacted" : "no_reaction")) return;
+      throw this.fatal(e, false) ?? e;
+    }
+  }
+
+  async react(chat: string, message: string, on: boolean): Promise<void> {
+    await this.reaction(chat, message, "eyes", on);
+  }
+
+  async edit(target: SendTarget, message: string, text: string): Promise<void> {
+    if (!text.trim()) throw new Error("slack: refusing to edit a message to empty text");
+    const escaped = escape(text);
+    if (escaped.length > TEXT_LIMIT) throw new Error(`slack: an edited message holds at most ${TEXT_LIMIT} characters, got ${escaped.length}`);
+    try {
+      await this.api("chat.update", this.botToken(), { channel: target.chat, ts: message, text: escaped }, "POST");
+    } catch (e) {
+      throw this.fatal(e, false) ?? e;
+    }
+  }
+
+  async typing(_target: ThreadTarget): Promise<ActionNotes> {
+    return ["slack: bots have no typing indicator (in agent mode seori shows its own working status)"];
+  }
+
+  /** The status is one reaction on the thread's first message (the root ts, else the message asked from). */
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
+    const root = target.thread ?? target.message;
+    if (root === undefined) throw new Error("slack: no thread given: pass the thread's root ts or the message it was asked from");
+    if (change.status !== undefined) {
+      for (const [status, name] of Object.entries(STATUS_REACTIONS)) {
+        if (status !== change.status) await this.reaction(target.chat, root, name, false);
+      }
+      await this.reaction(target.chat, root, STATUS_REACTIONS[change.status], true);
+    }
+    const notes: string[] = [];
+    if (change.name !== undefined) notes.push("slack: threads have no names; the status is shown as a reaction on the thread's first message");
+    if (change.state !== undefined) notes.push("slack: threads cannot be closed or reopened; the ✅ reaction marks it done");
+    return notes;
   }
 
   async check(): Promise<string> {

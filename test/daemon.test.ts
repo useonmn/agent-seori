@@ -8,6 +8,7 @@ import { down, DOWN_GROUPS, recordPath } from "../src/down.ts";
 import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, MAX_RESTART_DELAY_MS, readHealth, restartDelay, runDaemon } from "../src/daemon.ts";
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
+import { noActions } from "./fake.ts";
 import { adapterFor } from "../src/messenger/index.ts";
 import { type Watch, WatchStore } from "../src/watch/store.ts";
 
@@ -63,6 +64,7 @@ describe("runDaemon", () => {
     let attempts = 0;
     // First run: stores the message, then dies before committing. The restart replays the same upstream message.
     const replaying: MessengerAdapter = {
+      ...noActions,
       source: "x",
       async receive(signal, onMessage) {
         attempts++;
@@ -90,6 +92,7 @@ describe("runDaemon", () => {
     const root = home([{ source: "nosuch", owner: "u1" }, { source: "flaky", owner: "u1" }, { source: "fake", owner: "u1" }]);
     let flakyRuns = 0;
     const flaky: MessengerAdapter = {
+      ...noActions,
       source: "flaky",
       async receive(signal, onMessage) {
         if (++flakyRuns < 3) throw new Error(`boom ${flakyRuns}`);
@@ -123,6 +126,7 @@ describe("runDaemon", () => {
     const root = home([{ source: "flaky", owner: "u1" }]);
     let runs = 0;
     const flaky: MessengerAdapter = {
+      ...noActions,
       source: "flaky",
       async receive(signal, onMessage) {
         if (++runs === 1) throw new Error("boom");

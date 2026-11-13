@@ -32,6 +32,57 @@ function setup() {
   return { w, d, root, channel, fake };
 }
 
+describe("seori msg react, edit, typing and thread", () => {
+  const inThread = (channel: Channel, at: number) => {
+    channel.appendInbound({ id: "fake:c1:4", kind: "messenger", source: "fake", chat: "c1", thread: "t7", from: "u1", at, text: "in a thread" });
+    channel.appendInbound({ id: "fake:c1:4:edit:99", kind: "messenger", source: "fake", chat: "c1", thread: "t7", from: "u1", at, text: "(edited) in a thread" });
+  };
+
+  test("each acts through the messenger on the message, chat or thread named", async () => {
+    const { w, d, fake, channel } = setup();
+    inThread(channel, w.clock);
+    expect(await run(["msg", "react", "fake:c1:4"], d)).toEqual({ code: 0, out: "REACTED fake:c1:4" });
+    expect(await run(["msg", "react", "fake:c1:4:edit:99", "--remove"], d)).toEqual({ code: 0, out: "UNREACTED fake:c1:4:edit:99" });
+    expect(await run(["msg", "edit", "--to", "fake:c1:t7", "--message", "9", "--text", "✅ Fix login"], d)).toEqual({ code: 0, out: "EDITED fake:c1:t7 message=9" });
+    expect(await run(["msg", "typing", "--of", "fake:c1:4"], d)).toEqual({ code: 0, out: "TYPING fake:c1:t7" });
+    expect(await run(["msg", "thread", "--of", "fake:c1:4", "--name", "Fix login", "--status", "done", "--close"], d)).toEqual({
+      code: 0,
+      out: "THREAD fake:c1:t7 name=\"✅ Fix login\" closed",
+    });
+    expect(await run(["msg", "thread", "--to", "fake:c1:t7", "--reopen"], d)).toEqual({ code: 0, out: "THREAD fake:c1:t7 reopened" });
+    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([
+      { action: "react", chat: "c1", message: "4", on: true },
+      { action: "react", chat: "c1", message: "4", on: false },
+      { action: "edit", chat: "c1", thread: "t7", message: "9", text: "✅ Fix login" },
+      { action: "typing", chat: "c1", thread: "t7", message: "4" },
+      { action: "thread", chat: "c1", thread: "t7", message: "4", name: "Fix login", status: "done", state: "close" },
+      { action: "thread", chat: "c1", thread: "t7", state: "reopen" },
+    ]);
+    expect(fake.sent()).toEqual([]);
+    expect(channel.ledger()).toEqual([]);
+  });
+
+  test("a messenger failure exits 1 with FAILED and what the messenger said", async () => {
+    const { w, d, fake, channel } = setup();
+    inThread(channel, w.clock);
+    writeFileSync(fake.sendModePath, "error");
+    expect(await run(["msg", "react", "fake:c1:4"], d)).toEqual({ code: 1, out: "FAILED react fake:c1:4: fake messenger: react failed (send-mode error)" });
+    expect(await run(["msg", "thread", "--of", "fake:c1:4", "--close"], d)).toEqual({ code: 1, out: "FAILED thread fake:c1:t7: fake messenger: thread failed (send-mode error)" });
+  });
+
+  test("refusals name what is wrong and nothing reaches the messenger", async () => {
+    const { d, fake } = setup();
+    await expect(main(["msg", "react", "fake:c1:404"], d)).rejects.toThrow(/unknown message id fake:c1:404/);
+    await expect(main(["msg", "typing", "--to", "fake:c1", "--of", "fake:c1:1"], d)).rejects.toThrow(/exactly one of --to or --of/);
+    await expect(main(["msg", "thread", "--of", "fake:c1:1"], d)).rejects.toThrow(/nothing to change/);
+    await expect(main(["msg", "thread", "--of", "fake:c1:1", "--close", "--reopen"], d)).rejects.toThrow(/--close or --reopen/);
+    await expect(main(["msg", "thread", "--of", "fake:c1:1", "--status", "finished"], d)).rejects.toThrow(/working, waiting or done/);
+    await expect(main(["msg", "edit", "--to", "fake:c1", "--text", "x"], d)).rejects.toThrow(/--message/);
+    await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "9", "--text", " "], d)).rejects.toThrow(/empty/);
+    expect(fake.actions()).toEqual([]);
+  });
+});
+
 describe("seori msg", () => {
   test("send --reply-to with comma-separated ids sends one reply and exits 0; a second reply is refused unless --again", async () => {
     const { d, fake } = setup();
