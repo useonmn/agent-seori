@@ -119,11 +119,11 @@ describe("TelegramAdapter receive", () => {
     expect(poll.body).toEqual({ timeout: 0, limit: 100, allowed_updates: ["message", "edited_message"] });
   });
 
-  test("drops other users, bots, other DMs and empty messages, committing past them; topic messages get a thread", async () => {
+  test("drops the bot's own messages, channel posts, others' unaddressed group messages and empty messages, committing past them; topic messages get a thread", async () => {
     const t = setup();
     t.updates.push(
-      { update_id: 1, message: { message_id: 1, from: { id: 9, is_bot: false }, chat: { id: 9, type: "private" }, date: 1, text: "stranger" } },
-      { update_id: 2, message: { message_id: 2, from: { id: 42, is_bot: true }, chat: { id: 42, type: "private" }, date: 1, text: "bot" } },
+      { update_id: 1, message: { message_id: 1, from: { id: 777, is_bot: true, username: "seori_bot" }, chat: { id: 42, type: "private" }, date: 1, text: "own" } },
+      { update_id: 2, message: { message_id: 2, from: { id: 9, is_bot: false }, chat: { id: -200, type: "channel" }, date: 1, text: "channel post @seori_bot", entities: [{ type: "mention", offset: 13, length: 10 }] } },
       { update_id: 3, message: { message_id: 3, from: { id: 9, is_bot: false }, chat: { id: -100, type: "supergroup" }, date: 1, text: "group stranger" } },
       dm(4, 4, ""),
       { update_id: 5, message: { message_id: 6, from: { id: 42 }, chat: { id: -100, type: "supergroup" }, date: 2, text: "reply in General", message_thread_id: 3 } },
@@ -149,9 +149,54 @@ describe("TelegramAdapter receive", () => {
     expect(got.map((m) => m.replyTo)).toEqual([{ id: "telegram:42:7", text: "Shall I ship v1.4?" }, undefined, { id: "telegram:42:8", text: "before" }]);
   });
 
+  test("others: DMs from people and agents, group messages that mention or reply to the bot, and topics it was mentioned in", async () => {
+    const t = setup();
+    const group = { id: -100, type: "supergroup" };
+    const ann = { id: 9, is_bot: false, first_name: "Ann", last_name: "Lee" };
+    const other = { id: 55, is_bot: true, first_name: "Helper", username: "helper_bot" };
+    const msg = (update_id: number, from: unknown, chat: unknown, text: string, extra: Record<string, unknown> = {}) => ({ update_id, message: { message_id: update_id, from, chat, date: 1, text, ...extra } });
+    t.updates.push(
+      msg(1, ann, { id: 9, type: "private" }, "hi from Ann"),
+      msg(2, other, { id: 55, type: "private" }, "hi from a bot"),
+      msg(3, ann, group, "just chatting"),
+      msg(4, ann, group, "hey @SEORI_bot look", { entities: [{ type: "mention", offset: 4, length: 10 }] }),
+      msg(5, ann, group, "hey @helper_bot", { entities: [{ type: "mention", offset: 4, length: 11 }] }),
+      msg(6, ann, group, "hey you", { entities: [{ type: "text_mention", offset: 4, length: 3, user: { id: 777, is_bot: true } }] }),
+      msg(7, ann, group, "answering you", { reply_to_message: { message_id: 1, from: { id: 777, is_bot: true }, chat: group, date: 1, text: "a question" } }),
+      msg(8, ann, group, "topic start @seori_bot", { is_topic_message: true, message_thread_id: 50, entities: [{ type: "mention", offset: 12, length: 10 }] }),
+      msg(9, other, group, "more in the topic", { is_topic_message: true, message_thread_id: 50 }),
+      msg(10, ann, group, "another topic", { is_topic_message: true, message_thread_id: 60 }),
+      msg(11, { id: 42, is_bot: true }, { id: 42, type: "private" }, "a bot with the owner's id"),
+      msg(12, ann, group, "photo for @seori_bot", { text: undefined, caption: "photo for @seori_bot", caption_entities: [{ type: "mention", offset: 10, length: 10 }] }),
+    );
+    const got = await collect(t.adapter, 8);
+    expect(got.map((m) => [m.id, m.sender, m.thread])).toEqual([
+      ["telegram:9:1", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
+      ["telegram:55:2", { kind: "agent", id: "55", name: "Helper" }, undefined],
+      ["telegram:-100:4", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
+      ["telegram:-100:6", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
+      ["telegram:-100:7", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
+      ["telegram:-100:8", { kind: "person", id: "9", name: "Ann Lee" }, "50"],
+      ["telegram:-100:9", { kind: "agent", id: "55", name: "Helper" }, "50"],
+      ["telegram:42:11", { kind: "agent", id: "42" }, undefined],
+    ]);
+    expect((await collect(t.make(), 1)).map((m) => m.id)).toEqual(["telegram:-100:12"]);
+  });
+
+  test("others' messages pass in a topic the bot has posted in, also when another process sent the post", async () => {
+    const t = setup();
+    const group = { id: -100, type: "supergroup" };
+    await t.make().send({ chat: "-100", thread: "70" }, "I'll look into it");
+    t.updates.push(
+      { update_id: 1, message: { message_id: 1, from: { id: 9 }, chat: group, date: 1, text: "elsewhere", is_topic_message: true, message_thread_id: 71 } },
+      { update_id: 2, message: { message_id: 2, from: { id: 9 }, chat: group, date: 1, text: "thanks", is_topic_message: true, message_thread_id: 70 } },
+    );
+    expect((await collect(t.adapter, 1)).map((m) => [m.id, m.thread])).toEqual([["telegram:-100:2", "70"]]);
+  });
+
   test("a rejected onMessage keeps the cursor, so the same id is offered again", async () => {
     const t = setup();
-    t.updates.push(dm(1, 1, "skip me", { from: { id: 9 }, chat: { id: 9, type: "private" } }), dm(2, 8, "important"));
+    t.updates.push(dm(1, 1, "skip me", { from: { id: 9 }, chat: { id: -100, type: "supergroup" } }), dm(2, 8, "important"));
     await expect(t.adapter.receive(new AbortController().signal, async () => { throw new Error("disk full"); })).rejects.toThrow("disk full");
     expect(cursor(t.root)).toEqual({ offset: 2 }); // past the dropped stranger, not past the failed message
     expect((await collect(t.make(), 1)).map((m) => m.id)).toEqual(["telegram:42:8"]);

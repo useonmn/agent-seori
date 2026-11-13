@@ -17,7 +17,8 @@ const MAX_BACKOFF_MS = 30_000;
 /** How long one voice message may take to download and transcribe before it is delivered without a transcript. */
 const TRANSCRIBE_TIMEOUT_MS = 120_000;
 
-type User = { id: number; is_bot?: boolean; username?: string };
+type User = { id: number; is_bot?: boolean; username?: string; first_name?: string; last_name?: string };
+type Entity = { type: string; offset: number; length: number; user?: User };
 type FileRef = { file_id: string; file_name?: string; mime_type?: string; file_size?: number; width?: number; height?: number; duration?: number; emoji?: string };
 type Message = {
   message_id: number;
@@ -39,10 +40,14 @@ type Message = {
   sticker?: FileRef;
   reply_to_message?: Message;
   forum_topic_created?: unknown;
+  entities?: Entity[];
+  caption_entities?: Entity[];
 };
 type Update = { update_id: number; message?: Message; edited_message?: Message };
 type ApiBody = { ok?: boolean; result?: unknown; description?: string; error_code?: number; parameters?: { retry_after?: number } };
 type Cursor = { offset: number };
+/** How many forum topics the bot remembers having joined (mentioned in or posted in); the oldest are forgotten first. */
+const TOPICS_KEPT = 500;
 
 export type TelegramDeps = {
   env?: Record<string, string | undefined>;
@@ -85,6 +90,13 @@ export class TelegramAdapter implements MessengerAdapter {
   private readonly transcribe: VoiceTranscriber | undefined;
   private readonly deadline: (ms: number) => AbortSignal;
   private readonly warn: (line: string) => void;
+  /**
+   * Forum topics (`<chat>:<topic>`) the bot was mentioned in or posted in, where others' messages pass without a mention.
+   * A file under root, because `seori msg send` posts from another process than the daemon's receive.
+   */
+  private readonly topics: CursorFile<string[]>;
+  /** The bot itself, learned with getMe when receive starts. */
+  private me: User | undefined;
 
   constructor(config: MessengerConfig, private readonly root: string, deps: TelegramDeps = {}) {
     this.source = config.source;
@@ -100,6 +112,17 @@ export class TelegramAdapter implements MessengerAdapter {
     this.transcribe = deps.pairing === true ? undefined : deps.transcribe;
     this.deadline = deps.deadline ?? ((ms) => AbortSignal.timeout(ms));
     this.warn = deps.warn ?? ((line) => void process.stderr.write(`${line}\n`));
+    this.topics = CursorFile.for<string[]>(root, config.source, "topics.json");
+  }
+
+  private joined(chat: string, topic: string): boolean {
+    return (this.topics.load() ?? []).includes(`${chat}:${topic}`);
+  }
+
+  private join(chat: string, topic: string): void {
+    const key = `${chat}:${topic}`;
+    const list = this.topics.load() ?? [];
+    if (!list.includes(key)) this.topics.save([...list, key].slice(-TOPICS_KEPT));
   }
 
   private token(): string {
@@ -172,6 +195,10 @@ export class TelegramAdapter implements MessengerAdapter {
     const token = this.token();
     // getUpdates refuses to run while a webhook is set; dropping pending updates would lose messages, so keep them.
     await this.poll(token, "deleteWebhook", { drop_pending_updates: false }, signal, 30_000);
+    if (!this.pairing) {
+      this.me = (await this.poll(token, "getMe", {}, signal, 30_000)) as User | undefined;
+      if (signal.aborted) return;
+    }
     let offset = this.cursor.load()?.offset;
     while (!signal.aborted) {
       const result = await this.poll(
@@ -234,24 +261,37 @@ export class TelegramAdapter implements MessengerAdapter {
     return path;
   }
 
-  /** The owner's message as an InboundMessage, or undefined for anything to skip (others, bots, channels, empty). */
+  /**
+   * An update as an InboundMessage, or undefined for anything to skip. The owner's messages pass as they always did.
+   * Anyone else's (people, and agents: from.is_bot) pass in a private chat with the bot, and in a group when they mention
+   * the bot, reply to one of its messages, or are in a forum topic the bot was mentioned in or posted in; src/daemon.ts
+   * drops them again unless config.json talkWithOthers is on. The bot's own messages and channel posts never pass.
+   */
   private inbound(update: Update): InboundMessage | undefined {
     const edited = update.edited_message !== undefined;
     const msg = update.edited_message ?? update.message;
-    if (!msg?.from || msg.from.is_bot) return undefined;
+    if (!msg?.from) return undefined;
+    const chat = String(msg.chat.id);
+    const topic = msg.is_topic_message && msg.message_thread_id !== undefined ? String(msg.message_thread_id) : undefined;
+    let kind: "owner" | "person" | "agent" = "owner";
     if (this.pairing) {
       // Pairing: a new direct message from anyone; the owner is whoever pair accepts.
-      if (edited || msg.chat.type !== "private" || msg.chat.id !== msg.from.id) return undefined;
+      if (msg.from.is_bot || edited || msg.chat.type !== "private" || msg.chat.id !== msg.from.id) return undefined;
     } else {
-      if (String(msg.from.id) !== this.owner) return undefined;
-      if (msg.chat.type === "channel") return undefined;
-      if (msg.chat.type === "private" && String(msg.chat.id) !== this.owner) return undefined;
+      if (msg.chat.type === "channel" || (this.me !== undefined && msg.from.id === this.me.id)) return undefined;
+      kind = msg.from.is_bot ? "agent" : String(msg.from.id) === this.owner ? "owner" : "person";
+      if (kind === "owner") {
+        if (msg.chat.type === "private" && chat !== this.owner) return undefined;
+      } else if (msg.chat.type !== "private") {
+        if (this.addressed(msg)) {
+          if (topic !== undefined) this.join(chat, topic);
+        } else if (topic === undefined || !this.joined(chat, topic)) return undefined;
+      }
     }
     const lines = attachments(msg);
     const body = msg.text ?? msg.caption ?? "";
     if (!body && lines.length === 0) return undefined;
     const text = [body, ...lines].filter((l) => l).join("\n");
-    const chat = String(msg.chat.id);
     const id = String(msg.message_id);
     const stamp = msg.edit_date ?? msg.date;
     // In a forum topic every message points at the topic's first (service) message: that is the topic, not a reply.
@@ -264,12 +304,24 @@ export class TelegramAdapter implements MessengerAdapter {
       source: this.source,
       chat,
       // Outside a forum topic message_thread_id may be a reply root, not a topic (telegram-bot-api#447).
-      ...(msg.is_topic_message && msg.message_thread_id !== undefined ? { thread: String(msg.message_thread_id) } : {}),
+      ...(topic !== undefined ? { thread: topic } : {}),
       from: String(msg.from.id),
-      sender: { kind: "owner", id: String(msg.from.id) },
+      sender: { kind, id: String(msg.from.id), ...(kind !== "owner" && senderName(msg.from) ? { name: senderName(msg.from) } : {}) },
       at: (edited ? stamp : msg.date) * 1000,
       text: edited ? `(edited) ${text}` : text,
     };
+  }
+
+  /** The message mentions the bot (@username or a text mention of its id) or replies to one of the bot's messages. */
+  private addressed(msg: Message): boolean {
+    const me = this.me;
+    if (!me) return false;
+    if (msg.reply_to_message?.from?.id === me.id) return true;
+    const text = msg.text ?? msg.caption ?? "";
+    const handle = me.username ? `@${me.username.toLowerCase()}` : undefined;
+    return (msg.entities ?? msg.caption_entities ?? []).some((e) =>
+      e.type === "text_mention" ? e.user?.id === me.id : e.type === "mention" && handle !== undefined && text.slice(e.offset, e.offset + e.length).toLowerCase() === handle
+    );
   }
 
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {
@@ -295,6 +347,15 @@ export class TelegramAdapter implements MessengerAdapter {
         if (i > 0) throw new SendUncertain(`telegram (${this.source}): part ${i + 1}/${chunks.length} failed after earlier parts were sent: ${(e as Error).message}`);
         if (e instanceof HttpError) throw new Error(`telegram (${this.source}): sendMessage failed: ${(e.body as ApiBody | undefined)?.description ?? e.message}`);
         throw e;
+      }
+    }
+    // A topic the bot posted in: others' messages there pass without a mention (receive reads this file). The message
+    // is out already, so failing to note the topic only warns.
+    if (target.thread !== undefined) {
+      try {
+        this.join(target.chat, target.thread);
+      } catch (e) {
+        this.warn(`seori: telegram (${this.source}): could not note topic ${target.thread} as joined: ${(e as Error).message}`);
       }
     }
     return { messageId: first! };
@@ -373,6 +434,11 @@ export class TelegramAdapter implements MessengerAdapter {
       throw e;
     }
   }
+}
+
+/** A Telegram user's display name: first and last name, else the username. */
+function senderName(u: User): string | undefined {
+  return [u.first_name, u.last_name].filter((p) => p).join(" ") || u.username || undefined;
 }
 
 function formatSize(bytes: number): string {
