@@ -723,6 +723,19 @@ describe("review + merge gate", () => {
     expect(w.calls.at(-1)!.argv).toContain("--match-head-commit");
   });
 
+  test("a PR head that gh cannot read refuses as a Refusal, naming the cause; review never starts the reviewer", async () => {
+    const { w, d } = setup();
+    w.gh = () => ({ code: 1, stdout: "gh: not logged in" });
+    const merge = await mergeGate(d, "o/r#7").then(() => undefined, (e: unknown) => e);
+    expect(merge).toBeInstanceOf(Refusal);
+    expect((merge as Error).message).toMatch(/^MERGE_REFUSED /);
+    expect((merge as Error).message).toContain("not logged in");
+    const rev = await review(d, "o/r#7").then(() => undefined, (e: unknown) => e);
+    expect(rev).toBeInstanceOf(Refusal);
+    expect((rev as Error).message).toContain("not logged in");
+    expect(w.calls.some((c) => c.cmd === "omp")).toBe(false);
+  });
+
   test("the reviewer runs isolated in JSON mode; the model flag defaults to SEORI_MODEL", async () => {
     const { w, d } = setup();
     gh(w, []);

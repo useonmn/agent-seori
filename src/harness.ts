@@ -1037,6 +1037,15 @@ export async function headSha(d: Deps, pr: PrRef): Promise<string> {
   return String(out.headRefOid);
 }
 
+/** A PR head that gh cannot read is a refusal with the cause, not a crash: the CLI maps Refusal to exit 2. */
+async function headShaOrRefuse(d: Deps, pr: PrRef, code: string): Promise<string> {
+  try {
+    return await headSha(d, pr);
+  } catch (e) {
+    throw new Refusal(`${code} cannot read PR head: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 type AssistantMessage = { role?: string; content?: unknown; stopReason?: string; provider?: string; model?: string };
 
 /**
@@ -1074,7 +1083,7 @@ export async function review(d: Deps, prId: string, model: string | undefined = 
   const pr = parsePr(prId);
   // The reviewer is always omp: a hooks.reviewCommand left in config.json is refused here (exit 2), never ignored.
   loadHooks(d.store.root);
-  const sha = await headSha(d, pr);
+  const sha = await headShaOrRefuse(d, pr, "REVIEW_REFUSED");
   const text = prompt("review.md", { pr: pr.id, repo: pr.repo, number: String(pr.number), sha });
   const res = await d.exec(d.agentCmd, d.agent.reviewArgs(text, model));
   if (res.code === 3) throw new Error(`reviewer hit the cost cap: ${res.stderr.trim()}`);
@@ -1101,7 +1110,7 @@ type Check = { name: string; bucket: string };
 /** Merge only when the exact current head has a CLEAR review receipt and every check passed. An empty check list is never green. */
 export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean } = {}): Promise<string> {
   const pr = parsePr(prId);
-  const sha = await headSha(d, pr);
+  const sha = await headShaOrRefuse(d, pr, "MERGE_REFUSED");
   const refused = await gateRefusal(d, pr, sha);
   if (refused) throw new Refusal(`MERGE_REFUSED ${refused}`);
   if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
