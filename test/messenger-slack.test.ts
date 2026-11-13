@@ -363,14 +363,12 @@ describe("SlackAdapter receive", () => {
 
   test("abort returns promptly while the socket is idle", async () => {
     const mock = startMock();
-    let connected = false;
-    mock.onConnect = () => {
-      connected = true;
-    };
+    // Frames are handled in order, so the ack of a frame sent after hello means hello's catch-up is done and the
+    // adapter went back to waiting on an idle socket in the same turn it acked.
+    mock.onConnect = (ws) => ws.send(JSON.stringify({ type: "slash_commands", envelope_id: "idle-probe" }));
     const ac = new AbortController();
     const run = adapter(mock, home()).receive(ac.signal, async () => {});
-    await until(() => connected);
-    await Bun.sleep(20);
+    await until(() => mock.acks.includes("idle-probe"));
     const t = Date.now();
     ac.abort();
     await run;
@@ -608,11 +606,14 @@ describe("SlackAdapter send", () => {
     mock.postAnswers.push(() => new Response("oops", { status: 500 }));
     await expect(adapter(mock, home()).send({ chat: "D1" }, "hi")).rejects.toBeInstanceOf(SendUncertain);
 
+    // Answers only once the adapter gave up on it.
+    const late = Promise.withResolvers<void>();
     mock.postAnswers.push(async () => {
-      await Bun.sleep(300);
+      await late.promise;
       return json({ ok: true, ts: "1" });
     });
     await expect(adapter(mock, home(), { options: { timeoutMs: 50 } }).send({ chat: "D1" }, "hi")).rejects.toBeInstanceOf(SendUncertain);
+    late.resolve();
 
     mock.postAnswers.push(() => json({ ok: false, error: "channel_not_found" }));
     const definite = await adapter(mock, home())
