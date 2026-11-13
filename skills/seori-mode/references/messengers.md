@@ -2,7 +2,29 @@
 
 seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. Only the owner's messages reach the lead; messages from anyone else, and from bots, are dropped.
 
-Do every login and every click in the browser with the owner; never ask them to paste a password into this session. agent-messenger (github.com/agent-messenger/agent-messenger) can drive bot creation if it is already installed; it is optional, and seori does not need it at runtime.
+Do every login and every click in the browser with the owner; never ask them to paste a password into this session.
+
+## 0. Which token
+
+Ask which token seori should use, give the trade-off as one short list, and wait for the choice. Record it.
+
+- **Slack**
+  - **User token**: seori acts as a real member of the workspace. It needs a paid seat, which the owner pays for; it reads everything that member can see (onboarding can learn from all of it); it can show a green online dot (`seori presence slack`); its picture is that member's profile photo.
+  - **Bot token**: seori is a Slack app in Socket Mode. No seat cost; it only sees DMs with it and channels it is invited to, within the app's scopes (invite it where the real work happens); it shows as an app.
+- **Discord**
+  - **Bot token** (recommended): seori's own bot. It only sees the servers and channels it is invited to.
+  - **User token**: the owner's own account (agent-messenger's `agent-discord`). It sees everything the owner sees, but Discord treats automating a user account ("self-bot") as against its terms and can suspend the account. seori's daemon still runs on a bot; the user token is only for the agent-messenger commands. Use it only if the owner chooses it after this warning.
+- **Telegram**: a bot token from @BotFather.
+
+## agent-messenger
+
+agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself, such as sending files. Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use the command that matches the token chosen above, given the same token seori uses:
+
+- Slack bot: `agent-slackbot auth set <xoxb-token>`; user token: `agent-slack auth extract` (reads the token and cookie from the logged-in Slack app or browser).
+- Discord bot: `agent-discordbot auth set <token>`; user token: `agent-discord auth extract`, only after the warning above.
+- Telegram: `agent-telegrambot auth set <token>`.
+
+It can also drive bot creation below. seori does not need it to receive or answer messages.
 
 ## 1. Create the bot
 
