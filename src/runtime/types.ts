@@ -141,8 +141,12 @@ export interface SessionRuntime {
 
 /** Id shape of a bare ref: only a herdr pane `w<ws>:p<pane>` may appear without its prefix. */
 const BARE_HERDR = /^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/;
-/** Id shape after each prefix: a herdr pane, or an hc terminal address `t<n>`. */
-const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = { herdr: BARE_HERDR, hc: /^t[0-9]+$/ };
+/**
+ * Id shape after each prefix: a herdr pane, or a local hc terminal address. hc numbers terminals in base 36 (`t7`,
+ * `t1b`, `t2h`). Another machine's `<machine>/<address>` is not a ref: the id names the session's inbox file.
+ */
+const HC_ADDRESS = /^t[0-9a-z]+$/;
+const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = { herdr: BARE_HERDR, hc: HC_ADDRESS };
 const KINDS = Object.keys(ID_SHAPES) as RuntimeKind[];
 
 /** "herdr:w1:p3", "hc:t7", bare "w1:p3" (herdr). A bare "t7" is NOT a ref (it is a legal lane key); undefined otherwise. */

@@ -38,7 +38,22 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 
 - src/cli.ts
 - src/refs.ts
+- src/runtime/hc/deliver.ts
+- src/runtime/hc/exec.ts
+- src/runtime/hc/index.ts
+- src/runtime/hc/probe.ts
+- src/runtime/hc/sessions.ts
 - src/store.ts
 - src/target.ts
+- test/e2e-hc.test.ts
+- test/fixtures/screens/omo-dialog.txt
+- test/fixtures/screens/omo-draft.txt
+- test/fixtures/screens/omo-idle-live-monitors.txt
+- test/fixtures/screens/omo-turn.txt
+- test/helpers/fake-hc.ts
+- test/helpers/hc-rig.ts
 - test/records-upgrade.test.ts
 - test/resolve-target.test.ts
+- test/runtime-hc-deliver.test.ts
+- test/runtime-hc-misc.test.ts
+- test/runtime-hc.test.ts

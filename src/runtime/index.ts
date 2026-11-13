@@ -1,6 +1,6 @@
+import { HcRuntime } from "./hc/index.ts";
 import { Herdr, HerdrRuntime } from "./herdr/index.ts";
 import { Runtimes } from "./registry.ts";
-import { RuntimeChoiceError } from "./select.ts";
 import type { AgentStatus, RuntimeKind, SessionRef, SessionRuntime } from "./types.ts";
 
 export { DeliveryUncertain, deliverOrThrow } from "./delivery.ts";
@@ -9,14 +9,11 @@ export { Runtimes } from "./registry.ts";
 export type * from "./types.ts";
 
 /**
- * The runtimes of a seori process: every session opens on herdr (through `herdr`, tests pass a recorder) until the hc
- * adapter lands; any other kind is refused.
+ * The runtimes of a seori process: new sessions still open on herdr (through `herdr`, tests pass a recorder); a stored
+ * hc ref is served by the hc adapter (`hc` builds it, default: the core this process's env names).
  */
-export function defaultRuntimes(herdr: Herdr = new Herdr()): Runtimes {
-  return new Runtimes("herdr", (kind: RuntimeKind): SessionRuntime => {
-    if (kind === "herdr") return new HerdrRuntime(herdr);
-    throw new RuntimeChoiceError(`the ${kind} runtime is not available in this seori yet`);
-  });
+export function defaultRuntimes(herdr: Herdr = new Herdr(), hc: () => SessionRuntime = () => new HcRuntime()): Runtimes {
+  return new Runtimes("herdr", (kind: RuntimeKind): SessionRuntime => (kind === "herdr" ? new HerdrRuntime(herdr) : hc()));
 }
 
 /** A stored session and the runtime that owns it. */
