@@ -31,6 +31,10 @@ export type ThreadTarget = { readonly chat: string; readonly thread?: string; re
 export type ThreadChange = { readonly name?: string; readonly status?: ThreadStatus; readonly state?: "close" | "reopen" };
 /** One line per part of an action the platform cannot do; empty when everything was done. */
 export type ActionNotes = readonly string[];
+/** What a thread change did: the name set, the status shown (Slack's reaction), the state changed; `notes` for the rest. */
+export type ThreadResult = { readonly name?: string; readonly status?: ThreadStatus; readonly state?: "close" | "reopen"; readonly notes: ActionNotes };
+/** Actions wait out a rate limit only this long; a longer one fails at once with when to retry, so the lead is not held. */
+export const ACTION_MAX_RETRY_AFTER_MS = 10_000;
 
 /** `name` with the status emoji in front, replacing a status emoji already there. */
 export function threadName(name: string, status: ThreadStatus | undefined): string {
@@ -78,7 +82,7 @@ export interface MessengerAdapter {
   /** Shows the typing indicator once. */
   typing(target: ThreadTarget): Promise<ActionNotes>;
   /** Sets a thread's name (with the status emoji in front) and closes or reopens it, as far as the platform can. */
-  thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes>;
+  thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult>;
 }
 
 export type MessengerConfig = {

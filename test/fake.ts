@@ -215,5 +215,5 @@ export const noActions: Pick<MessengerAdapter, "react" | "edit" | "typing" | "th
   react: async () => {},
   edit: async () => {},
   typing: async () => [],
-  thread: async () => [],
+  thread: async () => ({ notes: [] }),
 };

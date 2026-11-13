@@ -96,8 +96,8 @@ describe("Telegram actions", () => {
 
   test("thread renames the topic with its status and closes or reopens it in a forum supergroup", async () => {
     const t = setup();
-    expect(await t.a.thread({ chat: "-100", thread: "9" }, { name: "🔄 Fix login", status: "done", state: "close" })).toEqual([]);
-    expect(await t.a.thread({ chat: "-100", thread: "9" }, { state: "reopen" })).toEqual([]);
+    expect(await t.a.thread({ chat: "-100", thread: "9" }, { name: "🔄 Fix login", status: "done", state: "close" })).toEqual({ name: "✅ Fix login", state: "close", notes: [] });
+    expect(await t.a.thread({ chat: "-100", thread: "9" }, { state: "reopen" })).toEqual({ state: "reopen", notes: [] });
     expect(t.sent()).toEqual([
       ["editForumTopic", { chat_id: "-100", message_thread_id: 9, name: "✅ Fix login" }],
       ["closeForumTopic", { chat_id: "-100", message_thread_id: 9 }],
@@ -108,24 +108,26 @@ describe("Telegram actions", () => {
   test("an unchanged topic is fine; a private chat cannot close a topic and says so", async () => {
     const t = setup();
     t.answers.push((c) => (c.path.endsWith("editForumTopic") ? Response.json({ ok: false, error_code: 400, description: "Bad Request: TOPIC_NOT_MODIFIED" }, { status: 400 }) : undefined));
-    const notes = await t.a.thread({ chat: "42", thread: "9" }, { name: "Fix login", status: "done", state: "close" });
-    expect(notes).toEqual(["telegram: a topic in a private chat cannot be closed or reopened; the ✅ at the start of its name marks it done"]);
+    expect(await t.a.thread({ chat: "42", thread: "9" }, { name: "Fix login", status: "done", state: "close" })).toEqual({
+      name: "✅ Fix login",
+      notes: ["telegram: a topic in a private chat cannot be closed or reopened; the ✅ at the start of its name marks it done"],
+    });
     expect(t.sent().map(([m]) => m)).toEqual(["editForumTopic"]);
   });
 
   test("a message outside a topic has no thread to change, and says so", async () => {
     const t = setup();
-    expect(await t.a.thread({ chat: "42", message: "5" }, { name: "x", status: "working" })).toEqual([
-      "telegram: the message is not in a topic, so there is no topic to rename or close; the status message carries the status",
-    ]);
+    expect(await t.a.thread({ chat: "42", message: "5" }, { name: "x", status: "working" })).toEqual({
+      notes: ["telegram: the message is not in a topic, so there is no topic to rename or close; the status message carries the status"],
+    });
     expect(t.calls).toEqual([]);
   });
 });
 
 describe("Discord actions", () => {
-  const setup = (channelType = 11) => {
+  const setup = (channelType = 11, archived = false) => {
     const r = recorder((c) => {
-      if (c.method === "GET" && /^\/api\/channels\/[^/]+$/.test(c.path)) return Response.json({ id: c.path.split("/").at(-1), type: channelType });
+      if (c.method === "GET" && /^\/api\/channels\/[^/]+$/.test(c.path)) return Response.json({ id: c.path.split("/").at(-1), type: channelType, thread_metadata: { archived } });
       if (c.method === "PATCH") return Response.json({ id: "x" });
       return new Response(null, { status: 204 });
     });
@@ -156,9 +158,9 @@ describe("Discord actions", () => {
 
   test("thread renames and archives a thread, and unarchives it on reopen", async () => {
     const t = setup();
-    expect(await t.a.thread({ chat: "T9" }, { name: "Fix login", status: "waiting" })).toEqual([]);
-    expect(await t.a.thread({ chat: "C1", thread: "T9" }, { name: "Fix login", status: "done", state: "close" })).toEqual([]);
-    expect(await t.a.thread({ chat: "T9" }, { state: "reopen", status: "working", name: "Fix login" })).toEqual([]);
+    expect(await t.a.thread({ chat: "T9" }, { name: "Fix login", status: "waiting" })).toEqual({ name: "⏸ Fix login", notes: [] });
+    expect(await t.a.thread({ chat: "C1", thread: "T9" }, { name: "Fix login", status: "done", state: "close" })).toEqual({ name: "✅ Fix login", state: "close", notes: [] });
+    expect(await t.a.thread({ chat: "T9" }, { state: "reopen", status: "working", name: "Fix login" })).toEqual({ name: "🔄 Fix login", state: "reopen", notes: [] });
     expect(t.sent().filter(([m]) => m === "PATCH")).toEqual([
       ["PATCH", "/api/channels/T9", { name: "⏸ Fix login" }],
       ["PATCH", "/api/channels/T9", { name: "✅ Fix login", archived: true }],
@@ -168,10 +170,63 @@ describe("Discord actions", () => {
 
   test("a channel that is not a thread (a DM, a server channel) is never renamed, and says so", async () => {
     const t = setup(1);
-    expect(await t.a.thread({ chat: "D1" }, { name: "Fix login", status: "working" })).toEqual([
-      "discord: channel D1 is not a thread, so there is no thread to rename or close; the status message carries the status",
-    ]);
+    expect(await t.a.thread({ chat: "D1" }, { name: "Fix login", status: "working" })).toEqual({
+      notes: ["discord: channel D1 is not a thread, so there is no thread to rename or close; the status message carries the status"],
+    });
     expect(t.sent().map(([m]) => m)).toEqual(["GET"]);
+  });
+});
+
+describe("Discord action limits", () => {
+  const setup = (archived: boolean) => {
+    const sleeps: number[] = [];
+    const r = recorder((c) => {
+      if (c.method === "GET") return Response.json({ id: "T9", type: 11, thread_metadata: { archived } });
+      return Response.json({ id: "x" });
+    });
+    const a = new DiscordAdapter({ source: "discord", owner: "42", options: { apiBase: `${r.base}/api` } }, home(), {
+      env: { SEORI_DISCORD_TOKEN: "T0K" },
+      sleep: async (ms) => void sleeps.push(ms),
+    });
+    return { ...r, a, sleeps };
+  };
+
+  test("a long rate limit fails at once with when to retry, instead of waiting it out", async () => {
+    const t = setup(false);
+    t.answers.push((c) => (c.method === "PATCH" ? Response.json({ message: "You are being rate limited.", retry_after: 300, global: false }, { status: 429 }) : undefined));
+    await expect(t.a.thread({ chat: "T9" }, { name: "Fix login", status: "done" })).rejects.toThrow(/retry after 300 s/);
+    expect(t.sleeps).toEqual([]);
+    expect(t.calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+  });
+
+  test("a short rate limit is waited out and retried", async () => {
+    const t = setup(false);
+    let first = true;
+    t.answers.push((c) => {
+      if (c.method !== "PATCH" || !first) return undefined;
+      first = false;
+      return Response.json({ retry_after: 2, global: false }, { status: 429 });
+    });
+    expect(await t.a.thread({ chat: "T9" }, { name: "Fix login" })).toEqual({ name: "Fix login", notes: [] });
+    expect(t.sleeps).toEqual([2000]);
+  });
+
+  test("a closed thread is not renamed without --reopen, and says so", async () => {
+    const t = setup(true);
+    expect(await t.a.thread({ chat: "T9" }, { name: "Fix login", status: "working" })).toEqual({
+      notes: ["discord: thread T9 is closed; pass --reopen to rename it"],
+    });
+    expect(await t.a.thread({ chat: "T9" }, { name: "Fix login", status: "done", state: "close" })).toEqual({
+      notes: ["discord: thread T9 is closed; pass --reopen to rename it"],
+    });
+    expect(t.calls.filter((c) => c.method === "PATCH")).toEqual([]);
+  });
+
+  test("ids are path segments, never paths", async () => {
+    const t = setup(false);
+    await t.a.react("../../guilds/1", "5", true);
+    expect(t.calls[0]!.path).toBe("/api/channels/../../guilds/1/messages/5/reactions/👀/@me");
+    expect(t.calls).toHaveLength(1);
   });
 });
 
@@ -220,16 +275,24 @@ describe("Slack actions", () => {
   test("thread status is one reaction on the thread's first message; names and closing are not possible", async () => {
     const t = setup();
     t.answers.push((c) => (c.path.endsWith("reactions.remove") ? Response.json({ ok: false, error: "no_reaction" }) : undefined));
-    const notes = await t.a.thread({ chat: "C1", message: "1700000000.000100" }, { name: "Fix login", status: "done", state: "close" });
-    expect(notes).toEqual([
-      "slack: threads have no names; the status is shown as a reaction on the thread's first message",
-      "slack: threads cannot be closed or reopened; the ✅ reaction marks it done",
-    ]);
+    expect(await t.a.thread({ chat: "C1", message: "1700000000.000100" }, { name: "Fix login", status: "done", state: "close" })).toEqual({
+      status: "done",
+      notes: [
+        "slack: threads have no names; the status is shown as a reaction on the thread's first message",
+        "slack: threads cannot be closed or reopened; the ✅ reaction marks it done",
+      ],
+    });
     expect(t.sent()).toEqual([
       ["reactions.remove", { channel: "C1", timestamp: "1700000000.000100", name: "arrows_counterclockwise" }],
       ["reactions.remove", { channel: "C1", timestamp: "1700000000.000100", name: "double_vertical_bar" }],
       ["reactions.add", { channel: "C1", timestamp: "1700000000.000100", name: "white_check_mark" }],
     ]);
+  });
+
+  test("no thread and no message is a NOTE like on the other platforms", async () => {
+    const t = setup();
+    expect(await t.a.thread({ chat: "C1" }, { status: "working" })).toEqual({ notes: ["slack: no thread or message given, so there is no thread to mark; the status message carries the status"] });
+    expect(t.calls).toEqual([]);
   });
 
   test("the thread root wins over the message the thread was asked from", async () => {

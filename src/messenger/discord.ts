@@ -1,6 +1,6 @@
 import {
-  type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
-  type ThreadChange, threadName, type ThreadTarget,
+  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, secret, splitText } from "./common.ts";
 
@@ -58,6 +58,9 @@ type Outcome = { healthy: boolean; delayMs?: number; error?: string };
 
 /** A configuration problem retrying cannot fix; receive() rejects with it. */
 class Fatal extends Error {}
+
+/** An id as one URL path segment, so a value with a slash can never reach another endpoint. */
+const seg = (id: string): string => encodeURIComponent(id);
 
 /** Snowflake order (numeric, as BigInt: ids exceed 2^53). */
 function snowflakeCmp(a: string, b: string): number {
@@ -499,7 +502,7 @@ export class DiscordAdapter implements MessengerAdapter {
   private async act(method: string, path: string, body?: unknown): Promise<unknown> {
     const token = this.token();
     try {
-      const res = await httpJson(`${this.api}${path}`, { method, headers: this.headers(token), ...(body !== undefined ? { body } : {}) }, { mutating: false, retries: 2, sleep: this.sleepFn, timeoutMs: this.timeoutMs });
+      const res = await httpJson(`${this.api}${path}`, { method, headers: this.headers(token), ...(body !== undefined ? { body } : {}) }, { mutating: false, retries: 2, sleep: this.sleepFn, timeoutMs: this.timeoutMs, maxRetryAfterMs: ACTION_MAX_RETRY_AFTER_MS });
       return res.body;
     } catch (e) {
       if (e instanceof HttpError && e.status === 401) throw new Error(this.tokenRejected(`401 on ${method} ${path}`).message);
@@ -509,17 +512,17 @@ export class DiscordAdapter implements MessengerAdapter {
   }
 
   async react(chat: string, message: string, on: boolean): Promise<void> {
-    await this.act(on ? "PUT" : "DELETE", `/channels/${chat}/messages/${message}/reactions/${encodeURIComponent(EYES)}/@me`);
+    await this.act(on ? "PUT" : "DELETE", `/channels/${seg(chat)}/messages/${seg(message)}/reactions/${seg(EYES)}/@me`);
   }
 
   async edit(target: SendTarget, message: string, text: string): Promise<void> {
     if (!text.trim()) throw new Error(`${this.source}: refusing to edit a message to empty text`);
     if (text.length > MESSAGE_LIMIT) throw new Error(`${this.source}: an edited message holds at most ${MESSAGE_LIMIT} characters, got ${text.length}`);
-    await this.act("PATCH", `/channels/${target.thread ?? target.chat}/messages/${message}`, { content: text, allowed_mentions: { parse: [] } });
+    await this.act("PATCH", `/channels/${seg(target.thread ?? target.chat)}/messages/${seg(message)}`, { content: text, allowed_mentions: { parse: [] } });
   }
 
   async typing(target: ThreadTarget): Promise<ActionNotes> {
-    await this.act("POST", `/channels/${target.thread ?? target.chat}/typing`);
+    await this.act("POST", `/channels/${seg(target.thread ?? target.chat)}/typing`);
     return [];
   }
 
@@ -527,10 +530,14 @@ export class DiscordAdapter implements MessengerAdapter {
    * A thread is a channel: renamed and archived with one PATCH. The channel type is read first, so a message that came
    * in outside a thread (a DM, a server channel) can never rename the channel it was posted in.
    */
-  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult> {
     const id = target.thread ?? target.chat;
-    const channel = (await this.act("GET", `/channels/${id}`)) as { type?: unknown } | undefined;
-    if (!THREAD_TYPES.has(Number(channel?.type))) return [`${this.source}: channel ${id} is not a thread, so there is no thread to rename or close; the status message carries the status`];
+    const channel = (await this.act("GET", `/channels/${seg(id)}`)) as { type?: unknown; thread_metadata?: { archived?: unknown } } | undefined;
+    if (!THREAD_TYPES.has(Number(channel?.type))) return { notes: [`${this.source}: channel ${id} is not a thread, so there is no thread to rename or close; the status message carries the status`] };
+    // Discord refuses any change to an archived thread but unarchiving it.
+    if (channel?.thread_metadata?.archived === true && change.state !== "reopen") {
+      return { notes: change.name !== undefined || change.status !== undefined ? [`${this.source}: thread ${id} is closed; pass --reopen to rename it`] : [] };
+    }
     const notes: string[] = [];
     const patch: Record<string, unknown> = {};
     if (change.name !== undefined) {
@@ -541,8 +548,12 @@ export class DiscordAdapter implements MessengerAdapter {
       notes.push(`${this.source}: pass --name with --status; the status is part of the thread's name`);
     }
     if (change.state !== undefined) patch["archived"] = change.state === "close";
-    if (Object.keys(patch).length) await this.act("PATCH", `/channels/${id}`, patch);
-    return notes;
+    if (Object.keys(patch).length) await this.act("PATCH", `/channels/${seg(id)}`, patch);
+    return {
+      ...(typeof patch["name"] === "string" ? { name: patch["name"] } : {}),
+      ...(change.state !== undefined ? { state: change.state } : {}),
+      notes,
+    };
   }
 
   async check(): Promise<string> {

@@ -4,6 +4,7 @@ import { main } from "../src/cli.ts";
 import { Channel } from "../src/channel.ts";
 import { Refusal, type Deps } from "../src/harness.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
+import { threadLine } from "../src/msg.ts";
 import { World } from "./fake.ts";
 
 // `seori msg ...` end to end through the CLI with the file-backed fake messenger: exit codes and the lines the lead sees.
@@ -62,6 +63,22 @@ describe("seori msg react, edit, typing and thread", () => {
     expect(channel.ledger()).toEqual([]);
   });
 
+  test("edit --reply-of edits seori's first reply to that message, wherever it went out", async () => {
+    const { d, fake } = setup();
+    expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "⏳ Fix login · 0m"], d)).out).toBe("SENT fake:c1:1 message=1");
+    expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--again", "--text", "the result"], d)).out).toBe("SENT fake:c1:1 message=2");
+    expect(await run(["msg", "edit", "--reply-of", "fake:c1:1", "--text", "✅ Fix login"], d)).toEqual({ code: 0, out: "EDITED fake:c1:1 message=1" });
+    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([{ action: "edit", chat: "c1", message: "1", text: "✅ Fix login" }]);
+    await expect(main(["msg", "edit", "--reply-of", "fake:c1:2", "--text", "x"], d)).rejects.toThrow(/no reply to fake:c1:2 has been sent/);
+    await expect(main(["msg", "edit", "--reply-of", "fake:c1:1", "--to", "fake:c1", "--message", "1", "--text", "x"], d)).rejects.toThrow(/exactly one of --reply-of ID or --to/);
+  });
+
+  test("the THREAD line says only what the messenger did; nothing done is SKIPPED", () => {
+    expect(threadLine("slack:C1", { status: "done", notes: ["slack: threads have no names"] })).toEqual(["THREAD slack:C1 status=done", "NOTE slack: threads have no names"]);
+    expect(threadLine("discord:D1", { notes: ["discord: channel D1 is not a thread"] })).toEqual(["SKIPPED thread discord:D1", "NOTE discord: channel D1 is not a thread"]);
+    expect(threadLine("telegram:-100:9", { name: "✅ Fix login", state: "close", notes: [] })).toEqual(["THREAD telegram:-100:9 name=\"✅ Fix login\" closed"]);
+  });
+
   test("a messenger failure exits 1 with FAILED and what the messenger said", async () => {
     const { w, d, fake, channel } = setup();
     inThread(channel, w.clock);
@@ -79,6 +96,7 @@ describe("seori msg react, edit, typing and thread", () => {
     await expect(main(["msg", "thread", "--of", "fake:c1:1", "--status", "finished"], d)).rejects.toThrow(/working, waiting or done/);
     await expect(main(["msg", "edit", "--to", "fake:c1", "--text", "x"], d)).rejects.toThrow(/--message/);
     await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "9", "--text", " "], d)).rejects.toThrow(/empty/);
+    await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "../../guilds/1", "--text", "x"], d)).rejects.toThrow(/--message must be a message id/);
     expect(fake.actions()).toEqual([]);
   });
 });

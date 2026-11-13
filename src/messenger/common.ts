@@ -122,7 +122,11 @@ export class HttpError extends Error {
 export async function httpJson(
   url: string,
   init: { readonly method?: string; readonly headers?: Record<string, string>; readonly body?: unknown; readonly signal?: AbortSignal },
-  opts: { readonly mutating: boolean; readonly timeoutMs?: number; readonly retries?: number; readonly sleep?: (ms: number) => Promise<void> },
+  opts: {
+    readonly mutating: boolean; readonly timeoutMs?: number; readonly retries?: number; readonly sleep?: (ms: number) => Promise<void>;
+    /** A 429 asking to wait longer than this is not waited out: it throws an HttpError saying when to retry. */
+    readonly maxRetryAfterMs?: number;
+  },
 ): Promise<HttpResult> {
   const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
   const retries = opts.retries ?? 5;
@@ -163,7 +167,11 @@ export async function httpJson(
       // not JSON: keep the text for the error message
     }
     if (res.status === 429 && attempt < retries) {
-      await sleep(retryAfterMs(res.headers, body));
+      const wait = retryAfterMs(res.headers, body);
+      if (opts.maxRetryAfterMs !== undefined && wait > opts.maxRetryAfterMs) {
+        throw new HttpError(`${new URL(url).host} is rate limiting this request; retry after ${Math.ceil(wait / 1000)} s`, 429, body);
+      }
+      await sleep(wait);
       continue;
     }
     if (res.status >= 500) {
