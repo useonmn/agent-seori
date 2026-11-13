@@ -1,5 +1,6 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { describe, expect, test } from "bun:test";
+import { joinWrapped } from "../src/runtime/hc/deliver.ts";
 import { HcRuntime } from "../src/runtime/hc/index.ts";
 import type { DeliverOutcome } from "../src/runtime/types.ts";
 import type { FakeKnobs } from "./helpers/fake-hc.ts";
@@ -113,5 +114,32 @@ describe("deliver", () => {
     const out = await rt.deliver(T1, "secret text");
     expect(out.kind).toBe("ambiguous");
     expect(JSON.stringify(out)).not.toContain("secret text");
+  });
+});
+
+describe("joinWrapped and the unwrapped read", () => {
+  test("a row as wide as the terminal was cut inside a word: joined to the next row as is", () => {
+    expect(joinWrapped("abcdefghij\nklm\nnext", 10)).toBe("abcdefghijklm\nnext");
+  });
+
+  test("a row one cell short was cut at a space hc dropped: joined with that space put back", () => {
+    expect(joinWrapped("Error: rate\nlimited", 12)).toBe("Error: rate limited");
+  });
+
+  test("a shorter row ends its line; a row of wide characters counts two cells each", () => {
+    expect(joinWrapped("short\nline", 10)).toBe("short\nline");
+    // five CJK characters fill ten cells: wrapped. Counted as five characters the row would end its line.
+    expect(joinWrapped("\u4e00\u4e8c\u4e09\u56db\u4e94\nNo API key", 10)).toBe("\u4e00\u4e8c\u4e09\u56db\u4e94No API key");
+    // four of them fill eight of ten cells: one short of cols - 1, so the line ends there
+    expect(joinWrapped("\u4e00\u4e8c\u4e09\u56db\nnext", 10)).toBe("\u4e00\u4e8c\u4e09\u56db\nnext");
+  });
+
+  test("read with unwrapped asks hc for the terminal's cols and joins rows that wide; a plain read leaves rows alone", async () => {
+    const screen = `${"x".repeat(199)}\nlimit reached\n> `;
+    const r = rig({ t1: terminal({ screen }) });
+    expect(await r.rt.read(T1, 40)).toBe(screen);
+    expect(r.calls().filter((c) => c[0] === "get")).toEqual([]);
+    expect(await r.rt.read(T1, 40, { unwrapped: true })).toBe(`${"x".repeat(199)} limit reached\n> `);
+    expect(r.calls().filter((c) => c[0] === "get")).toEqual([["get", "t1"]]);
   });
 });
