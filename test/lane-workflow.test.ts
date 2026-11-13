@@ -157,6 +157,18 @@ describe("seori start --workflow", () => {
     expect(d.store.lane("fix-login")).toBeUndefined();
   });
 
+  test("a workflow from config.json that cannot run says to fix the config or pass --workflow none, and --workflow none still starts", async () => {
+    const { w, d, brief, id } = setup({ workflow: "mass-ulw" });
+    w.ompPlugins = { npm: [], marketplace: [] };
+    const err = await start(d, brief).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Refusal);
+    expect((err as Error).message).toMatch(/config\.json "workflow" is "mass-ulw"/);
+    expect((err as Error).message).toMatch(/--workflow none/);
+    expect((err as Error).message).not.toMatch(/start the lane without --workflow/);
+    expect((await start(d, brief, "--workflow", "none")).code).toBe(0);
+    expect(w.panes.get(id)!.received[0]).toStartWith("/goal Read your brief at ");
+  });
+
   test("pause and resume work on a ulw lane: the native goal is paused and resumed as on any lane", async () => {
     const { w, d, brief, id } = setup();
     w.ompPlugins = ULW_PLUGIN;
