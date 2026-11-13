@@ -45,6 +45,14 @@ afterEach(() => {
 
 const ctlCalls = (): string[] => readFileSync(ctlLog, "utf8").split("\n").filter(Boolean);
 
+/** Points SEORI_SYSTEMCTL at a fake that records its argv and fails as systemctl does when no user manager is reachable. */
+function noUserBus(): void {
+  const ctl = join(mkdtempSync(join(tmpdir(), "seori-fakectl-")), "systemctl");
+  writeFileSync(ctl, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${ctlLog}'\necho 'Failed to connect to user scope bus via local transport: No such file or directory' >&2\nexit 1\n`);
+  chmodSync(ctl, 0o755);
+  process.env["SEORI_SYSTEMCTL"] = ctl;
+}
+
 async function captureLog(fn: () => Promise<unknown>): Promise<string> {
   const lines: string[] = [];
   const log = console.log;
@@ -136,6 +144,20 @@ describe("unit files", () => {
     };
     writeUnits(dir, spec);
     await expect(removeUnits(dir, "x", "/h", UNIT_KINDS, failing)).rejects.toThrow(/Access denied/);
+  });
+
+  test("removing units with no reachable user manager skips stop and disable but still removes the files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "seori-units-"));
+    const names = writeUnits(dir, { instance: "x", home: "/h", cwd: "/h", bun: "/b/bun", cli: "/s/cli.ts", env: {} });
+    const calls: string[] = [];
+    const ctl = async (args: readonly string[]) => {
+      calls.push(args.join(" "));
+      throw new Error("systemctl --user failed (1): Failed to connect to bus: No medium found");
+    };
+    const lines = await removeUnits(dir, "x", "/h", UNIT_KINDS, ctl);
+    expect(calls).toEqual([`stop ${names.join(" ")}`]);
+    expect(lines).toHaveLength(3);
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   test("unit names: seori-<instance>-<8 hex of the home>-<kind>.service; bytes systemd does not allow are escaped", () => {
@@ -245,7 +267,7 @@ describe("seori up on hc", () => {
     expect(readFileSync(join(unitDir, UNITS[0]!), "utf8")).toBe(unitFile(spec, "daemon"));
     expect(readFileSync(join(unitDir, UNITS[1]!), "utf8")).toBe(unitFile(spec, "duty"));
     expect(readFileSync(join(unitDir, UNITS[2]!), "utf8")).toBe(unitFile(spec, "hourly"));
-    expect(ctlCalls()).toEqual(["--user daemon-reload", `--user enable --now ${UNITS[0]}`, `--user enable --now ${UNITS[1]} ${UNITS[2]}`]);
+    expect(ctlCalls()).toEqual(["--user show-environment", "--user daemon-reload", `--user enable --now ${UNITS[0]}`, `--user enable --now ${UNITS[1]} ${UNITS[2]}`]);
   });
 
   test("--cwd starts the agents and the units there", async () => {
@@ -314,6 +336,28 @@ describe("seori up on hc", () => {
     expect(r.calls().filter((c) => c[0] === "run")).toEqual([]);
     expect(existsSync(unitDir) ? readdirSync(unitDir) : []).toEqual([]);
     expect(ctlCalls()).toEqual([]);
+  });
+
+  test("up refuses before it opens a terminal when systemd --user is not reachable", async () => {
+    const { r, d } = setup();
+    noUserBus();
+    await expect(main(["up"], d)).rejects.toThrow(Refusal);
+    expect(r.calls().filter((c) => c[0] === "run" || c[0] === "send")).toEqual([]);
+    expect(d.store.roles()).toEqual({});
+    expect(ctlCalls()).toEqual(["--user show-environment"]);
+  });
+
+  test("down with no reachable user manager still removes the unit files and closes the group", async () => {
+    const { r, d } = setup();
+    await captureLog(() => main(["up"], d));
+    expect(readdirSync(unitDir)).toHaveLength(3);
+    noUserBus();
+    let code: number | undefined;
+    const out = await captureLog(async () => { code = await main(["down"], d); });
+    expect(code).toBe(0);
+    expect(readdirSync(unitDir)).toEqual([]);
+    expect(out.split("\n").filter((l) => l.startsWith("CLOSED"))).toEqual(["CLOSED hc:t1 (seori.group=seori-two)", "CLOSED hc:t2 (seori.group=seori-two)"]);
+    expect(Object.keys(r.terminals())).toEqual([]);
   });
 
   test("down on a home that has no units runs no systemctl", async () => {

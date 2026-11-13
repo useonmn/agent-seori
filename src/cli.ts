@@ -370,6 +370,18 @@ async function upHc(d: Deps, name: string, cwd: string): Promise<void> {
   const units = usesSystemdUnits(d)
     ? writeUnits(dir, { instance: name, home: d.store.root, cwd, bun: process.execPath, cli: CLI_PATH, env: process.env })
     : [];
+  // Without a reachable user manager (WSL without systemd, a container, an SSH login without one) no unit could start:
+  // refuse now, before the lead and duty open and are recorded, not after them.
+  const ctl = systemctl();
+  if (usesSystemdUnits(d)) {
+    await ctl(["show-environment"]).catch((e: unknown) => {
+      const why = (e instanceof Error ? e.message : String(e)).split("\n")[0];
+      throw new Refusal(
+        `systemd --user is not reachable, and seori up on hc runs its daemon and loops as systemd --user units (${why}). ` +
+          "On WSL set systemd=true under [boot] in /etc/wsl.conf and run wsl --shutdown; elsewhere start a user manager (loginctl enable-linger)",
+      );
+    });
+  }
   const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root", group: name });
   await startAgent(d, "lead", leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", leadRef);
@@ -378,7 +390,6 @@ async function upHc(d: Deps, name: string, cwd: string): Promise<void> {
   d.store.setRole("duty", dutyRef);
   if (!usesSystemdUnits(d)) return upHcTerminals(d, name, cwd, env, leadRef, dutyRef);
   const [daemonUnit, dutyUnit, hourlyUnit] = units;
-  const ctl = systemctl();
   await ctl(["daemon-reload"]);
   const daemonStarted = d.now();
   await ctl(["enable", "--now", daemonUnit!]);
