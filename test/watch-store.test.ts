@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -11,6 +11,21 @@ function setup() {
   const lockPath = join(store.dir, `${w.id}.json.lock`);
   return { store, w, lockPath };
 }
+
+describe("WatchStore.add", () => {
+  test("two watches added in the same millisecond with the same random draw still get distinct ids", () => {
+    const store = new WatchStore(mkdtempSync(join(tmpdir(), "seori-watch-store-")));
+    const random = spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const a = store.add({ owner: { kind: "lead" }, source: { kind: "file", path: "/tmp/a" } }, 1_000);
+      const b = store.add({ owner: { kind: "lead" }, source: { kind: "file", path: "/tmp/b" } }, 1_000);
+      expect(a.id).not.toBe(b.id);
+      expect(store.list().map((w) => (w.source.kind === "file" ? w.source.path : "")).sort()).toEqual(["/tmp/a", "/tmp/b"]);
+    } finally {
+      random.mockRestore();
+    }
+  });
+});
 
 describe("WatchStore.update", () => {
   test("saves what fn returns, skips the write when fn returns the same object, and releases its lock", () => {

@@ -145,6 +145,7 @@ export class SlackAdapter implements MessengerAdapter {
   private readonly agentStatus: string;
   private readonly statusRefreshMs: number;
   private readonly statusLimitMs: number;
+  private readonly every: (tick: () => Promise<void>, ms: number) => () => void;
 
   constructor(
     private readonly config: MessengerConfig,
@@ -153,8 +154,9 @@ export class SlackAdapter implements MessengerAdapter {
      * `pairing`: owner pairing (src/pair.ts) only, never the daemon. Accepts a new live direct message from any non-bot
      * sender instead of the configured owner (no history catch-up, no edits), so `seori msg pair` can learn the owner's id.
      * `cursorRoot`: where the cursor lives instead of `root` (pairing points it at a temp dir).
+     * `every`: runs the working-status refresh every `ms` until the returned stop is called (a setInterval by default).
      */
-    deps: { env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number; pairing?: boolean; cursorRoot?: string } = {},
+    deps: { env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number; every?: (tick: () => Promise<void>, ms: number) => () => void; pairing?: boolean; cursorRoot?: string } = {},
   ) {
     this.source = config.source;
     const base = config.options?.["apiBase"];
@@ -168,6 +170,10 @@ export class SlackAdapter implements MessengerAdapter {
     this.env = deps.env ?? process.env;
     this.sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
     this.now = deps.now ?? Date.now;
+    this.every = deps.every ?? ((tick, ms) => {
+      const timer = setInterval(() => void tick(), ms);
+      return () => clearInterval(timer);
+    });
     this.pairing = deps.pairing === true;
     this.cursorRoot = deps.cursorRoot ?? root;
     this.agent = config.options?.["agent"] === true;
@@ -228,11 +234,11 @@ export class SlackAdapter implements MessengerAdapter {
 
   async receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
     const working: Receiving["working"] = new Map();
-    const refresher = this.agent ? setInterval(() => this.refreshWorking(working), this.statusRefreshMs) : undefined;
+    const stopRefresh = this.agent ? this.every(() => this.refreshWorking(working), this.statusRefreshMs) : undefined;
     try {
       await this.receiveLoop(signal, onMessage, working);
     } finally {
-      clearInterval(refresher);
+      stopRefresh?.();
     }
   }
 
@@ -562,17 +568,22 @@ export class SlackAdapter implements MessengerAdapter {
     }
   }
 
-  /** Sets every working status again (Slack drops one after two minutes) and clears those past the limit. */
-  private refreshWorking(working: Receiving["working"]): void {
+  /**
+   * Sets every working status again (Slack drops one after two minutes) and clears those past the limit; settles once
+   * every call it made did.
+   */
+  private async refreshWorking(working: Receiving["working"]): Promise<void> {
     const now = this.now();
+    const calls: Promise<void>[] = [];
     for (const [key, w] of working) {
       if (now < w.until) {
-        void this.setStatus(w.channel, w.thread, this.agentStatus, working);
+        calls.push(this.setStatus(w.channel, w.thread, this.agentStatus, working));
         continue;
       }
       working.delete(key);
-      void this.setStatus(w.channel, w.thread, "", working);
+      calls.push(this.setStatus(w.channel, w.thread, "", working));
     }
+    await Promise.all(calls);
   }
 
   /**

@@ -137,7 +137,7 @@ function startMock(): Mock {
   return mock;
 }
 
-type Extra = { sleeps?: number[]; options?: Record<string, unknown>; env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number };
+type Extra = { sleeps?: number[]; options?: Record<string, unknown>; env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number; every?: (tick: () => Promise<void>, ms: number) => () => void };
 
 function adapter(mock: Mock, root: string, extra: Extra = {}) {
   return new SlackAdapter({ source: "slack", owner: OWNER, options: { apiBase: mock.apiBase, ...extra.options } }, root, {
@@ -149,6 +149,7 @@ function adapter(mock: Mock, root: string, extra: Extra = {}) {
         await Bun.sleep(1);
       }),
     ...(extra.now ? { now: extra.now } : {}),
+    ...(extra.every ? { every: extra.every } : {}),
   });
 }
 
@@ -514,15 +515,23 @@ describe("SlackAdapter agent mode", () => {
     const errors: unknown[] = [];
     const original = console.error;
     console.error = (...a: unknown[]) => errors.push(a.join(" "));
+    let refresh: (() => Promise<void>) | undefined;
+    let finished = false;
     try {
-      const started = Date.now();
-      // several refresh periods after the refusal came back
-      const got = await collect(agent(mock, home(), { statusRefreshMs: 100 }), (g) => g.length >= 1 && errors.length >= 1 && Date.now() > started + 400, undefined, 3_000);
-      expect(got.map((m) => m.thread)).toEqual(["1700000000.000100"]);
+      const a = adapter(mock, home(), { options: { agent: true }, every: (tick) => ((refresh = tick), () => {}) });
+      const run = collect(a, () => finished, undefined, 3_000);
+      await until(() => errors.length >= 1, 3_000);
+      // Two refresh periods after the refusal came back.
+      await refresh!();
+      await refresh!();
+      finished = true;
+      expect((await run).map((m) => m.thread)).toEqual(["1700000000.000100"]);
     } finally {
+      finished = true;
       console.error = original;
     }
     expect(mock.statuses.length).toBe(1);
+    expect(errors).toHaveLength(1);
     expect(String(errors[0])).toMatch(/working status for D1:1700000000.000100 failed: .*missing_scope/);
   });
 });

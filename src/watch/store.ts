@@ -63,6 +63,9 @@ export type Watch = {
 /** A non-persistent watch lives 2 hours unless --timeout says otherwise (at most 24 hours). */
 export const DEFAULT_TIMEOUT_MS = 2 * 3_600_000;
 export const MAX_TIMEOUT_MS = 24 * 3_600_000;
+/** Two base-36 characters after the creation time make a watch id unique within its millisecond. */
+const ID_SUFFIXES = 36 * 36;
+
 /** Persistent watches live 7 days, at most 5 per owner. */
 export const PERSISTENT_TTL_MS = 7 * 24 * 3_600_000;
 export const MAX_PERSISTENT_PER_OWNER = 5;
@@ -180,7 +183,10 @@ export class WatchStore {
     }
     const name = input.name ?? input.source.kind;
     if (input.name !== undefined && live.some((w) => w.name === name)) throw new WatchRefusal(`a live watch is already named ${name}`);
-    const id = `w${now.toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, "0")}`;
+    // Two adds in the same millisecond may draw the same suffix: the next free one is taken, never an existing watch's id.
+    const first = Math.floor(Math.random() * ID_SUFFIXES);
+    const id = Array.from({ length: ID_SUFFIXES }, (_, i) => `w${now.toString(36)}${((first + i) % ID_SUFFIXES).toString(36).padStart(2, "0")}`).find((c) => !existsSync(this.path(c)));
+    if (id === undefined) throw new WatchRefusal(`no free watch id left for this millisecond; try again`);
     const w: Watch = {
       id,
       name,
