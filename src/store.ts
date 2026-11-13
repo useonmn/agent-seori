@@ -193,6 +193,9 @@ export const pidAlive = (pid: number): boolean => {
  */
 const BOOT_SLACK_MS = 60_000;
 
+/** Wall-clock time this boot clearly started at: a lock or record file modified before it was written before this boot. */
+export const bootCutoff = (): number => Date.now() - uptime() * 1000 - BOOT_SLACK_MS;
+
 /** An unreadable lock (a holder that died between create and write) is judged by the file's age. */
 function lockStale(path: string, content: string, now: number): boolean {
   let lock: { pid?: unknown; host?: unknown; at?: unknown } = {};
@@ -214,7 +217,7 @@ function lockStale(path: string, content: string, now: number): boolean {
   // pid, and long-lived locks (daemon, lead consumer) would otherwise stay held forever. The file's mtime is the wall
   // clock it was written at; `at` is the caller's clock, which tests inject.
   if (lock.host === hostname() && typeof lock.pid === "number")
-    return mtime() < Date.now() - uptime() * 1000 - BOOT_SLACK_MS || !pidAlive(lock.pid);
+    return mtime() < bootCutoff() || !pidAlive(lock.pid);
   const at = typeof lock.at === "number" ? lock.at : mtime();
   return now - at > INBOX_LOCK_STALE_MS;
 }

@@ -1,8 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { uptime } from "node:os";
 import { join } from "node:path";
 import { Refusal } from "./harness.ts";
-import { pidAlive } from "./store.ts";
+import { bootCutoff, pidAlive } from "./store.ts";
 
 // `seori down`: a stop for every long-running seori process that works in every pane shell.
 // Ctrl-C needs a terminal that turns the key into a console signal, so each loop (`seori duty`, `seori loop`, `seori daemon-loop`, `seori daemon`) records its pid in $SEORI_HOME/run/ and
@@ -36,16 +35,14 @@ const readPid = (path: string): number | undefined => {
   }
 };
 
-/** Same slack and rule as store.ts's lock staleness: a record clearly older than this boot names a pid that may belong to someone else now. */
-const BOOT_SLACK_MS = 60_000;
-
 /** The pid of a live duty loop already recorded in this home, or undefined (no record, this pid, a dead pid, or a pre-boot record). */
 function otherLiveLoop(root: string, name: Runner, pid: number): number | undefined {
   const path = recordPath(root, name);
   const other = readPid(path);
   if (other === undefined || other === pid || !pidAlive(other)) return undefined;
   try {
-    if (statSync(path).mtimeMs < Date.now() - uptime() * 1000 - BOOT_SLACK_MS) return undefined;
+    // A record clearly older than this boot names a pid that may belong to someone else now.
+    if (statSync(path).mtimeMs < bootCutoff()) return undefined;
   } catch {
     return undefined;
   }
