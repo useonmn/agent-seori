@@ -67,6 +67,7 @@ herdr에서는 `seori up`이 리드 창, 듀티 창, 듀티 루프, 시간 단�
 ```sh
 seori start fix-flaky-login --brief examples/brief.md
 # STARTED fix-flaky-login pane=hc:t3 brief=~/.seori/briefs/fix-flaky-login.md
+# STARTUP_OK fix-flaky-login hc:t3
 seori status
 ```
 
@@ -173,9 +174,16 @@ seori watch log <id|name> [-n N]             감시가 최근에 본 일
 
 1. `seori start <key> --brief FILE`은 먼저 컴퓨터에 레인을 열 자리가 있는지 확인합니다([컴퓨터 자원 감시](#컴퓨터-자원-감시-can-launch-무거운-작업-자리) 참고, `--force`면 자리 확인을 건너뜀). 읽을 수 없는 Done 줄(`--done`)은 거절합니다.
 2. 그 레인 폴더의 교훈([교훈](#교훈) 참고), 브리프, 레인 규칙을 합쳐 `~/.seori/briefs/<key>.md`에 씁니다.
-3. hc에서: 터미널이 인스턴스 그룹(`seori.group=<이름>`)에 합류하고, seori가 에이전트 명령을 입력한 뒤 에이전트의 첫 상태 보고를 기다립니다. 이어서 `/goal` 명령을 보냅니다. 목표에는 브리프 위치와 레인 이름이 들어갑니다. 그다음 omp가 이 명령을 받아 `working`을 보고하기를 기다립니다. 보고가 없으면 Enter를 한 번 더 누르고, 그래도 없으면 그 터미널을 확인하라는 경고를 출력하고 레인을 열어 둡니다.
+3. hc에서: 터미널이 인스턴스 그룹(`seori.group=<이름>`)에 합류하고, seori가 에이전트 명령을 입력한 뒤 에이전트의 첫 상태 보고를 기다립니다. 이어서 `/goal` 명령을 보냅니다. 목표에는 브리프 위치와 레인 이름이 들어갑니다. 그다음 omp가 이 명령을 받아 `working`을 보고하기를 기다립니다. 보고가 없으면 Enter를 한 번 더 누릅니다(그다음은 아래 6번의 시작 판정).
 4. herdr에서: 먼저 herdr의 omp 연동을 확인하고, 새 탭을 열어 `herdr agent start --kind omp`로 omp를 켭니다. omp가 준비되면, 같은 `/goal` 명령을 `herdr agent prompt`로 보냅니다.
 5. 어느 쪽이든 레인은 `working`으로 기록되고(주어졌다면 Done 줄, `--thread`, 한도도 함께), 리드는 `[START <key>]`를 받습니다.
+6. `seori start`는 `STARTED <key> pane=<ref> brief=<경로>`를 출력한 뒤, 끝내기 전에 새 레인을 지켜봅니다. 시작 명령 20초 뒤에 레인 화면(펼쳐서 읽음: 터미널이 여러 줄로 접은 한 줄은 한 줄로 읽음)과 상태를 읽고, 그 뒤 10초마다 `startupWaitSeconds`(기본 180초, 느린 컴퓨터에서는 omp의 첫 턴까지 몇 분이 걸리기도 함)까지 다시 읽은 뒤 한 줄을 더 출력합니다.
+   - `STARTUP_ERROR <key> <ref>: <문구>`(종료 코드 3): 화면에 알려진 실패 문구가 있음. 예: `No API key`, `429 Too Many Requests`, `Rate limit reached`, `exceeded your current quota`. 첫 확인 뒤로는 omp가 일하는 중이 아닐 때만 화면을 봅니다. 일하는 레인의 출력은 그런 문구를 인용할 수 있기 때문입니다.
+   - `STARTUP_UNCONFIRMED <key> <ref>: <이유>; last lines: ...`(종료 코드 3): omp가 제때 준비 상태를 보고하지 않았거나, 대화 상자에 막혔거나, 셸이 앞에 있거나 사라졌거나, 상태나 화면을 읽지 못했거나, 시작 명령을 받아 일을 시작하지 않음(working을 보고하지 않음).
+   - `STARTUP_DONE <key>`(종료 코드 0): 기다리는 동안 레인이 READY를 보냄.
+   - `STARTUP_OK <key> <ref>`(종료 코드 0): omp가 시작 명령을 받아 돌고 있고, 화면에 실패가 없음.
+
+   종료 코드 3이어도 레인 기록과 터미널은 남겨 둡니다. 리드가 창을 보고 원인을 고친 뒤 레인에 이어서 보낼 수 있습니다. 시간 단위 루프가 백로그에서 여는 레인은 이 기다림을 건너뛰고, 시작 명령을 받지 않은 omp는 stderr 경고로만 알립니다.
 
 레인 규칙은 에이전트에게 이렇게 시킵니다: 첫 답에서 결과물과 끝나는 조건을 다시 말할 것, 그리고 `seori ready`가 성공하기 전에는 목표를 완료 처리하지 말 것. 그 뒤 레인은 `[REPORT <key>]`(밖의 일 때문에 막혔으면 `[REPORT <key> WAITING]`)를 보내고, 마지막에 증거 링크와 함께 `[READY <key>]`를 보냅니다. 또 한 단계를 끝낼 때마다 체크포인트를 남기고, 재시작이나 압축 뒤에는 `seori checkpoints <key>`로 먼저 읽어 볼 것, 주인이 멈춰 둔 동안에는 아무것도 시작하지 말 것도 시킵니다. 누가 레인을 닫는지도 규칙에 적혀 있습니다: 보통은 리드가 직접 닫고, Done 줄이 있는 레인은 기다리는 시간이 지나면 seori가 닫습니다.
 
@@ -474,6 +482,7 @@ seori watch stop dev
   "closeAfterMin": 5,
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
+  "startupWaitSeconds": 180,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
@@ -487,6 +496,7 @@ seori watch stop dev
 | `closeAfterMin` | `5` | Done 줄이 있는 레인이 READY 뒤 몇 분 지나면 저절로 닫히는지(리드가 반대하지 않으면) |
 | `progressEveryMin` | `15` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지 |
 | `blockedPromptMin` | `10` | 레인 창에 대화 상자(`blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
+| `startupWaitSeconds` | `180` | `seori start`가 새 레인의 시작 판정을 위해 몇 초까지 지켜보는지(시작 명령 20초 뒤 첫 확인, 그 뒤 10초마다). [레인이 시작되는 방법](#레인이-시작되는-방법) 참고 |
 | `supervision.defaults.wallMinutes` | `null` | 레인마다 걸린 시간 한도(분). `null`은 끔 |
 | `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |
 | `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔 |

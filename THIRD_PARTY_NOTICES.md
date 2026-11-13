@@ -40,6 +40,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/adopt-sync.ts
 - src/boot-checks.ts
 - src/cli.ts
+- src/config.ts
 - src/harness.ts
 - src/messenger/presence.ts
 - src/messenger/slack-presence.ts
@@ -57,6 +58,9 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/runtime/hc/probe.ts
 - src/runtime/hc/sessions.ts
 - src/runtime/select.ts
+- src/runtime/types.ts
+- src/startup-screen.ts
+- src/startup-verdict.ts
 - src/store.ts
 - src/target.ts
 - test/adopt-sync.test.ts
@@ -77,3 +81,5 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - test/runtime-hc-deliver.test.ts
 - test/runtime-hc-misc.test.ts
 - test/runtime-hc.test.ts
+- test/startup-screen.test.ts
+- test/startup-verdict.test.ts

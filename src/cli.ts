@@ -5,7 +5,7 @@ import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import {
   defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
-  startAgent, startLane, ROLES, type Deps, type SendResult,
+  startAgent, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
 import { down, DOWN_GROUPS, liveRunners, running, sleepUnless } from "./down.ts";
@@ -23,6 +23,7 @@ import { hooksSettled, loadHooks } from "./hooks.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
 import { canLaunch, canLaunchLine, guardLines } from "./guard.ts";
+import { launchLane, startupExit } from "./startup-verdict.ts";
 import { runHeavy } from "./heavy.ts";
 import { objectDone } from "./done-flow.ts";
 import { pauseLane, resumeLane, Unverified } from "./pause.ts";
@@ -54,7 +55,9 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
                                               Done line read back live before close; ID = lead channel id for progress posts;
                                               ceilings block (report to lead); exits 4 with HOLD when the host is full;
                                               a written activity file (or an entry added to or removed from an
-                                              activity directory) counts as progress in the stall check
+                                              activity directory) counts as progress in the stall check;
+                                              prints STARTED, then waits for the start (config startupWaitSeconds, 180 s):
+                                              STARTUP_OK|STARTUP_DONE exit 0, STARTUP_ERROR|STARTUP_UNCONFIRMED exit 3 (lane kept)
   seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
                                               register an already-running session as a lane (types nothing into it)
   seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
@@ -793,7 +796,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       };
       const defaults = config.supervision.defaults;
       const anyCeiling = ["wall-minutes", "token-limit", "cost-limit"].some((f) => one(a, f) !== undefined);
-      const lane = await startLane(d, key, need(one(a, "brief"), "--brief"), {
+      const { lane, startup } = await launchLane(d, key, need(one(a, "brief"), "--brief"), {
         cwd: one(a, "cwd"), workspace: one(a, "workspace"),
         ...(one(a, "done") !== undefined ? { done: one(a, "done")! } : {}),
         ...(one(a, "thread") !== undefined ? { thread: one(a, "thread")! } : {}),
@@ -807,7 +810,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         } : {}),
       });
       console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);
-      return 0;
+      console.log(startup);
+      return startupExit(startup);
     }
     case "migrate":
       return runMigrate(d, (name) => one(a, name), LEAD_EXTENSION);

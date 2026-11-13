@@ -65,7 +65,7 @@ The lead runs with `prompts/lead.md` appended to its system prompt, which holds 
 | `seori up` | start lead, duty, duty loop, hourly loop and daemon (hc terminals and systemd --user units, or herdr panes) |
 | `seori msg pair <source> [--write]` | find the owner's sender id from their first message; write it as owner |
 | `seori msg check` / `msg send` / `msg list` | messenger credentials, replies and notices, open messages |
-| `seori start <key> --brief FILE [--thread ID] [--done "SIGNALS"]` | open a lane |
+| `seori start <key> --brief FILE [--thread ID] [--done "SIGNALS"]` | open a lane; prints `STARTED`, then `STARTUP_OK`/`STARTUP_DONE` (exit 0) or `STARTUP_ERROR`/`STARTUP_UNCONFIRMED` (exit 3, lane kept) |
 | `seori can-launch` | room for a new lane? exit 4 with reasons if not |
 | `seori object <key> --reason T` / `seori done <key>` | refuse a READY claim / close a lane |
 | `seori pause <key>` / `seori resume <key>` | owner said wait / go |
