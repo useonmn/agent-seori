@@ -50,8 +50,10 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
+              [--activity-path PATH ...]
                                               Done line read back live before close; ID = lead channel id for progress posts;
-                                              ceilings block (report to lead); exits 4 with HOLD when the host is full
+                                              ceilings block (report to lead); exits 4 with HOLD when the host is full;
+                                              a change under an activity path counts as progress (stall check)
   seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
                                               register an already-running session as a lane (types nothing into it)
   seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
@@ -794,6 +796,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         cwd: one(a, "cwd"), workspace: one(a, "workspace"),
         ...(one(a, "done") !== undefined ? { done: one(a, "done")! } : {}),
         ...(one(a, "thread") !== undefined ? { thread: one(a, "thread")! } : {}),
+        ...(a.flags.has("activity-path") ? { activityPaths: a.flags.get("activity-path")! } : {}),
         ...(anyCeiling ? {
           ceilings: {
             wallMinutes: ceilingFlag("wall-minutes", defaults.wallMinutes),

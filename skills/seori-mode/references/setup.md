@@ -62,7 +62,7 @@ Tell the owner the lead is up and which terminal it is in.
   "closeAfterMin": 5,
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
-  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20 },
+  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
 }
@@ -72,7 +72,7 @@ Tell the owner the lead is up and which terminal it is in.
 - `closeAfterMin`: how long after READY a lane with a Done line closes on its own.
 - `progressEveryMin`: how often a lane with a thread gets its newest report posted there.
 - `blockedPromptMin`: how long a lane may sit on a dialog (tool approval or question) before the lead gets one `[BLOCKED-PROMPT]`.
-- `supervision.defaults`: wall-clock, token and cost ceilings for every lane (`null` is off); `hungAfterMin`: when a working lane with no report and no file change is reported stalled.
+- `supervision.defaults`: wall-clock, token and cost ceilings for every lane (`null` is off); `hungAfterMin`: when a working lane with no report and no file change is reported stalled; `activityPaths`: files or directories (relative to each lane's cwd) whose change counts as progress besides git status (per lane: `seori start --activity-path`).
 - `guard`: host load, memory, disk and pane-count lines; `seori can-launch` holds new lanes past them.
 - `heavy`: slots and load limit for `seori heavy`.
 

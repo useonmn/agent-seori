@@ -388,13 +388,14 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
 /**
  * Opens a lane: a session running the agent in goal mode on the brief. `done` is the lane's Done line (src/signals.ts),
  * checked before anything opens; with it, seori closes the lane on its own after READY (src/done-flow.ts). `thread`
- * is the lead channel id progress posts thread under; `ceilings` override the configured supervision defaults.
+ * is the lead channel id progress posts thread under; `ceilings` override the configured supervision defaults;
+ * `activityPaths` are files or directories whose change counts as the lane's progress besides git status.
  */
 export async function startLane(
   d: Deps,
   key: string,
   briefFile: string,
-  opts: { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings } = {},
+  opts: { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[] } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const reserved = reservedKey(key);
@@ -445,6 +446,7 @@ export async function startLane(
     ...(doneLine !== undefined ? { done: doneLine } : {}),
     ...(opts.thread !== undefined ? { thread: opts.thread.trim() } : {}),
     ...(opts.ceilings ? { ceilings: opts.ceilings } : {}),
+    ...(opts.activityPaths?.length ? { activityPaths: [...opts.activityPaths] } : {}),
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);

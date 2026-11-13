@@ -40,6 +40,8 @@ export type SeoriConfig = {
     readonly defaults: Ceilings;
     /** A lane herdr reports working with no report and no file change for this long is stalled (told to the lead once). */
     readonly hungAfterMin: number;
+    /** Files or directories (relative to a lane's cwd) whose change counts as every lane's progress, beside git status. */
+    readonly activityPaths: readonly string[];
   };
   readonly guard: GuardThresholds;
   readonly heavy: { readonly slots: number; readonly maxLoadPct: number };
@@ -57,7 +59,7 @@ export const DEFAULT_CONFIG: SeoriConfig = {
   closeAfterMin: 5,
   progressEveryMin: 15,
   blockedPromptMin: 10,
-  supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20 },
+  supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20, activityPaths: [] },
   guard: { loadAlertPct: 150, loadOkPct: 80, memFreeMinPct: 10, diskFreeMinGb: 20, panesMax: 30 },
   heavy: { slots: 1, maxLoadPct: 80 },
 };
@@ -119,7 +121,11 @@ export function loadConfig(root: string): SeoriConfig {
 
   const sup = raw["supervision"] ?? {};
   if (!isObj(sup)) throw new ConfigError(`${path}: supervision must be an object`);
-  only(sup, ["defaults", "hungAfterMin"], `${path} supervision`);
+  only(sup, ["defaults", "hungAfterMin", "activityPaths"], `${path} supervision`);
+  const activityPaths = sup["activityPaths"] ?? D.supervision.activityPaths;
+  if (!Array.isArray(activityPaths) || !activityPaths.every((p) => typeof p === "string" && p !== "")) {
+    throw new ConfigError(`${path} supervision.activityPaths must be a list of non-empty paths`);
+  }
   const defs = sup["defaults"] ?? {};
   if (!isObj(defs)) throw new ConfigError(`${path}: supervision.defaults must be an object`);
   only(defs, ["wallMinutes", "tokens", "costUsd"], `${path} supervision.defaults`);
@@ -147,6 +153,7 @@ export function loadConfig(root: string): SeoriConfig {
         costUsd: ceiling(defs["costUsd"], `${path} supervision.defaults.costUsd`, D.supervision.defaults.costUsd),
       },
       hungAfterMin: num(sup, "hungAfterMin", `${path} supervision`, D.supervision.hungAfterMin),
+      activityPaths: activityPaths as string[],
     },
     guard: {
       loadAlertPct: num(guard, "loadAlertPct", `${path} guard`, D.guard.loadAlertPct),
