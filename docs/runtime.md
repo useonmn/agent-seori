@@ -67,7 +67,7 @@ Each session ends with one line:
 - `SKIP <name> already on <runtime>`.
 - `SKIP <name> is the session running seori migrate`: only under `--all`. Closing that session would end the run before it finishes, so run `seori migrate` for it from another session. Named with `--lane` or `--role`, it is refused (exit 2).
 
-`--dry-run` prints `PLAN <name> <old> -> <runtime> (inbox entries: N)` and changes nothing. A run that was cut short resumes at the phase its journal recorded when it is started again, and a second `seori migrate` of the same session is refused while one runs.
+`--dry-run` prints `PLAN <name> <old> -> <runtime> (inbox entries: N)` and changes nothing. A run that was cut short resumes at the phase its journal recorded when it is started again, and a second `seori migrate` of the same session is refused while one runs. A resumed run whose replacement no longer verifies rolls back to the old session, record included. Two windows are left as upstream has them. A run cut short after the replacement opened but before the journal recorded it opens a second replacement when resumed, and the first stays unrecorded (`seori sync` lists it). With `--resume`, the old omp stays alive on the session file until step 8 closes it, though it is idle by then.
 
 `--resume` starts omp on the old session's own file (`omp --resume <path>`) instead of a kickoff on the handoff brief, and skips the checkpoint ask. It is accepted only when the old session is live and `idle` or `done` and its runtime reports omp's session path; herdr reports it through its omp integration, hc never does, so `--resume` from an hc session is refused and nothing moves.
 

@@ -192,6 +192,30 @@ describe("seori migrate: one lane herdr -> hc", () => {
     expect(readJournal(d.store.root, "k")).toBeUndefined();
   });
 
+  test("a resumed run whose replacement is gone rolls back the record too: lane back on the old session, no migratedFrom", async () => {
+    const { d, lines, opts } = migrateWorld();
+    d.store.saveLane({ ...d.store.lane("k")!, migration: true, sessionRef: T9, migratedFrom: [OLD] });
+    writeFileSync(`${d.store.inboxPath(OLD)}.forward`, "hc:t9\n");
+    d.store.saveInbox(T9, [msg("moved", 1)]);
+    writeJournal(d.store.root, { name: "k", kind: "lane", phase: "opened", from: OLD, to: "hc", at: 1, briefPath: "/b", newRef: T9 });
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(3);
+    expect(lines[0]).toStartWith("MIGRATE_ROLLBACK k hc:t9 ");
+    const lane = d.store.lane("k")!;
+    expect(lane.sessionRef).toEqual(OLD);
+    expect(lane.migratedFrom).toBeUndefined();
+    expect(lane.migration).toBeUndefined();
+    expect(d.store.queued(OLD).map((m) => m.text)).toEqual(["moved"]);
+    expect(readJournal(d.store.root, "k")).toBeUndefined();
+  });
+
+  test("a resumed run from inside the old session is refused even though the record already names the replacement", async () => {
+    const { d, opts } = migrateWorld();
+    d.store.saveLane({ ...d.store.lane("k")!, migration: true, sessionRef: T9, migratedFrom: [OLD] });
+    writeJournal(d.store.root, { name: "k", kind: "lane", phase: "switched", from: OLD, to: "hc", at: 1, briefPath: "/b", newRef: T9 });
+    await expect(migrate(d, { lane: "k" }, opts({ self: OLD }))).rejects.toThrow("k is the session running this seori migrate");
+    expect(readJournal(d.store.root, "k")?.phase).toBe("switched");
+  });
+
   test("the replacement fails to open: MIGRATE_ROLLBACK, exit 3, hold lifted, no journal, inbox and record untouched", async () => {
     const { w, d, lines, opts } = migrateWorld("idle", { sendError: "unavailable" });
     d.store.saveInbox(OLD, [msg("one", 1)]);
@@ -305,6 +329,15 @@ describe("seori migrate: roles, --all and --resume", () => {
     expect(lines).toEqual(["MIGRATED duty w1:p2 -> hc:t1"]);
     expect(refText(d.store.roles().duty!)).toBe("hc:t1");
     expect(r.sent().find((s) => s.id === "t1")!.text).toStartWith("'omp' '--append-system-prompt' ");
+  });
+
+  test("--role lead resumed after the switch, replacement gone: roles.json points back at the old lead", async () => {
+    const { d, lines, opts } = migrateWorld();
+    d.store.setRole("lead", T9);
+    writeJournal(d.store.root, { name: "lead", kind: "role", phase: "opened", from: herdrRef("w1:p1"), to: "hc", at: 1, briefPath: "/b", newRef: T9 });
+    expect(await migrate(d, { role: "lead" }, opts())).toBe(3);
+    expect(lines[0]).toStartWith("MIGRATE_ROLLBACK lead hc:t9 ");
+    expect(refText(d.store.roles().lead!)).toBe("w1:p1");
   });
 
   test("--all run from the lead: the lead is skipped, the lane still migrates", async () => {
