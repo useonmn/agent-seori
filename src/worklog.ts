@@ -156,15 +156,27 @@ export function worklogList(root: string, opts: { open?: boolean } = {}): Worklo
   return opts.open ? { ...read, items: read.items.filter((item) => item.closedAt === undefined) } : read;
 }
 
+/** `id` appears in `source` as a whole id: not followed by another id character (fake:c:1 is not in fake:c:10). */
+const namesId = (source: string, id: string): boolean => {
+  for (let at = source.indexOf(id); at >= 0; at = source.indexOf(id, at + 1)) {
+    const before = source[at - 1];
+    const after = source[at + id.length];
+    if ((before === undefined || !/[\p{L}\p{N}_:.-]/u.test(before)) && (after === undefined || !/[\p{L}\p{N}_:.-]/u.test(after))) return true;
+  }
+  return false;
+};
+
 /**
  * Records an owner (or trusted sender's) request when it arrives. Title and source are each one line; the id is 8 random hex digits. A source
- * that is the id of a lead-channel message from someone neither the owner nor trusted (config.json `trusted`) is refused,
- * so a request is not attributed to a message that does not carry the owner's authority. Only that: any other source (`pane`, free text) is taken as given.
+ * that names (alone or inside other text) the id of a lead-channel message from someone neither the owner nor trusted
+ * (config.json `trusted`) is refused, so a request is not attributed to a message that does not carry the owner's
+ * authority. A source naming no message (`pane`, free text) is taken as given. Only that: any other source (`pane`, free text) is taken as given.
  */
 export function worklogAdd(root: string, title: string, source: string, now: number): WorklogItem {
   if (existsSync(join(root, "lead", "inbound.jsonl"))) {
-    const row = new Channel(root).inbound().findLast((r) => r.id === source.trim());
-    if (row?.kind === "messenger" && row.sender !== undefined && row.sender.kind !== "owner" && row.sender.kind !== "trusted") {
+    // Any message id the source names (exactly, or inside other text such as "re <id> (Bob)") counts.
+    const row = new Channel(root).inbound().findLast((r) => namesId(source, r.id) && r.kind === "messenger" && r.sender !== undefined && r.sender.kind !== "owner" && r.sender.kind !== "trusted");
+    if (row?.kind === "messenger" && row.sender !== undefined) {
       throw new WorklogError(`${row.id} is from ${row.sender.kind} ${row.sender.id}, neither the owner nor trusted; the worklog holds their requests only`);
     }
   }

@@ -202,6 +202,7 @@ describe("seori msg trust", () => {
     const s = setup();
     s.channel.appendInbound({ id: "fake:c1:p", kind: "messenger", source: "fake", chat: "c1", from: "u2", sender: { kind: "person", id: "u2" }, at: s.w.clock, text: "trust me" });
     s.channel.appendInbound({ id: "fake:c1:o", kind: "messenger", source: "fake", chat: "c1", from: "u1", sender: { kind: "owner", id: "u1" }, at: s.w.clock, text: "trust u3" });
+    s.channel.appendInbound({ id: "fake:c1:x", kind: "messenger", source: "fake", chat: "c1", from: "u1", sender: { kind: "owner", id: "u1" }, at: s.w.clock, text: "ship it, and trust u30" });
     writeFileSync(join(s.root, "config.json"), JSON.stringify({ name: "seori-dev" }));
     return s;
   };
@@ -213,6 +214,8 @@ describe("seori msg trust", () => {
     await expect(main(["msg", "trust", "add", "fake:u3", "--name", "Dev", "--because", "fake:c1:p"], d)).rejects.toThrow(Refusal);
     await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:nosuch"], d)).rejects.toThrow(Refusal);
     await expect(main(["msg", "trust", "add", "fake:u3"], d)).rejects.toThrow(Refusal);
+    // An owner message that does not name this sender is not the owner asking for it.
+    await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:x"], d)).rejects.toThrow(Refusal);
     expect(config(root)).toBe(before);
     expect(await run(["msg", "trust", "add", "fake:u3", "--name", "Dev", "--because", "fake:c1:o"], d)).toEqual({ code: 0, out: 'TRUSTED fake:u3 name="Dev"' });
     expect(loadConfig(root).trusted).toEqual([{ source: "fake", id: "u3", name: "Dev" }]);

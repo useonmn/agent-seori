@@ -155,7 +155,9 @@ describe("worklog", () => {
     channel.appendInbound({ id: "fake:c:1", kind: "messenger", source: "fake", chat: "c", from: "u2", sender: { kind: "person", id: "u2" }, at: T0, text: "do my thing" });
     channel.appendInbound({ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", from: "u1", sender: { kind: "owner", id: "u1" }, at: T0, text: "do it" });
     expect(() => worklogAdd(root, "their thing", "fake:c:1", T0)).toThrow(WorklogError);
+    expect(() => worklogAdd(root, "their thing", "re fake:c:1 (Bob)", T0)).toThrow(WorklogError);
     expect(worklogRead(root).items).toEqual([]);
+    expect(worklogAdd(root, "not that one", "fake:c:10", T0).source).toBe("fake:c:10");
     expect(worklogAdd(root, "owner thing", "fake:c:2", T0).source).toBe("fake:c:2");
     expect(worklogAdd(root, "from the pane", "pane", T0).source).toBe("pane");
     channel.appendInbound({ id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u3", sender: { kind: "trusted", id: "u3" }, at: T0, text: "fix it" });

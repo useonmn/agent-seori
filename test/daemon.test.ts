@@ -506,6 +506,49 @@ describe("talking with people and agents other than the owner", () => {
     expect(text).toContain('[fake:dm3:1] fake from trusted Dev (u3): "please fix the build"');
   });
 
+  test("a replayed human message does not reset the agent-loop count", async () => {
+    const root = home([{ source: "x", owner: "u1" }]);
+    writeFileSync(join(root, "config.json"), JSON.stringify({ agentTurnLimit: 1 }));
+    const agentMsg = (id: string): InboundMessage => ({ ...msg(id, "b1"), sender: { kind: "agent", id: "b1" } });
+    const human = (id: string): InboundMessage => ({ ...msg(id, "u2"), sender: { kind: "person", id: "u2" } });
+    const replaying: MessengerAdapter = {
+      ...noActions,
+      source: "x",
+      async receive(signal, onMessage) {
+        for (const m of [agentMsg("x:c:a1"), human("x:c:h1"), agentMsg("x:c:a2"), human("x:c:h1"), agentMsg("x:c:a3")]) await onMessage(m);
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
+    };
+    const d = start(root, { adapterFor: () => replaying });
+    await until("a3", () => d.events.some((e) => e.ev === "stored" && e.id === "x:c:a3"));
+    await d.stop();
+    expect((new Channel(root).inbound() as MessengerRow[]).map((r) => [r.id, r.loopStopped])).toEqual([["x:c:a1", undefined], ["x:c:h1", undefined], ["x:c:a2", undefined], ["x:c:a3", 1]]);
+  });
+
+  test("a config.json that does not load keeps the daemon owner-only and is reported", async () => {
+    const root = fakeConfig({ talkWithOthers: "yes" });
+    const { d, rows } = await run(root, [
+      { msgId: "1", chat: "dm2", dm: true, from: "u2", text: "hi" },
+      { msgId: "2", chat: "c", from: "u1", text: "owner here" },
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["fake:c:2"]);
+    expect(d.events.filter((e) => e.ev === "error").map((e) => e.ev === "error" && e.source)).toEqual(["config.json"]);
+    expect(d.lines()).toContain("DAEMON dropped fake:dm2:1 from u2");
+  });
+
+  test("a changed config.json makes the daemon exit config-changed so it restarts on the new settings", async () => {
+    const root = home();
+    const timer = { tick: undefined as (() => void) | undefined };
+    const d = start(root, { every: (tick) => ((timer.tick = tick), () => {}) });
+    timer.tick!();
+    writeFileSync(join(root, "config.json"), JSON.stringify({ talkWithOthers: false }));
+    timer.tick!();
+    expect(await d.done).toBe("config-changed");
+    expect(d.lines().at(-1)).toStartWith(`DAEMON ${join(root, "config.json")} changed`);
+  });
+
   test("the owner's messages need no mention and are labelled owner", async () => {
     const root = fakeConfig();
     const { rows } = await run(root, [{ msgId: "1", chat: "c", from: "u1", text: "do it" }]);
