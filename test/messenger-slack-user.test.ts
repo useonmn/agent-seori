@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboundMessage } from "../src/messenger/adapter.ts";
 import { compareTs, SlackAdapter } from "../src/messenger/slack.ts";
+import { Channel } from "../src/channel.ts";
+import { Refusal } from "../src/harness.ts";
+import { msgEdit, msgSend, type MsgDeps } from "../src/msg.ts";
 import { pairOwner } from "../src/pair.ts";
 
 // Slack user-token mode: the account is a real workspace member, polled through the Web API with its token and `d`
@@ -528,5 +531,45 @@ describe("SlackAdapter user mode pairing", () => {
         new SlackAdapter({ ...config, options: { apiBase: mock.apiBase } }, r, { env: USER_ENV, sleep: async () => {}, now: () => NOW, pairing: true, cursorRoot }),
     });
     expect(candidates.map((c) => [c.id, c.chat])).toEqual([["UNEW", "D2"]]);
+  });
+});
+
+describe("seori msg --to in Slack user mode", () => {
+  const setup = () => {
+    const mock = startMock();
+    const root = home();
+    const config = { source: "slack", owner: OWNER, options: { apiBase: mock.apiBase, mode: "user" } };
+    const deps: MsgDeps = { adapterFor: (c) => new SlackAdapter(c, root, { env: USER_ENV, sleep: async () => {}, now: () => NOW }), configs: [config], now: () => NOW };
+    // The owner's DM is known: its messages are in the lead channel.
+    new Channel(root).appendInbound({ id: "slack:D1:1700000000.000100", kind: "messenger", source: "slack", chat: "D1", from: OWNER, at: NOW, text: "hi" });
+    const posts = () => mock.calls.filter((c) => c.path === "chat.postMessage" || c.path === "chat.update");
+    return { mock, root, deps, posts };
+  };
+
+  test("a conversation seori does not know is refused, and nothing is posted", async () => {
+    const { deps, root, posts } = setup();
+    const err = await msgSend(root, { to: { source: "slack", chat: "C9" }, text: "x" }, deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Refusal);
+    expect(String((err as Error).message)).toContain("--allow-unknown-chat");
+    expect(posts()).toHaveLength(0);
+    const edit = await msgEdit(root, { source: "slack", chat: "C9" }, "1700000000.000200", "x", deps).catch((e: unknown) => e);
+    expect(edit).toBeInstanceOf(Refusal);
+    expect(posts()).toHaveLength(0);
+  });
+
+  test("the owner's DM goes out", async () => {
+    const { deps, root, posts } = setup();
+    const r = await msgSend(root, { to: { source: "slack", chat: "D1" }, text: "x" }, deps);
+    expect(r.status).toBe("SENT");
+    expect(posts()).toHaveLength(1);
+  });
+
+  test("an unknown conversation goes out with the override", async () => {
+    const { deps, root, posts } = setup();
+    const r = await msgSend(root, { to: { source: "slack", chat: "C9" }, text: "x", allowUnknownChat: true }, deps);
+    expect(r.status).toBe("SENT");
+    expect(posts()).toHaveLength(1);
+    await msgEdit(root, { source: "slack", chat: "C9" }, "1700000000.000200", "y", deps, true);
+    expect(posts()).toHaveLength(2);
   });
 });

@@ -176,7 +176,7 @@ export class SlackAdapter implements MessengerAdapter {
   private readonly statusLimitMs: number;
   private readonly every: (tick: () => Promise<void>, ms: number) => () => void;
   /** User mode: a member's user token and `d` cookie instead of a bot app (see the top of this file). */
-  private readonly userMode: boolean;
+  readonly userMode: boolean;
   private readonly pollIntervalMs: number;
 
   constructor(

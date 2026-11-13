@@ -701,6 +701,7 @@ None. seori sends nothing anywhere.
 - A host figure that cannot be read (disk, sessions) holds no lane and raises no alert.
 - The owner is paired with `seori msg pair`, from the sender of the next direct message to the bot.
 - Slack runs as a bot app in Socket Mode, or with a member's user token and `d` cookie (polled once a minute).
+- With a Slack user token, `seori msg send --to` and `msg edit --to` refuse a chat seori has no record of (the owner's DM and chats it was written in are known); `--allow-unknown-chat` overrides.
 - Voice: Telegram voice notes are transcribed only when you set `hooks.transcribe`.
 - The seori mode skill (`skills/seori-mode`) takes the place of Dori mode.
 

@@ -650,6 +650,7 @@ hc 끝단 테스트(`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`)는 자체 
 - 읽지 못한 컴퓨터 값(디스크, 세션 수)으로는 레인을 막지도, 알리지도 않습니다.
 - 주인은 `seori msg pair`로 등록합니다. 봇에게 다음에 DM을 보낸 사람이 주인이 됩니다.
 - 슬랙은 Socket Mode 봇 앱으로 쓰거나, 멤버 계정의 사용자 토큰과 `d` 쿠키로 씁니다(1분마다 확인).
+- 슬랙 사용자 토큰에서는 `seori msg send --to`와 `msg edit --to`가 seori의 기록에 없는 대화(내 DM과 메시지를 받은 대화는 알려진 대화입니다)를 거부하며, `--allow-unknown-chat`으로 허용합니다.
 - 음성: 텔레그램 음성 메시지는 `hooks.transcribe`를 설정해야 필사됩니다. 접속 상태(presence)와 리액션은 없습니다.
 - 원본의 Dori 모드 대신 서리 모드 스킬(`skills/seori-mode`)이 있습니다.
 

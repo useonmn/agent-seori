@@ -113,10 +113,11 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
                                               still runs after 30 s
   seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
-  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
+  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now] [--allow-unknown-chat]
                                               answer messenger messages (one reply per id) or send a notice; while the
                                               lead extension runs it is drafted and goes out when the lead's turn ends
                                               (--now: send at once); a second send to the same ids replaces the draft
+                                              --allow-unknown-chat: Slack user-token mode only; --to is refused for a chat seori has no record of unless given
   seori msg send --replace DRAFT --text T      change the text of an open draft (reply or notice)
   seori msg drafts                             open drafts: draft  age  reply IDS|notice SOURCE:CHAT  text
   seori msg drop <draft> --why T               discard an open draft; its ids are open again
@@ -125,7 +126,7 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
   seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
-  seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
+  seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T [--allow-unknown-chat]
                                               replace the text of a message seori sent: --reply-of edits seori's first reply
                                               to that lead channel message (drafted or not); MID: the message= send printed
   seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
@@ -165,7 +166,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume", "remove", "close", "reopen"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume", "remove", "close", "reopen", "allow-unknown-chat"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -576,6 +577,7 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
       text: await textOf(a),
       again: one(a, "again") === "true",
       sendNow: one(a, "now") === "true",
+      allowUnknownChat: one(a, "allow-unknown-chat") === "true",
     }, msgDepsFor(root, d.now));
     const what = r.ids.length ? r.ids.join(",") : to!;
     if (r.status === "DRAFTED") {
@@ -697,7 +699,7 @@ async function msgAction(root: string, d: Deps, a: Args, sub: "react" | "edit" |
       const message = need(one(a, "message"), "--message");
       what = need(one(a, "to"), "--to");
       done = `EDITED ${what} message=${message}`;
-      act = () => msgEdit(to, message, text, deps);
+      act = () => msgEdit(root, to, message, text, deps, one(a, "allow-unknown-chat") === "true");
     }
   } else {
     const where = whereOf(root, { to: one(a, "to"), of: one(a, "of") });

@@ -8,6 +8,7 @@ import {
   type ThreadTarget,
 } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
+import { SlackAdapter } from "./messenger/slack.ts";
 import { type Draft, type DraftTarget, Outbox, targetLabel } from "./outbox.ts";
 
 // `seori msg ...`: the lead answers messenger messages. A reply closes its ids only after the messenger returned a
@@ -41,6 +42,8 @@ export type MsgSendOptions = {
   readonly replace?: string;
   readonly text: string;
   readonly again?: boolean;
+  /** Slack user-token mode: allow --to a conversation seori has no record of (--allow-unknown-chat). */
+  readonly allowUnknownChat?: boolean;
   /** Send at once even while the lead extension is consuming (--now). */
   readonly sendNow?: boolean;
 };
@@ -74,6 +77,20 @@ function adapterFor(d: MsgDeps, source: string): MessengerAdapter {
   return d.adapterFor(config);
 }
 
+/**
+ * Slack user-token mode posts as a real workspace member, so `--to` is fenced to conversations seori already knows: a chat
+ * with a message in the lead channel (the owner's DM, the threads and channels it was written in). Anything else needs
+ * --allow-unknown-chat. Bot mode and the other messengers are unchanged.
+ */
+function fenceUserTo(root: string, adapter: MessengerAdapter, to: NoticeTarget, allow: boolean | undefined): void {
+  if (allow || !(adapter instanceof SlackAdapter) || !adapter.userMode) return;
+  if (new Channel(root).inbound().some((r) => r.kind === "messenger" && r.source === to.source && r.chat === to.chat)) return;
+  throw new Refusal(
+    `${to.source}:${to.chat} is not a conversation seori knows (the owner's DM or a chat it was written in), and this Slack entry posts as a user account; ` +
+      "pass --allow-unknown-chat if you mean to post there",
+  );
+}
+
 export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Promise<MsgSendResult> {
   if ([o.replyTo, o.to, o.replace].filter((x) => x !== undefined).length !== 1) throw new Refusal("give exactly one of --reply-to, --to or --replace");
   if (!o.text.trim()) throw new Refusal("refusing to send an empty message");
@@ -86,6 +103,7 @@ export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Prom
   if (o.to) {
     // A notice is not an answer to anything, so it neither needs nor touches the ledger.
     const adapter = adapterFor(d, o.to.source);
+    fenceUserTo(root, adapter, o.to, o.allowUnknownChat);
     if (!draft) return sendNotice(adapter, o.to, o.text);
     // A new notice draft overlaps nothing, so it is appended without the outbox lock.
     const outbox = new Outbox(root);
@@ -379,10 +397,12 @@ export async function msgReact(root: string, id: string, on: boolean, d: MsgDeps
 }
 
 /** `seori msg edit --to`: new text for a message seori sent (its id as `msg send` printed it). */
-export async function msgEdit(to: NoticeTarget, message: string, text: string, d: MsgDeps): Promise<void> {
+export async function msgEdit(root: string, to: NoticeTarget, message: string, text: string, d: MsgDeps, allowUnknownChat?: boolean): Promise<void> {
   if (!/^[\w.-]+$/.test(message) || /^\.+$/.test(message)) throw new Refusal(`--message must be a message id (letters, digits, dot, dash), got "${message}"`);
   if (!text.trim()) throw new Refusal("refusing to edit a message to empty text");
-  await adapterFor(d, to.source).edit({ chat: to.chat, ...(to.thread !== undefined ? { thread: to.thread } : {}) }, message, text);
+  const adapter = adapterFor(d, to.source);
+  fenceUserTo(root, adapter, to, allowUnknownChat);
+  await adapter.edit({ chat: to.chat, ...(to.thread !== undefined ? { thread: to.thread } : {}) }, message, text);
 }
 
 /**

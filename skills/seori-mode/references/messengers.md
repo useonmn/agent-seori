@@ -82,6 +82,8 @@ The bot app runs in Socket Mode, so no public URL is needed:
 
 seori reads only the DM with the owner and the group DMs, channels and threads where this account is mentioned or has posted; colleagues may DM the account, and those DMs are never read. Pairing (`seori msg pair slack`) takes only a DM sent after it started, but a colleague may DM the account in that window too: run it without `--write` first, check that the CANDIDATE is the owner, then run it again with `--write` and have the owner send one more message. The token and cookie stop working when that browser session signs out or expires; seori then stops with a message saying to refresh them. `"agent": true` needs a bot app and is refused in this mode. Edits of a message are not seen in this mode. `pollIntervalMs` in the entry's options changes the one-minute check.
 
+In user mode `seori msg send --to` and `msg edit --to` refuse a chat seori has no record of (the owner's DM and chats it was written in are known), exit 2; pass `--allow-unknown-chat` only when the owner asked for that chat.
+
 ### Discord
 
 1. https://discord.com/developers/applications → New Application, with the chosen name.
