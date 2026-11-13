@@ -40,6 +40,8 @@ describe("closed herdr history next to live hc work", () => {
     expect(d.store.lane("old-done")?.status).toBe("done");
     await expect(done(d, "old-done")).rejects.toThrow("lane old-done is already closed");
     await expect(done(d, "old-done")).rejects.toThrow(Refusal);
+    await expect(send(d, "old-lost", "hello", "cli")).rejects.toThrow("lane old-lost ran in the herdr pane w1:p4; seori runs on hc only, so it cannot take messages");
+    expect(d.store.inboxPanes()).toEqual([{ runtime: "hc", id: "t1" }]);
     lead.status = "idle";
     expect(await dutyTick(d)).toContainEqual({ pane: "hc:t1", action: "flushed" });
     expect(lead.received).toEqual(["for the lead"]);
