@@ -677,3 +677,34 @@ describe("SlackAdapter pairing mode", () => {
     expect(mock.historyCalls.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("SlackAdapter fetchMessage", () => {
+  test("finds a message that lives inside a thread, matching by ts (replies list the parent first)", async () => {
+    const root = "1700000000.000100";
+    const reply = "1700000000.000200";
+    const calls: URLSearchParams[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        const q = url.searchParams;
+        if (url.pathname === "/api/conversations.history") return json({ ok: true, messages: [{ type: "message", user: "UX", text: "root", ts: root, thread_ts: root }] });
+        if (url.pathname === "/api/conversations.replies") {
+          calls.push(q);
+          if (q.get("ts") === reply) return json({ ok: true, messages: [{ type: "message", user: "UX", text: "root", ts: root, thread_ts: root }, { type: "message", user: "UBOT", text: "inside the thread", ts: reply, thread_ts: root }] });
+          return json({ ok: false, error: "thread_not_found" });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const mock = startMock();
+      const a = adapter(mock, home(), { options: { apiBase: `http://127.0.0.1:${server.port}/api` } });
+      expect(await a.fetchMessage("C1", reply)).toEqual({ from: "UBOT", at: 1_700_000_000_000, text: "inside the thread" });
+      expect(calls[0]?.get("channel")).toBe("C1");
+      expect(await a.fetchMessage("C1", "1700000000.000999")).toEqual({ unavailable: "not found" });
+    } finally {
+      server.stop(true);
+    }
+  });
+});
