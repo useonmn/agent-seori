@@ -1,7 +1,7 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { randomBytes } from "node:crypto";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
-import { ConfigError, loadConfig, type TrustedSender, writeTrusted } from "./config.ts";
+import { ConfigError, loadConfig, type TrustedSender, updateTrusted } from "./config.ts";
 import { replyTarget } from "./messenger/common.ts";
 import { Refusal } from "./harness.ts";
 import {
@@ -489,15 +489,17 @@ function parseTrustSpec(spec: string): { source: string; id: string } {
 /**
  * The owner's say-so for a trust change: `because` must be a lead-channel messenger message from the owner (a row
  * stored before senders were recorded came from the owner) whose text names the sender's id, so the lead can change
- * trust only when the owner asked for that sender, not on any owner message it can find.
+ * trust only when the owner asked for that sender, not on any owner message it can find. Whether the message really asks
+ * for this (and not "do not trust u3") stays the lead's judgment; this check only keeps it from citing an unrelated one.
  */
-function ownerAsked(root: string, because: string | undefined, id: string): void {
+function ownerAsked(root: string, because: string | undefined, source: string, id: string): void {
   if (because === undefined) throw new Refusal("give --because <id of the owner's message that asked for this>");
   const row = new Channel(root).inbound().findLast((r) => r.id === because);
   if (row?.kind !== "messenger") throw new Refusal(`--because ${because} is not a messenger message in the lead channel`);
   if (row.sender !== undefined && row.sender.kind !== "owner") {
     throw new Refusal(`--because ${because} is from ${row.sender.kind} ${row.sender.id}, not the owner: only the owner can change who is trusted`);
   }
+  if (row.source !== source) throw new Refusal(`--because ${because} came in on ${row.source}, not ${source}: cite the owner's message on that messenger`);
   if (!mentionsWord(row.text, id)) throw new Refusal(`--because ${because} does not name ${id}: cite the owner's message that asks to change trust for that sender`);
 }
 
@@ -519,25 +521,37 @@ function trustedNow(root: string): readonly TrustedSender[] {
   }
 }
 
+/** updateTrusted with its refusals (a config.json that does not load, another writer holding it) as Refusals. */
+function changeTrusted(root: string, change: (list: readonly TrustedSender[]) => readonly TrustedSender[]): void {
+  try {
+    updateTrusted(root, change, Date.now());
+  } catch (e) {
+    if (e instanceof ConfigError) throw new Refusal(`${e.message}; nothing was changed`);
+    throw e;
+  }
+}
+
 /** `seori msg trust add <source>:<id> [--name N] --because <owner message id>`: adds or renames a trusted sender. */
 export function msgTrustAdd(root: string, spec: string, o: { readonly name?: string; readonly because?: string }): TrustedSender {
   const { source, id } = parseTrustSpec(spec);
   if (o.name !== undefined && !o.name.trim()) throw new Refusal("--name must not be empty");
-  ownerAsked(root, o.because, id);
+  ownerAsked(root, o.because, source, id);
   const entry: TrustedSender = { source, id, ...(o.name !== undefined ? { name: o.name.trim() } : {}) };
-  const list = trustedNow(root);
-  const at = list.findIndex((t) => t.source === source && t.id === id);
-  writeTrusted(root, at < 0 ? [...list, entry] : list.map((t, i) => (i === at ? entry : t)));
+  changeTrusted(root, (list) => {
+    const at = list.findIndex((t) => t.source === source && t.id === id);
+    return at < 0 ? [...list, entry] : list.map((t, i) => (i === at ? entry : t));
+  });
   return entry;
 }
 
 /** `seori msg trust remove <source>:<id> --because <owner message id>`. */
 export function msgTrustRemove(root: string, spec: string, because: string | undefined): void {
   const { source, id } = parseTrustSpec(spec);
-  ownerAsked(root, because, id);
-  const list = trustedNow(root);
-  if (!list.some((t) => t.source === source && t.id === id)) throw new Refusal(`${source}:${id} is not trusted`);
-  writeTrusted(root, list.filter((t) => !(t.source === source && t.id === id)));
+  ownerAsked(root, because, source, id);
+  changeTrusted(root, (list) => {
+    if (!list.some((t) => t.source === source && t.id === id)) throw new Refusal(`${source}:${id} is not trusted`);
+    return list.filter((t) => !(t.source === source && t.id === id));
+  });
 }
 
 /** `seori msg trust list`: one TRUSTED line per sender, in config order. */

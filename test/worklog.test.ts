@@ -161,6 +161,9 @@ describe("worklog", () => {
     expect(worklogAdd(root, "owner thing", "fake:c:2", T0).source).toBe("fake:c:2");
     expect(worklogAdd(root, "from the pane", "pane", T0).source).toBe("pane");
     channel.appendInbound({ id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u3", sender: { kind: "trusted", id: "u3" }, at: T0, text: "fix it" });
+    // Trusted when it arrived, but no longer: config.json's list decides now.
+    expect(() => worklogAdd(root, "trusted thing", "fake:c:3", T0)).toThrow(WorklogError);
+    writeFileSync(join(root, "config.json"), JSON.stringify({ trusted: [{ source: "fake", id: "u3" }] }));
     expect(worklogAdd(root, "trusted thing", "fake:c:3", T0).source).toBe("fake:c:3");
   });
 });

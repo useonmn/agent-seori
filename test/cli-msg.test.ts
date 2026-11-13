@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { Channel } from "../src/channel.ts";
@@ -214,6 +215,12 @@ describe("seori msg trust", () => {
     await expect(main(["msg", "trust", "add", "fake:u3", "--name", "Dev", "--because", "fake:c1:p"], d)).rejects.toThrow(Refusal);
     await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:nosuch"], d)).rejects.toThrow(Refusal);
     await expect(main(["msg", "trust", "add", "fake:u3"], d)).rejects.toThrow(Refusal);
+    // The owner's message came in on fake: it cannot trust someone on another messenger.
+    await expect(main(["msg", "trust", "add", "slack:u3", "--because", "fake:c1:o"], d)).rejects.toThrow(Refusal);
+    // Another writer holds config.json: nothing is written.
+    writeFileSync(join(root, "config.json.lock"), JSON.stringify({ pid: process.pid, host: hostname(), at: 0 }));
+    await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:o"], d)).rejects.toThrow(Refusal);
+    rmSync(join(root, "config.json.lock"));
     // An owner message that does not name this sender is not the owner asking for it.
     await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:x"], d)).rejects.toThrow(Refusal);
     expect(config(root)).toBe(before);
