@@ -948,8 +948,18 @@ export class SlackAdapter implements MessengerAdapter {
   async fetchMessage(chat: string, message: string): Promise<FetchedMessage> {
     try {
       const body = await this.api("conversations.history", this.token(), { channel: chat, latest: message, inclusive: "true", limit: "1" }, "GET", undefined, ACTION_MAX_RETRY_AFTER_MS);
-      const m = (body.messages as SlackMessage[] | undefined)?.[0];
-      if (!m || m.ts !== message) return { unavailable: "not found" };
+      let m = (body.messages as SlackMessage[] | undefined)?.[0];
+      if (m?.ts !== message) {
+        // history lists top-level messages only: a reply lives in its thread. replies answers the parent first, so match by ts.
+        try {
+          const thread = await this.api("conversations.replies", this.token(), { channel: chat, ts: message, latest: message, oldest: message, inclusive: "true" }, "GET", undefined, ACTION_MAX_RETRY_AFTER_MS);
+          m = (thread.messages as SlackMessage[] | undefined)?.find((x) => x.ts === message);
+        } catch (e) {
+          if (!(e instanceof SlackApiError && e.error === "thread_not_found")) throw e;
+          m = undefined;
+        }
+      }
+      if (!m) return { unavailable: "not found" };
       return { from: m.user ?? m.bot_id ?? "?", at: tsMs(message), text: bodyText(m) };
     } catch (e) {
       if (e instanceof SlackApiError && GONE_ERRORS.has(e.error)) return { unavailable: `the bot may not read that channel (${e.error})` };
