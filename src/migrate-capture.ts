@@ -11,6 +11,8 @@ export type MigrateOpts = {
   readonly dryRun: boolean;
   readonly waitMinutes: number;
   readonly resume: boolean;
+  /** The session this `seori migrate` runs in (HC_TERMINAL_ID / HERDR_PANE_ID), if any: it is never migrated. */
+  readonly self?: SessionRef;
   readonly log: (line: string) => void;
 };
 

@@ -52,7 +52,7 @@ seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] 
 1. Hold. A journal is created at `$SEORI_HOME/migrate/<name>.json` and the lane is marked as migrating, so the duty loop neither nudges it nor flushes its inbox (or the replacement's) while the journal exists.
 2. Checkpoint. A checkpoint left by an earlier migration is removed first. omp is asked to write a handoff checkpoint (goal, open todos, last state) to `briefs/<name>.handoff.md` and stop. An idle agent gets the ask while it is idle, and a working one gets it while it is still working. seori then waits up to `--wait-minutes` (default 10) until omp has started on the ask (it reports working, or the checkpoint file appears) and stopped. If it never starts and writes nothing in that time, the capture goes on without a checkpoint. Only a checkpoint written after the ask is used. A `blocked` agent is asked nothing.
 3. Capture. A handoff brief `briefs/<name>.migrate-<time>.md` is written: the original brief (for lead and duty, their prompt file), a `## Handoff` section with the last 20 lane log entries, the checkpoint, the last 80 screen lines and the queued messages, then the lane rules.
-4. Open. The replacement opens on the target, a terminal labelled with this home's `seori.group` on hc or a new workspace on herdr, and omp starts the way `seori start` (a lane: `/goal` kickoff on the handoff brief) or `seori up` (lead and duty: the handoff brief as `--append-system-prompt`) starts it.
+4. Open. The replacement opens on the target, a terminal labelled with this home's `seori.group` on hc or a new workspace on herdr, and omp starts the way `seori start` (a lane: `/goal` kickoff on the handoff brief) or `seori up` (lead and duty: the handoff brief as `--append-system-prompt`, in the directory `seori migrate` runs from) starts it.
 5. Verify. The replacement must report `idle` or `working` within 3 minutes.
 6. Move the inbox. A `.forward` marker on the old inbox names the new session, and the old entries are merged into the new inbox. Queued entries stay queued, held entries stay held, and an entry that was typed but never submitted becomes held.
 7. Switch. The lane or role record points at the new session, and the lane keeps the old ref in `migratedFrom`.
@@ -65,6 +65,7 @@ Each session ends with one line:
 - `DEFERRED <name> blocked`: nothing moved, the blocked session got no message, and the hold is lifted.
 - `DEFERRED <name> working past N min`: nothing moved and the hold is lifted, but the session already received the checkpoint ask. The duty loop nudges it back to its lane work as it nudges any lane that goes quiet.
 - `SKIP <name> already on <runtime>`.
+- `SKIP <name> is the session running seori migrate`: only under `--all`. Closing that session would end the run before it finishes, so run `seori migrate` for it from another session. Named with `--lane` or `--role`, it is refused (exit 2).
 
 `--dry-run` prints `PLAN <name> <old> -> <runtime> (inbox entries: N)` and changes nothing. A run that was cut short resumes at the phase its journal recorded when it is started again, and a second `seori migrate` of the same session is refused while one runs.
 
