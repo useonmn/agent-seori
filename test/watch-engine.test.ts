@@ -262,10 +262,14 @@ describe("file watches", () => {
     await until("created", () => t.delivered.length === 1);
     expect(t.texts()).toEqual([`[watch f ${w.id}] created ${path}`]);
     await second.stop();
-    t.engine().start();
-    // Asserting an absence: there is no signal to await, so give the real poller (10 ms) several rounds.
-    await Bun.sleep(150);
-    expect(t.delivered).toHaveLength(1);
+    const third = t.engine();
+    third.start();
+    // The pass start() began creates the runner, whose first poll compares synchronously: once it settles, a repeat
+    // of the change would already be pending. A later change is then reported alone, proving there was none.
+    await third.tick();
+    writeFileSync(path, "changed after the restart");
+    await until("modified", () => t.delivered.length === 2);
+    expect(t.texts()).toEqual([`[watch f ${w.id}] created ${path}`, `[watch f ${w.id}] modified ${path}`]);
   });
 
   test("a directory watch reports a file modified in place deep inside it", async () => {

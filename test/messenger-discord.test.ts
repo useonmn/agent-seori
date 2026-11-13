@@ -46,6 +46,8 @@ class MockDiscord {
   gatewayStatus = 200;
   historyStatus = 200;
   nextId = 900;
+  /** A `hang` post answers only once this resolves (at the end of the test, after the adapter gave up). */
+  readonly hung = Promise.withResolvers<void>();
 
   constructor() {
     const self = this;
@@ -130,7 +132,7 @@ class MockDiscord {
       if (mode === "500") return new Response("oops", { status: 500 });
       if (mode === "400") return Response.json({ code: 50035 }, { status: 400 });
       if (mode === "hang") {
-        await Bun.sleep(1_000);
+        await this.hung.promise;
         return Response.json({ id: "late" });
       }
       this.posts.push({ channel: m[1]!, body });
@@ -142,7 +144,10 @@ class MockDiscord {
 
 let mocks: MockDiscord[] = [];
 afterEach(() => {
-  for (const m of mocks) m.server.stop(true);
+  for (const m of mocks) {
+    m.hung.resolve();
+    m.server.stop(true);
+  }
   mocks = [];
 });
 const mock = () => {

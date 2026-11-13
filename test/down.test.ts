@@ -63,20 +63,25 @@ describe("seori down", () => {
     const root = home();
     mkdirSync(join(root, "run"), { recursive: true });
     writeFileSync(stopPath(root, "loop"), JSON.stringify({ pid: 1111, at: 1 }));
-    const me = running(root, "loop", 2222, () => 5, 10);
+    // The stop-request poll, driven by hand: `check` is one poll, `stopped` records that release() cancelled it.
+    const poll = { check: undefined as (() => void) | undefined, stopped: false };
+    const every = (check: () => void) => {
+      poll.check = check;
+      return () => void (poll.stopped = true);
+    };
+    const me = running(root, "loop", 2222, () => 5, 10, every);
     try {
       expect(existsSync(stopPath(root, "loop"))).toBe(false);
       writeFileSync(stopPath(root, "loop"), JSON.stringify({ pid: 1111, at: 2 }));
-      const aborted = new Promise<boolean>((resolve) => {
-        me.stopped.addEventListener("abort", () => resolve(true));
-        setTimeout(() => resolve(false), 200);
-      });
-      expect(await aborted).toBe(false);
+      poll.check!();
+      expect(me.stopped.aborted).toBe(false);
       writeFileSync(stopPath(root, "loop"), JSON.stringify({ pid: 2222, at: 3 }));
-      await until("the abort", () => me.stopped.aborted, 2_000);
+      poll.check!();
+      expect(me.stopped.aborted).toBe(true);
     } finally {
       me.release();
     }
+    expect(poll.stopped).toBe(true);
     expect(existsSync(recordPath(root, "loop"))).toBe(false);
     expect(existsSync(stopPath(root, "loop"))).toBe(false);
   });

@@ -43,9 +43,17 @@ export type Running = {
 
 /**
  * Records this process as the running `name` and polls for a stop request addressed to its pid. A request left for
- * an earlier process is removed on start, so it can never stop this one.
+ * an earlier process is removed on start, so it can never stop this one. `every` runs the check every `ms` until the
+ * returned stop is called (an unref'd setInterval by default; tests check by hand).
  */
-export function running(root: string, name: Runner, pid: number = process.pid, now: () => number = Date.now, pollMs = STOP_POLL_MS): Running {
+export function running(
+  root: string,
+  name: Runner,
+  pid: number = process.pid,
+  now: () => number = Date.now,
+  pollMs = STOP_POLL_MS,
+  every: (tick: () => void, ms: number) => () => void = unrefInterval,
+): Running {
   mkdirSync(runDir(root), { recursive: true });
   if (existsSync(stopPath(root, name)) && readPid(stopPath(root, name)) !== pid) rmSync(stopPath(root, name), { force: true });
   writeFileSync(recordPath(root, name), JSON.stringify({ pid, startedAt: now() }));
@@ -53,16 +61,21 @@ export function running(root: string, name: Runner, pid: number = process.pid, n
   const check = (): void => {
     if (!ctl.signal.aborted && readPid(stopPath(root, name)) === pid) ctl.abort();
   };
-  const timer = setInterval(check, pollMs);
-  timer.unref?.();
+  const stopChecking = every(check, pollMs);
   return {
     stopped: ctl.signal,
     release() {
-      clearInterval(timer);
+      stopChecking();
       if (readPid(recordPath(root, name)) === pid) rmSync(recordPath(root, name), { force: true });
       if (readPid(stopPath(root, name)) === pid) rmSync(stopPath(root, name), { force: true });
     },
   };
+}
+
+function unrefInterval(tick: () => void, ms: number): () => void {
+  const timer = setInterval(tick, ms);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 /** The runners whose record names a live pid: what `seori up` finds already running in a home. */

@@ -92,6 +92,8 @@ export type DaemonOptions = {
   readonly now?: () => number;
   readonly adapterFor?: (config: MessengerConfig, root: string) => MessengerAdapter;
   readonly heartbeatMs?: number;
+  /** Runs the heartbeat every `ms` until the returned stop is called (a setInterval by default; tests beat by hand). */
+  readonly every?: (tick: () => void, ms: number) => () => void;
   readonly restartDelayMs?: number;
   /** Replaces the default of printing daemonLine(e) to stdout. */
   readonly onEvent?: (e: DaemonEvent) => void;
@@ -199,7 +201,11 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
 
   const channel = new Channel(root);
   writeHeartbeat(root, now());
-  const heartbeat = setInterval(() => {
+  const every = opts.every ?? ((tick: () => void, ms: number) => {
+    const timer = setInterval(tick, ms);
+    return () => clearInterval(timer);
+  });
+  const stopHeartbeat = every(() => {
     try {
       writeHeartbeat(root, now());
     } catch (e) {
@@ -279,7 +285,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     else signal.addEventListener("abort", () => aborted.resolve(), { once: true });
     await Promise.all([...messengers.map(runOne), aborted.promise]);
   } finally {
-    clearInterval(heartbeat);
+    stopHeartbeat();
     opts.signal?.removeEventListener("abort", onAbort);
     // Stopped before the lock is released, so a restarted daemon never runs a watch's command alongside this one's.
     await engine?.stop();

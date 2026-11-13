@@ -44,6 +44,17 @@ const fakeIn = (root: string, r: Record<string, unknown>) => {
   mkdirSync(join(root, "messenger", "fake"), { recursive: true });
   appendFileSync(join(root, "messenger", "fake", "in.jsonl"), `${JSON.stringify(r)}\n`);
 };
+/** A watch command that starts with `echo $$ > pid` wrote the pid of its sh, which the engine spawns and reaps. */
+const commandPid = (root: string): number => Number(readFileSync(join(root, "pid"), "utf8").trim());
+/** True once `pid` no longer exists (killed and reaped): the command can write nothing more. */
+const gone = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ESRCH";
+  }
+};
 const msg = (id: string, from = "u1"): InboundMessage => ({ id, source: "x", chat: "c", from, at: 1, text: `text ${id}` });
 
 describe("runDaemon", () => {
@@ -182,17 +193,22 @@ describe("runDaemon", () => {
   test("rewrites the heartbeat while running and keeps running with no messengers", async () => {
     const root = home();
     let clock = 1_000;
-    const d = start(root, { now: () => clock++ });
+    // The heartbeat timer, driven by hand: `tick` is the beat, `stopped` records that the daemon cancelled it.
+    const timer = { tick: undefined as (() => void) | undefined, stopped: false };
+    const every = (tick: () => void) => {
+      timer.tick = tick;
+      return () => void (timer.stopped = true);
+    };
+    const d = start(root, { now: () => clock, every });
     const beat = () => JSON.parse(readFileSync(heartbeatPath(root), "utf8")) as { at: number; pid: number };
-    await until("heartbeat", () => existsSync(heartbeatPath(root)));
-    const firstAt = beat().at;
-    await until("heartbeat advances", () => beat().at > firstAt + 2);
-    expect(beat().pid).toBe(process.pid);
+    expect(beat()).toEqual({ at: 1_000, pid: process.pid });
+    clock = 2_000;
+    timer.tick!();
+    expect(beat()).toEqual({ at: 2_000, pid: process.pid });
     expect(d.lines()).toEqual([`DAEMON no messengers configured; add one to ${join(root, "messengers.json")} (heartbeat and watches only)`]);
+    expect(timer.stopped).toBe(false);
     await d.stop();
-    const stoppedAt = beat().at;
-    await Bun.sleep(30); // proving the absence of further beats needs real time to pass
-    expect(beat().at).toBe(stoppedAt);
+    expect(timer.stopped).toBe(true);
   });
 
   test("returns stopped when its signal aborts, and config-changed when messengers.json changes", async () => {
@@ -216,7 +232,7 @@ describe("runDaemon", () => {
     const root = home();
     const w = new WatchStore(root).add({
       name: "ticker",
-      source: { kind: "command", command: "while :; do echo tick; echo x >> beats; sleep 0.05; done", cwd: root, filter: "tick" },
+      source: { kind: "command", command: "echo $$ > pid; while :; do echo tick; sleep 0.05; done", cwd: root, filter: "tick" },
       owner: { kind: "lead" },
     }, Date.now());
     const delivered: [Watch, string][] = [];
@@ -224,11 +240,10 @@ describe("runDaemon", () => {
     await until("a delivered watch event", () => delivered.length > 0, 5_000);
     expect(delivered[0]![0].id).toBe(w.id);
     expect(delivered[0]![1]).toStartWith(`[watch ticker ${w.id}] `);
+    const pid = commandPid(root);
+    expect(gone(pid)).toBe(false);
     await d.stop();
-    const beats = () => readFileSync(join(root, "beats"), "utf8").length;
-    const atStop = beats();
-    await Bun.sleep(300); // proving the command no longer runs needs real time to pass
-    expect(beats()).toBe(atStop);
+    expect(gone(pid)).toBe(true);
     expect(existsSync(daemonLockPath(root))).toBe(false);
   });
 
@@ -299,7 +314,7 @@ describe("seori daemon process", () => {
     const root = home();
     new WatchStore(root).add({
       name: "beats",
-      source: { kind: "command", command: "while :; do echo x >> beats; sleep 0.05; done", cwd: root, filter: "never" },
+      source: { kind: "command", command: "echo $$ > pid; while :; do echo x >> beats; sleep 0.05; done", cwd: root, filter: "never" },
       owner: { kind: "lead" },
     }, Date.now());
     const sh = loop(root);
@@ -312,10 +327,8 @@ describe("seori daemon process", () => {
       expect(await sh.exited).toBe(143);
       expect(existsSync(daemonLockPath(root))).toBe(false);
       expect(existsSync(recordPath(root, "daemon"))).toBe(false);
-      const beats = () => readFileSync(join(root, "beats"), "utf8").length;
-      const atStop = beats();
-      await Bun.sleep(300); // proving the command no longer runs needs real time to pass
-      expect(beats()).toBe(atStop);
+      // The daemon releases its record only after its engine stopped and reaped the command's sh.
+      expect(gone(commandPid(root))).toBe(true);
     } finally {
       killAll(sh, root);
     }
@@ -339,7 +352,7 @@ describe("seori daemon process", () => {
     const root = home();
     new WatchStore(root).add({
       name: "beats",
-      source: { kind: "command", command: "while :; do echo x >> beats; sleep 0.05; done", cwd: root, filter: "never" },
+      source: { kind: "command", command: "echo $$ > pid; while :; do echo x >> beats; sleep 0.05; done", cwd: root, filter: "never" },
       owner: { kind: "lead" },
     }, Date.now());
     const daemon = Bun.spawn([process.execPath, CLI, "daemon"], { env: env(root), stdout: "ignore", stderr: "ignore" });
@@ -348,10 +361,7 @@ describe("seori daemon process", () => {
       daemon.kill("SIGHUP");
       expect(await daemon.exited).toBe(129);
       expect(existsSync(daemonLockPath(root))).toBe(false);
-      const beats = () => readFileSync(join(root, "beats"), "utf8").length;
-      const atStop = beats();
-      await Bun.sleep(300); // proving the command no longer runs needs real time to pass
-      expect(beats()).toBe(atStop);
+      expect(gone(commandPid(root))).toBe(true);
     } finally {
       daemon.kill("SIGKILL");
     }
