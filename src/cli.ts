@@ -16,7 +16,7 @@ import { adapterFor } from "./messenger/index.ts";
 import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList, msgSend, parseTo } from "./msg.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
-import { pidAlive, type Role } from "./store.ts";
+import { pidAlive, type Lane, type Role } from "./store.ts";
 import { parsePr } from "./harness.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
 import { canLaunch, canLaunchLine, guardLines } from "./guard.ts";
@@ -71,6 +71,7 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori checkpoint <key> --step ID --result T --evidence P [--remote-effect R ...] | checkpoints <key>
   seori lesson add <key|--cwd DIR> --rule T --evidence P | lesson list [--cwd DIR] | lesson mark <id> --outcome O
                                               O = helped|no-effect|harmful|encoded; new lanes get a repo's pending/helped lessons
+  seori lesson add --global --rule T --evidence P   the lead's rule for every lane (refused from a lane's terminal)
   seori worklog add <title> --source REF | next <id> <text> | note <id> <text> | close <id> --result T | list [--open]
   seori boot                                   read-only check after a restart or compaction (exit 1 if something was unreadable)
   seori can-launch | guard                     room for a lane? (exit 4 HOLD) | host reading and guard state
@@ -116,7 +117,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -661,8 +662,29 @@ function laneKey(d: Deps, key: string): string {
   return key;
 }
 
+/**
+ * The open lane whose session is the caller's (HC_TERMINAL_ID or HERDR_PANE_ID), if any. A global lesson reaches every
+ * future brief, so it is the lead's: this stops a lane from adding or reviving one by accident or on routine
+ * instruction. It is a convenience check, not a security boundary: it reads only the env, and a direct write to
+ * lessons.jsonl skips the CLI.
+ */
+function callerLane(d: Deps): Lane | undefined {
+  const self = d.runtimes.selfAny(process.env);
+  return self === undefined ? undefined : d.store.laneBySession(self);
+}
+
 function lesson(d: Deps, a: Args, sub: string | undefined): number {
   const root = d.store.root;
+  if (sub === "add" && one(a, "global") === "true") {
+    if (a.pos[2] !== undefined) throw new Refusal("a --global lesson is the lead's: give no lane key");
+    if (one(a, "cwd") !== undefined) throw new Refusal("a --global lesson has no --cwd");
+    const caller = callerLane(d);
+    if (caller) throw new Refusal(`a --global lesson is the lead's; this terminal is lane ${caller.key}`);
+    console.log(formatLessonAdded(addLesson(root, {
+      global: true, rule: need(one(a, "rule"), "--rule"), evidence: need(one(a, "evidence"), "--evidence"),
+    }, d.now())));
+    return 0;
+  }
   if (sub === "add") {
     const key = a.pos[2];
     const cwd = one(a, "cwd");
@@ -686,7 +708,13 @@ function lesson(d: Deps, a: Args, sub: string | undefined): number {
   if (sub === "mark") {
     const outcome = need(one(a, "outcome"), "--outcome");
     if (!isLessonMark(outcome)) throw new Refusal("--outcome must be helped, no-effect, harmful or encoded");
-    console.log(formatLessonMarked(markLesson(root, need(a.pos[2], "lesson id"), outcome, d.now())));
+    const id = need(a.pos[2], "lesson id");
+    // Marking a global lesson helped would put it back into every brief, so a lane cannot mark one.
+    if (listLessons(root).lessons.find((l) => l.id === id)?.scope === "global") {
+      const caller = callerLane(d);
+      if (caller) throw new Refusal(`a global lesson is the lead's to mark; this terminal is lane ${caller.key}`);
+    }
+    console.log(formatLessonMarked(markLesson(root, id, outcome, d.now())));
     return 0;
   }
   throw new Refusal(`unknown lesson command ${sub}\n\n${USAGE}`);

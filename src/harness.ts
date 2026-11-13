@@ -19,7 +19,7 @@ import { guardTick } from "./guard.ts";
 import { progressTick } from "./progress.ts";
 import { superviseTick } from "./supervision.ts";
 import { checkSignals, parseDone } from "./signals.ts";
-import { LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
+import { GLOBAL_LESSONS_HEADING, LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
 import { refText, sameSession } from "./refs.ts";
@@ -32,7 +32,7 @@ const PROMPTS = join(import.meta.dir, "..", "prompts");
 const CLI = resolve(import.meta.dir, "cli.ts");
 const FOOTER_RE = /(^|\n)## Lane rules \(added by seori for lane [\s\S]*$/;
 /** The lessons block renderLessons puts at the top of a brief: the heading, one `- ` line per lesson, a blank line. */
-const LESSONS_RE = new RegExp(`^${LESSONS_HEADING}\\n(?:- .*\\n)*\\n`);
+const LESSONS_RE = new RegExp(`^(?:${GLOBAL_LESSONS_HEADING}\\n(?:- .*\\n)*\\n)?(?:${LESSONS_HEADING}\\n(?:- .*\\n)*\\n)?`);
 
 export type Deps = {
   readonly store: Store;
