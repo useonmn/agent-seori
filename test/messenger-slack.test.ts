@@ -532,6 +532,21 @@ describe("SlackAdapter removed user-token mode", () => {
   });
 });
 
+describe("SlackAdapter removed agent mode", () => {
+  test("leftover agent options are ignored with one warning naming them; the adapter still starts", () => {
+    const warned: string[] = [];
+    const err = console.error;
+    console.error = (...a: unknown[]) => void warned.push(a.join(" "));
+    try {
+      new SlackAdapter({ source: "slack", owner: OWNER, options: { agent: true, agentStatus: "x" } }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } });
+      new SlackAdapter({ source: "slack", owner: OWNER }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } });
+    } finally {
+      console.error = err;
+    }
+    expect(warned).toEqual(["slack slack: Slack agent mode was removed; options agent, agentStatus are ignored (DM replies are no longer forced into threads and no working status is shown)"]);
+  });
+});
+
 describe("SlackAdapter check", () => {
   test("reports the bot and team; a bad token is a clear error", async () => {
     const mock = startMock();
