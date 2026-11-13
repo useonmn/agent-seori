@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
@@ -245,6 +245,29 @@ describe("stalls", () => {
       w.clock = 36 * MIN;
       expect(await superviseTick(d)).toEqual([{ lane: "fix-a", action: "stalled" }]);
       expect(lead.received).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an activity path is read through a symlink; a directory changes when an entry is added, not when one is rewritten", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "seori-activity-"));
+    try {
+      const target = join(dir, "real.log");
+      writeFileSync(target, "one\n");
+      symlinkSync(target, join(dir, "link.log"));
+      mkdirSync(join(dir, "data"));
+      writeFileSync(join(dir, "data", "a"), "one\n");
+      const { d } = setup("working", { cwd: dir });
+      const fingerprint = async (path: string) => (await fileActivity(d, dir, [path])).fingerprint;
+      const link = await fingerprint("link.log");
+      writeFileSync(target, "two, longer\n");
+      expect(await fingerprint("link.log")).not.toBe(link);
+      const data = await fingerprint("data");
+      writeFileSync(join(dir, "data", "a"), "two, longer\n");
+      expect(await fingerprint("data")).toBe(data);
+      writeFileSync(join(dir, "data", "b"), "new\n");
+      expect(await fingerprint("data")).not.toBe(data);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

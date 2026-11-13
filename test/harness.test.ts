@@ -167,6 +167,13 @@ describe("lanes", () => {
     expect(readFileSync(lane.brief, "utf8")).toStartWith("Fix the flaky login test.\n\n## Lane rules");
   });
 
+  test("start --activity-path given twice stores both values on the lane", async () => {
+    const { d, brief } = setup();
+    const args = ["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force", "--activity-path", "out", "--activity-path", "/data/run.log"];
+    expect(await main(args, d)).toBe(0);
+    expect(d.store.lane("fix-login")!.activityPaths).toEqual(["out", "/data/run.log"]);
+  });
+
   test("start and up refuse without herdr's omp integration, before opening anything", async () => {
     const { w, d, brief } = setup();
     w.ompIntegration = false;

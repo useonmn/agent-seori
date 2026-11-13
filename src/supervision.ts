@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, statSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ConfigError, loadConfig, type SeoriConfig } from "./config.ts";
 import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
@@ -126,8 +126,9 @@ function writeActivity(root: string, state: ActivityState): void {
  * every untracked file, node_modules left out) with its mtime and size. Untracked files are listed one by one, as a
  * new directory's own mtime does not change when a file inside it is rewritten. `newestMtime` is the latest mtime
  * among them. Not a git work tree, or git failing: an empty fingerprint, so only reports count as progress there.
- * `activityPaths` (resolved against cwd) are added with their mtime, ctime and size, git or not, as upstream does:
- * a lane whose output lies outside its repo (or that has none) shows progress there.
+ * `activityPaths` (resolved against cwd, symlinks followed) are added with their mtime, ctime and size, git or not,
+ * as upstream does: a lane whose output lies outside its repo (or that has none) shows progress there. A directory's
+ * own times change only when an entry is added, removed or renamed; a file rewritten inside it is no change.
  */
 export async function fileActivity(
   d: Deps, cwd: string, activityPaths: readonly string[] = [],
@@ -136,7 +137,7 @@ export async function fileActivity(
   if (activityPaths.length === 0) return git;
   const paths = [...new Set(activityPaths.map((p) => resolve(cwd, p)))].sort().map((path) => {
     try {
-      const st = lstatSync(path);
+      const st = statSync(path);
       return [path, st.mtimeMs, st.ctimeMs, st.size];
     } catch {
       return [path, null];
