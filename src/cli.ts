@@ -18,6 +18,7 @@ import {
   flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgReact, msgSend, msgShow, msgThread, msgTyping, parseTo,
   threadLine, whereLabel, whereOf,
 } from "./msg.ts";
+import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
 import { pidAlive, type Lane, type Role } from "./store.ts";
@@ -54,12 +55,14 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
-              [--activity-path PATH ...] [--model M]
+              [--activity-path PATH ...] [--model M] [--workflow ulw|none]
                                               Done line read back live before close; ID = lead channel id for progress posts;
                                               ceilings block (report to lead); exits 4 with HOLD when the host is full;
                                               a written activity file (or an entry added to or removed from an
                                               activity directory) counts as progress in the stall check; M = this lane's
-                                              omp model instead of SEORI_MODEL (kept by seori migrate);
+                                              omp model instead of SEORI_MODEL (kept by seori migrate); --workflow ulw:
+                                              the kickoff is /goal ulw ... (needs the omp-ulw extension), none: plain goal
+                                              mode whatever config workflow says;
                                               prints STARTED, then waits for the start (config startupWaitSeconds, 180 s):
                                               STARTUP_OK|STARTUP_DONE exit 0, STARTUP_ERROR|STARTUP_UNCONFIRMED exit 3 (lane kept)
   seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
@@ -541,6 +544,13 @@ async function daemon(root: string): Promise<number> {
   return 128 + osConstants.signals[caught];
 }
 
+/** `seori start --workflow`: a known workflow, or none for stock omp goal mode whatever config.json says. */
+function workflowFlag(v: string): Workflow | null {
+  if (v === "none") return null;
+  if (!isWorkflow(v)) throw new Refusal(`--workflow must be ${WORKFLOWS.join(" or ")} or none, got ${JSON.stringify(v)}`);
+  return v;
+}
+
 async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
   const root = d.store.root;
   if (sub === "send") {
@@ -894,6 +904,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         ...(one(a, "thread") !== undefined ? { thread: one(a, "thread")! } : {}),
         ...(a.flags.has("activity-path") ? { activityPaths: a.flags.get("activity-path")! } : {}),
         ...(one(a, "model") !== undefined ? { model: one(a, "model")! } : {}),
+        ...(one(a, "workflow") !== undefined ? { workflow: workflowFlag(one(a, "workflow")!) } : {}),
         ...(anyCeiling ? {
           ceilings: {
             wallMinutes: ceilingFlag("wall-minutes", defaults.wallMinutes),

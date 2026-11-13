@@ -108,7 +108,7 @@ seori up [--cwd DIR]                         start this home's lead, duty, duty 
 seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
 seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
-            [--activity-path PATH ...] [--model M]
+            [--activity-path PATH ...] [--model M] [--workflow ulw|none]
                                             Done line read back live before close; ID = lead channel id for progress posts;
                                             ceilings block (report to lead); exits 4 with HOLD when the host is full
 seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
@@ -510,6 +510,14 @@ Limits:
 
 Watches cover the usual sources with coalescing, a wake budget and up to 5 standing watches for 7 days. They live in seori, one file each under `$SEORI_HOME/watches/`, not in the agent's session. They survive `/new`, an agent restart and a daemon restart (the restarted daemon resumes them), `seori watch list` shows them all in one place, a crashed command is restarted on its own, and PR checks and session state are watch kinds of their own.
 
+## Workflows
+
+A lane runs in omp goal mode: its kickoff is `/goal Read your brief at ...`. A host that has the optional [omp-ulw](https://github.com/dbc-hbin/omp-ulw) extension can run lanes as ULW instead: `seori start --workflow ulw` (or `"workflow": "ulw"` in config.json for every lane) makes the kickoff `/goal ulw Read your brief at ...`. omp still holds the lane's native goal, so the startup verdict, `seori pause` and `seori resume` and `seori migrate` work as before; a migrated lane keeps its workflow. `--workflow none` starts one lane in plain goal mode whatever the config says.
+
+`ulw` is the only workflow seori accepts. omp-ulw's other entry points (mass-ulw, ulw-plan, ulw-research, ulw-execute, ulw-loop) run their own loop without omp's goal, so seori could not tell whether a lane started with one of them is working, paused or done. A brief can still ask a ulw lane to use them, or omp-ulw's specialist skills, inside its work.
+
+Before it opens a pane, `seori start` checks `omp plugin list --json` and refuses `--workflow ulw` when omp-ulw is not enabled, so a lane never gets a goal that starts with a word nothing understands. omp-ulw is a separate install that seori never bundles or installs; see the seori-mode skill's `references/setup.md`.
+
 ## Configuration (config.json)
 
 `$SEORI_HOME/config.json` is optional, and so is every field in it; a missing file means every default. With every default written out:
@@ -541,6 +549,7 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
 | `closeAfterMin` | `5` | minutes after READY that a lane with a Done line closes on its own, unless the lead objects |
 | `progressEveryMin` | `15` | a lane with `--thread` gets its newest report posted at most this often (minutes) |
 | `blockedPromptMin` | `10` | minutes a lane's pane may show a dialog (`blocked`) before the lead gets one `[BLOCKED-PROMPT <key>]`; fractions work (`0.5` is 30 s) |
+| `workflow` | unset | every lane's workflow unless `seori start --workflow` says otherwise: `"ulw"` starts lanes with `/goal ulw ...` for the optional omp-ulw extension; unset is plain omp goal mode. See [Workflows](#workflows) |
 | `startupWaitSeconds` | `180` | how long `seori start` watches a new lane for a startup verdict (first check 20 s after the kickoff, then every 10 s); see [How a lane starts](#how-a-lane-starts) |
 | `supervision.defaults.wallMinutes` | `null` | wall-clock ceiling per lane, in minutes; `null` is off |
 | `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off |

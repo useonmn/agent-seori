@@ -15,6 +15,7 @@ import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } 
 import { adapterFor } from "./messenger/index.ts";
 import { KEY_RE, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
 import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
+import { OMP_ULW_URL, type Workflow } from "./workflow.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
 import { progressTick } from "./progress.ts";
@@ -115,6 +116,25 @@ export const INTEGRATION_MISSING = "herdr's omp integration is not installed; ru
 /** seori reads agent status from herdr, which reports omp as always idle without its omp integration: refuse to start. */
 export async function requireOmpIntegration(d: Deps): Promise<void> {
   if (!(await d.runtimes.default.agentIntegration())) throw new Refusal(INTEGRATION_MISSING);
+}
+
+/**
+ * Refuses a workflow whose omp extension is not enabled, before any pane opens: a kickoff with the keyword but without
+ * the extension would hand the lane a goal that starts with a meaningless word.
+ */
+export async function requireWorkflowExtension(d: Deps, workflow: Workflow): Promise<void> {
+  let listed: { npm?: { name?: unknown; enabled?: unknown }[]; marketplace?: { name?: unknown; enabled?: unknown }[] };
+  try {
+    const r = await d.exec(d.agentCmd, ["plugin", "list", "--json"]);
+    if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim() || `exit ${r.code}`);
+    listed = JSON.parse(r.stdout);
+  } catch (e) {
+    throw new Refusal(`--workflow ${workflow}: could not list omp's plugins to check for the omp-ulw extension (${d.agentCmd} plugin list --json: ${e instanceof Error ? e.message : String(e)})`);
+  }
+  const plugins = [...(listed.npm ?? []), ...(listed.marketplace ?? [])];
+  if (!plugins.some((p) => p.name === "omp-ulw" && p.enabled === true)) {
+    throw new Refusal(`--workflow ${workflow}: the omp-ulw extension is not enabled in omp (${d.agentCmd} plugin list); install it from ${OMP_ULW_URL}, or start the lane without --workflow`);
+  }
 }
 
 /**
@@ -405,7 +425,11 @@ export async function startLane(d: Deps, key: string, briefFile: string, opts: S
   return started.lane;
 }
 
-export type StartOptions = { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[]; model?: string };
+/** `workflow`: the lane's workflow (src/workflow.ts); null starts stock omp goal mode whatever config.json says. */
+export type StartOptions = {
+  cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[]; model?: string;
+  workflow?: Workflow | null;
+};
 
 /**
  * What startLane does, without the warning for a kickoff omp has not started on: the saved lane, when the kickoff
@@ -425,6 +449,8 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   if (opts.activityPaths?.some((p) => !p.trim())) throw new Refusal("--activity-path needs a path");
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
   await requireOmpIntegration(d);
+  const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
+  if (workflow !== undefined) await requireWorkflowExtension(d, workflow);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
   const closeAfterMin = doneLine === undefined ? 0 : loadConfig(d.store.root).closeAfterMin;
@@ -446,7 +472,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   try {
     await startAgent(d, key, ref, [], opts.model?.trim() ?? d.model);
     await agentSessionReported(d, ref);
-    if (!(await deliverOrThrow(rt, ref, d.agent.kickoff(briefPath, key)))) throw new Error(`${d.agent.kind} was not in front of the pane to take the kickoff`);
+    if (!(await deliverOrThrow(rt, ref, d.agent.kickoff(briefPath, key, workflow)))) throw new Error(`${d.agent.kind} was not in front of the pane to take the kickoff`);
     kickedAt = d.now();
     took = await kickoffTook(d, ref);
     if (!took) {
@@ -468,6 +494,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     ...(opts.ceilings ? { ceilings: opts.ceilings } : {}),
     ...(opts.activityPaths?.length ? { activityPaths: [...opts.activityPaths] } : {}),
     ...(opts.model !== undefined ? { model: opts.model.trim() } : {}),
+    ...(workflow !== undefined ? { workflow } : {}),
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);

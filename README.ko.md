@@ -105,7 +105,7 @@ seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시�
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널 또는 탭, 에이전트 세션, 교훈 + 브리프 + 레인 규칙
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
-            [--activity-path PATH ...] [--model M]
+            [--activity-path PATH ...] [--model M] [--workflow ulw|none]
                                             닫기 전에 Done 줄을 실제로 확인; ID = 진행 상황을 올릴 리드 채널 id;
                                             한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4
 seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
@@ -486,6 +486,14 @@ seori watch stop dev
 
 감시는 여러 종류의 대상을 지원하고, 알림을 묶어 보내며, 깨우기 한도가 있고, 7일짜리 상시 감시를 5개까지 둘 수 있습니다. 감시는 에이전트 세션이 아니라 seori 안에(`$SEORI_HOME/watches/`에 감시마다 파일 하나) 있습니다. 그래서 `/new`, 에이전트 재시작, 데몬 재시작에도 살아남고(다시 켜진 데몬이 이어서 돌림), `seori watch list` 하나로 모두 볼 수 있고, 죽은 명령은 저절로 다시 띄우며, PR 체크와 세션 상태를 따로 지켜볼 수 있습니다.
 
+## 워크플로
+
+레인은 omp 목표 모드로 돕니다. 시작 명령은 `/goal Read your brief at ...`입니다. 선택 설치인 [omp-ulw](https://github.com/dbc-hbin/omp-ulw) 확장이 있는 컴퓨터에서는 레인을 ULW로 돌릴 수 있습니다. `seori start --workflow ulw`(모든 레인에 적용하려면 config.json에 `"workflow": "ulw"`)로 시작하면 시작 명령이 `/goal ulw Read your brief at ...`이 됩니다. 레인의 목표는 여전히 omp 자체 목표이므로 시작 판정, `seori pause`와 `seori resume`, `seori migrate`는 그대로 동작하고, 옮긴 레인도 같은 워크플로를 씁니다. `--workflow none`은 설정과 상관없이 그 레인 하나를 기본 목표 모드로 시작합니다.
+
+seori가 받는 워크플로는 `ulw` 하나입니다. omp-ulw의 다른 진입점(mass-ulw, ulw-plan, ulw-research, ulw-execute, ulw-loop)은 omp 목표 없이 자기 루프로 돌기 때문에, 그것으로 시작한 레인이 일하는 중인지, 멈췄는지, 끝났는지 seori가 알 수 없습니다. 대신 브리프에서 ulw 레인에게 그 워크플로나 omp-ulw의 전문 스킬을 일 안에서 쓰라고 할 수 있습니다.
+
+`seori start`는 창을 열기 전에 `omp plugin list --json`을 확인하고, omp-ulw가 켜져 있지 않으면 `--workflow ulw`를 거부합니다. 그래서 아무도 알아듣지 못하는 단어로 시작하는 목표가 레인에 가지 않습니다. omp-ulw는 따로 설치하는 확장이고, seori가 함께 넣거나 설치하지 않습니다. seori-mode 스킬의 `references/setup.md`를 보세요.
+
 ## 설정 (config.json)
 
 `$SEORI_HOME/config.json`은 없어도 되고, 안의 필드도 모두 빼도 됩니다. 파일이 없으면 모두 기본값입니다. 기본값을 모두 적으면 이렇습니다:
@@ -511,6 +519,7 @@ seori watch stop dev
 | `closeAfterMin` | `5` | Done 줄이 있는 레인이 READY 뒤 몇 분 지나면 저절로 닫히는지(리드가 반대하지 않으면) |
 | `progressEveryMin` | `15` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지 |
 | `blockedPromptMin` | `10` | 레인 창에 대화 상자(`blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
+| `workflow` | 없음 | `seori start --workflow`로 따로 정하지 않은 모든 레인의 워크플로입니다. `"ulw"`면 레인을 `/goal ulw ...`로 시작해 선택 설치인 omp-ulw 확장으로 돌립니다. 없으면 omp 기본 목표 모드입니다. [워크플로](#워크플로) 참고 |
 | `startupWaitSeconds` | `180` | `seori start`가 새 레인의 시작 판정을 위해 몇 초까지 지켜보는지(시작 명령 20초 뒤 첫 확인, 그 뒤 10초마다). [레인이 시작되는 방법](#레인이-시작되는-방법) 참고 |
 | `supervision.defaults.wallMinutes` | `null` | 레인마다 걸린 시간 한도(분). `null`은 끔 |
 | `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |

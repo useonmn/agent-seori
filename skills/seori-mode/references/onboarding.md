@@ -38,6 +38,9 @@ A no skips that tool. Retain every no, and do not ask about that tool again unle
 
 ## 4. Crawl each allowed tool in depth, read-only
 
+With the omp-ulw extension enabled (`omp plugin list` shows it), run this crawl as a ULW task: start it with `ulw` in front of the task in this session, so it is driven to its end with evidence.
+
+
 Read; never post, react, edit, mark read, accept or send. Go deep enough to understand the work, not only the titles:
 
 | Tool | Read |

@@ -4,6 +4,7 @@ import { homedir, hostname, uptime } from "node:os";
 import { join } from "node:path";
 import { refFromText, refText, sameSession } from "./refs.ts";
 import type { SessionRef } from "./runtime/types.ts";
+import type { Workflow } from "./workflow.ts";
 
 /**
  * working/waiting: the lane runs. ready: it sent READY (a done claim). paused: the owner said wait (seori pause; its goal
@@ -47,6 +48,8 @@ export type Lane = {
   activityPaths?: string[];
   /** `seori start --model`: the model this lane's omp runs with instead of SEORI_MODEL (kept by seori migrate). */
   model?: string;
+  /** The workflow this lane's kickoff named (src/workflow.ts); a migrated replacement gets the same one. */
+  workflow?: Workflow;
   /** Once-per-change alert marks (ceiling reached, stalled, ...): key -> when it was raised. */
   alerts?: Record<string, number>;
   /** When duty first saw the lane's pane `blocked` (a dialog open) in the current spell; cleared once it is not. */

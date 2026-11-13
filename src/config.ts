@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceilings } from "./store.ts";
+import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 
 // `$SEORI_HOME/config.json`: optional settings for the agent and runtime choice (read by src/agent/profile.ts and
 // src/runtime/select.ts), the done flow, PR rules, supervision, the host guard and heavy slots.
@@ -51,6 +52,8 @@ export type SeoriConfig = {
   };
   readonly guard: GuardThresholds;
   readonly heavy: { readonly slots: number; readonly maxLoadPct: number };
+  /** Every lane's workflow (src/workflow.ts) unless `seori start --workflow` says otherwise; unset: stock omp goal mode. */
+  readonly workflow?: Workflow;
 };
 
 /** The name of an instance whose config.json sets none: the first seori on a PC keeps the label it always had. */
@@ -107,7 +110,7 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks"], path);
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;
@@ -141,6 +144,11 @@ export function loadConfig(root: string): SeoriConfig {
   if (!isObj(guard)) throw new ConfigError(`${path}: guard must be an object`);
   only(guard, Object.keys(D.guard), `${path} guard`);
 
+  const workflow = raw["workflow"];
+  if (workflow !== undefined && !isWorkflow(workflow)) {
+    throw new ConfigError(`${path}: workflow must be ${WORKFLOWS.map((w) => JSON.stringify(w)).join(" or ")} (an omp-ulw entry point that keeps omp's goal), got ${JSON.stringify(workflow)}`);
+  }
+
   const heavy = raw["heavy"] ?? {};
   if (!isObj(heavy)) throw new ConfigError(`${path}: heavy must be an object`);
   only(heavy, ["slots", "maxLoadPct"], `${path} heavy`);
@@ -171,6 +179,7 @@ export function loadConfig(root: string): SeoriConfig {
       panesMax: num(guard, "panesMax", `${path} guard`, D.guard.panesMax),
     },
     heavy: { slots, maxLoadPct: num(heavy, "maxLoadPct", `${path} heavy`, D.heavy.maxLoadPct) },
+    ...(workflow !== undefined ? { workflow } : {}),
   };
 }
 
