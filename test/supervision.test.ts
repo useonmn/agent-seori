@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfig } from "../src/config.ts";
 import { spawnExec } from "../src/runtime/exec.ts";
 import { blockedText, fileActivity, laneUsage, reachedCeilings, superviseTick } from "../src/supervision.ts";
 import type { Lane, LaneStatus } from "../src/store.ts";
@@ -225,6 +226,36 @@ describe("stalls", () => {
     waiting.w.clock = 60 * MIN;
     expect(await superviseTick(waiting.d)).toEqual([]);
     expect(waiting.lead.received).toEqual([]);
+  });
+
+  test.each(["lane", "config"] as const)("a change to an activity path (from the %s, relative to the lane's cwd) counts as progress", async (where) => {
+    const dir = mkdtempSync(join(tmpdir(), "seori-activity-"));
+    const file = join(dir, "out.log");
+    writeFileSync(file, "one\n");
+    const { w, d, lead, config } = setup("working", where === "lane" ? { cwd: dir, activityPaths: ["out.log"] } : { cwd: dir });
+    if (where === "config") config({ supervision: { activityPaths: ["out.log"] } });
+    try {
+      w.clock = 10 * MIN;
+      await superviseTick(d);
+      writeFileSync(file, "two, longer\n");
+      w.clock = 15 * MIN;
+      await superviseTick(d);
+      w.clock = 34 * MIN;
+      expect(await superviseTick(d)).toEqual([]);
+      w.clock = 36 * MIN;
+      expect(await superviseTick(d)).toEqual([{ lane: "fix-a", action: "stalled" }]);
+      expect(lead.received).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("supervision.activityPaths must be a list of non-empty strings", () => {
+    const { d, config } = setup();
+    config({ supervision: { activityPaths: "out.log" } });
+    expect(() => loadConfig(d.store.root)).toThrow(/activityPaths/);
+    config({ supervision: { activityPaths: [""] } });
+    expect(() => loadConfig(d.store.root)).toThrow(/activityPaths/);
   });
 
   test("hungAfterMin comes from config.json", async () => {

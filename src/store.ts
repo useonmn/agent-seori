@@ -43,6 +43,8 @@ export type Lane = {
   /** The status a paused lane returns to on resume. */
   pausedFrom?: LaneStatus;
   ceilings?: Ceilings;
+  /** `seori start --activity-path`: files or directories (relative to cwd) whose change counts as progress (src/supervision.ts). */
+  activityPaths?: string[];
   /** Once-per-change alert marks (ceiling reached, stalled, ...): key -> when it was raised. */
   alerts?: Record<string, number>;
   /** When duty first saw the lane's pane `blocked` (a dialog open) in the current spell; cleared once it is not. */

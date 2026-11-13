@@ -53,6 +53,14 @@ describe("start with a Done line", () => {
     expect(text).not.toContain("{{");
   });
 
+  test("stores --activity-path values on the lane; none stores nothing", async () => {
+    const { d, brief, cwd } = setup();
+    const lane = await startLane(d, "fix-login", brief, { workspace: "w1", cwd, activityPaths: ["out", "/data/run.log"] });
+    expect(d.store.lane(lane.key)!.activityPaths).toEqual(["out", "/data/run.log"]);
+    const plain = await startLane(d, "fix-other", brief, { workspace: "w1", cwd, activityPaths: [] });
+    expect("activityPaths" in d.store.lane(plain.key)!).toBe(false);
+  });
+
   test("closeAfterMin comes from config.json", async () => {
     const { d, brief, cwd } = setup();
     writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ closeAfterMin: 12 }));

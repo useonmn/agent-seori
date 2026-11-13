@@ -105,6 +105,7 @@ seori up [--cwd DIR]                         start this home's lead, duty, duty 
 seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
 seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
+            [--activity-path PATH ...]
                                             Done line read back live before close; ID = lead channel id for progress posts;
                                             ceilings block (report to lead); exits 4 with HOLD when the host is full
 seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
@@ -309,7 +310,7 @@ The duty loop watches every open lane for two things and tells the lead once eac
 
 Ceilings. A lane can have a wall-clock, a token and a cost ceiling. `seori start --wall-minutes N --token-limit N --cost-limit N` sets them for one lane; `none` switches one off, and a flag left out takes the config default. A lane started with none of these flags follows `supervision.defaults` in `config.json`, which are all off by default. Wall-clock time counts from the lane's start. Tokens and cost are summed over the assistant messages in the lane's agent session file, whose path comes from the runtime. Only herdr reports that path today, so on hc the totals read as unknown and only the wall-clock ceiling applies; a total that cannot be read never reaches a ceiling and is shown once as a `usage-unknown` duty event. A reached ceiling is told as `[BLOCKED <key>] <which> ceiling reached (<reading>, limit <limit>); the lane keeps running until you decide`, once per ceiling and limit (a raised limit is told again once reached), and logged on the lane.
 
-Stalls. A working lane that the runtime reads working but that has sent no report and changed no file for `supervision.hungAfterMin` minutes (default 20) is told as `[STALLED <key>] ...`, once per stall. A file change is a new HEAD or a change in the paths `git status` lists in the lane's cwd (`node_modules` left out), with their times and sizes; outside a git checkout only reports count. A waiting lane said it waits, so its quiet is no stall. The change history is kept in `duty/supervision.json`.
+Stalls. A working lane that the runtime reads working but that has sent no report and changed no file for `supervision.hungAfterMin` minutes (default 20) is told as `[STALLED <key>] ...`, once per stall. A file change is a new HEAD or a change in the paths `git status` lists in the lane's cwd (`node_modules` left out), with their times and sizes. Paths given with `seori start --activity-path PATH` (repeatable) or in `supervision.activityPaths`, relative to the lane's cwd, count too, git checkout or not, so a lane writing its output elsewhere (a log, a data directory) is not reported stalled while it writes; outside a git checkout and without activity paths only reports count. A waiting lane said it waits, so its quiet is no stall. The change history is kept in `duty/supervision.json`.
 
 ## Worklog
 
@@ -495,7 +496,7 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
   "closeAfterMin": 5,
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
-  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20 },
+  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
 }
@@ -518,6 +519,7 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
 | `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off |
 | `supervision.defaults.costUsd` | `null` | cost ceiling per lane, in US dollars; `null` is off |
 | `supervision.hungAfterMin` | `20` | minutes with no report and no file change before a working lane is reported stalled |
+| `supervision.activityPaths` | `[]` | files or directories (relative to each lane's cwd) whose change counts as every lane's progress |
 | `guard.loadAlertPct` | `150` | 1-minute load per core (%) above which the guard alerts |
 | `guard.loadOkPct` | `80` | load per core (%) it must fall under to clear |
 | `guard.memFreeMinPct` | `10` | free memory (%) under which new lanes are held and the guard alerts |

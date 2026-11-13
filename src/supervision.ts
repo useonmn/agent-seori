@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ConfigError, loadConfig, type SeoriConfig } from "./config.ts";
 import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
 import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
@@ -126,8 +126,26 @@ function writeActivity(root: string, state: ActivityState): void {
  * every untracked file, node_modules left out) with its mtime and size. Untracked files are listed one by one, as a
  * new directory's own mtime does not change when a file inside it is rewritten. `newestMtime` is the latest mtime
  * among them. Not a git work tree, or git failing: an empty fingerprint, so only reports count as progress there.
+ * `activityPaths` (resolved against cwd) are added with their mtime, ctime and size, git or not, as upstream does:
+ * a lane whose output lies outside its repo (or that has none) shows progress there.
  */
-export async function fileActivity(d: Deps, cwd: string): Promise<{ fingerprint: string; newestMtime?: number }> {
+export async function fileActivity(
+  d: Deps, cwd: string, activityPaths: readonly string[] = [],
+): Promise<{ fingerprint: string; newestMtime?: number }> {
+  const git = await gitActivity(d, cwd);
+  if (activityPaths.length === 0) return git;
+  const paths = [...new Set(activityPaths.map((p) => resolve(cwd, p)))].sort().map((path) => {
+    try {
+      const st = lstatSync(path);
+      return [path, st.mtimeMs, st.ctimeMs, st.size];
+    } catch {
+      return [path, null];
+    }
+  });
+  return { ...git, fingerprint: JSON.stringify({ git: git.fingerprint, paths }) };
+}
+
+async function gitActivity(d: Deps, cwd: string): Promise<{ fingerprint: string; newestMtime?: number }> {
   const status = await d.exec("git", ["-C", cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
   if (status.code !== 0) return { fingerprint: "" };
   // Porcelain paths are relative to the repository root, not to cwd: cwd may be a subdirectory of the repo.
@@ -291,7 +309,7 @@ async function ceilingCheck(d: Deps, lane: Lane, config: SeoriConfig, events: Du
 
 async function stallCheck(d: Deps, lane: Lane, config: SeoriConfig, activity: ActivityState, events: DutyEvent[]): Promise<void> {
   const now = d.now();
-  const files = await fileActivity(d, lane.cwd);
+  const files = await fileActivity(d, lane.cwd, [...config.supervision.activityPaths, ...(lane.activityPaths ?? [])]);
   const before = activity[lane.key];
   const changedAt = before === undefined ? undefined : before.fingerprint !== files.fingerprint ? now : before.changedAt;
   activity[lane.key] = { fingerprint: files.fingerprint, ...(changedAt !== undefined ? { changedAt } : {}) };

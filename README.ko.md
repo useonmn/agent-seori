@@ -102,6 +102,7 @@ seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시�
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널 또는 탭, 에이전트 세션, 교훈 + 브리프 + 레인 규칙
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
+            [--activity-path PATH ...]
                                             닫기 전에 Done 줄을 실제로 확인; ID = 진행 상황을 올릴 리드 채널 id;
                                             한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4
 seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
@@ -288,7 +289,7 @@ seori resume fix-flaky-login
 
 한도. 레인마다 걸린 시간, 토큰, 비용 한도를 둘 수 있습니다. `seori start --wall-minutes N --token-limit N --cost-limit N`은 그 레인 하나의 한도를 정합니다. `none`은 그 한도를 끄고, 빠진 플래그는 설정의 기본값을 씁니다. 이 플래그를 하나도 주지 않은 레인은 `config.json`의 `supervision.defaults`를 따르고, 기본값은 모두 꺼져 있습니다. 걸린 시간은 레인을 연 때부터 셉니다. 토큰과 비용은 레인 에이전트 세션 파일(경로는 런타임이 알려 줌)의 어시스턴트 메시지에서 더합니다. 읽을 수 없는 값은 한도에 닿지 않은 것으로 보고, `usage-unknown` 듀티 이벤트로 한 번 보여 줍니다. 한도에 닿으면 리드에게 `[BLOCKED <key>] <종류> ceiling reached (<값>, limit <한도>); the lane keeps running until you decide`를 보냅니다. 한도마다, 한도 값마다 한 번이고(리드가 한도를 올리면 거기에 닿을 때 다시 알림), 레인 기록에도 남습니다.
 
-멈춤. 런타임이 일하는 중으로 보는 working 레인이 `supervision.hungAfterMin`분(기본 20분) 동안 보고도 없고 파일도 바꾸지 않으면, 멈춘 것으로 보고 `[STALLED <key>] ...`를 보냅니다. 멈출 때마다 한 번입니다. 파일 변경은 새 HEAD, 또는 레인 폴더에서 `git status`가 보여 주는 파일들(`node_modules` 제외)의 시각과 크기 변화입니다. git 저장소가 아니면 보고만 진행으로 칩니다. waiting 레인은 기다린다고 말했으니 조용해도 멈춤이 아닙니다. 변경 기록은 `duty/supervision.json`에 둡니다.
+멈춤. 런타임이 일하는 중으로 보는 working 레인이 `supervision.hungAfterMin`분(기본 20분) 동안 보고도 없고 파일도 바꾸지 않으면, 멈춘 것으로 보고 `[STALLED <key>] ...`를 보냅니다. 멈출 때마다 한 번입니다. 파일 변경은 새 HEAD, 또는 레인 폴더에서 `git status`가 보여 주는 파일들(`node_modules` 제외)의 시각과 크기 변화입니다. `seori start --activity-path PATH`(여러 번 가능)나 `supervision.activityPaths`에 적은 경로(레인 폴더 기준)의 변화도 진행으로 칩니다. git 저장소이든 아니든 마찬가지라서, 결과를 다른 곳(로그, 데이터 폴더)에 쓰는 레인도 쓰는 동안에는 멈춤으로 보지 않습니다. git 저장소가 아니고 이런 경로도 없으면 보고만 진행으로 칩니다. waiting 레인은 기다린다고 말했으니 조용해도 멈춤이 아닙니다. 변경 기록은 `duty/supervision.json`에 둡니다.
 
 ## 작업 기록(worklog)
 
@@ -473,7 +474,7 @@ seori watch stop dev
   "closeAfterMin": 5,
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
-  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20 },
+  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
 }
@@ -490,6 +491,7 @@ seori watch stop dev
 | `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |
 | `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔 |
 | `supervision.hungAfterMin` | `20` | 보고도 파일 변경도 없이 몇 분 지나면 working 레인을 멈춘 것으로 알리는지 |
+| `supervision.activityPaths` | `[]` | 바뀌면 모든 레인의 진행으로 치는 파일이나 폴더(각 레인 폴더 기준) |
 | `guard.loadAlertPct` | `150` | 코어당 1분 부하(%)가 이보다 높으면 알림 |
 | `guard.loadOkPct` | `80` | 알림을 풀려면 부하(%)가 이보다 낮아져야 함 |
 | `guard.memFreeMinPct` | `10` | 남은 메모리(%)가 이보다 적으면 새 레인을 막고 알림 |
