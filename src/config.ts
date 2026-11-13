@@ -113,8 +113,12 @@ export function loadConfig(root: string): SeoriConfig {
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
   // talkWithOthers, agentTurnLimit and trusted belonged to the removed talking-with-others: a config.json that still has
-  // them loads, and they are ignored.
-  only(raw, ["name", "agent", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "talkWithOthers", "agentTurnLimit", "trusted"], path);
+  // them loads, and they are ignored. So does `"runtime": "hc"`, left from when seori could also run on herdr; any other
+  // runtime is refused, since hc is the only one.
+  if ("runtime" in raw && raw["runtime"] !== "hc") {
+    throw new ConfigError(`${path}: "runtime" ${JSON.stringify(raw["runtime"])} is not supported; seori runs on hc only: remove "runtime" from config.json`);
+  }
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "talkWithOthers", "agentTurnLimit", "trusted"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;
