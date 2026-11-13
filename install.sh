@@ -2,7 +2,7 @@
 # Installs seori (the `seori` CLI) and the seori-mode skill for omp.
 # Usage: curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 # Uninstall: bash install.sh --uninstall [--purge]   (or: seori uninstall [--purge]); --purge also deletes SEORI_HOME
-# Needs: git, bun 1.3+. Checks (never installs): herdr, herdr's omp integration, omp.
+# Needs: git, bun 1.3+. Checks (never installs): hc (herdr-core) and its notes = false setting, omp, systemctl (Linux).
 # Optional env:
 #   SEORI_SRC     where the checkout lives (default ~/.seori/src)
 #   SEORI_HOME    seori's state directory (default ~/.seori)
@@ -83,14 +83,20 @@ fi
 
 # secrets.json, messengers.json and config.json are the owner's: never created or overwritten here.
 
-if ! command -v herdr >/dev/null; then
-  warn "herdr is not on PATH; install it: curl -fsSL https://herdr.dev/install.sh | sh"
-elif ! status="$(herdr integration status 2>&1)"; then
-  warn "could not read herdr integration status: $status"
-elif ! printf '%s\n' "$status" | grep '^omp:' | grep -vq 'not installed'; then
-  warn "herdr's omp integration is not installed; run: herdr integration install omp (seori refuses to start lanes without it)"
+# seori runs its agents in hc (herdr-core) terminals and its daemon and loops as systemd --user units (seori up).
+if ! command -v hc >/dev/null; then
+  warn "hc (herdr-core) is not on PATH; install it first (seori up opens its lead and duty terminals in hc)"
+fi
+# hc types notes into parent agents unless told not to; seori's inbox is the only delivery path. Checked, never rewritten.
+hc_config="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/config.toml"
+if ! grep -Eq '^[[:space:]]*notes[[:space:]]*=[[:space:]]*false[[:space:]]*(#.*)?$' "$hc_config" 2>/dev/null; then
+  warn "$hc_config does not set notes = false; add that line so hc types nothing into seori's agents on its own"
 fi
 command -v omp >/dev/null || warn "omp is not on PATH; install oh-my-pi: https://github.com/can1357/oh-my-pi"
+# Linux only: on macOS seori up runs its daemon and loops in hc terminals instead.
+if [ "$(uname -s)" = Linux ]; then
+  command -v systemctl >/dev/null || warn "systemctl is not on PATH; seori up runs its daemon and loops as systemd --user units"
+fi
 command -v gh >/dev/null || warn "the GitHub CLI gh is not on PATH; reviews, merges and Done signals on PRs need it"
 if command -v seori >/dev/null; then
   cli_note="$(command -v seori)"
@@ -105,4 +111,4 @@ echo "  CLI:   $cli_note"
 echo "  Skill: $skill_note"
 echo "  Home:  $home"
 [ "$warnings" -eq 0 ] || echo "Fix the $warnings warning(s) above first."
-echo "Next: start herdr, run omp in a pane and say: seori mode (or 서리 모드)"
+echo "Next: seori up (lead and duty in hc terminals, daemon and loops as systemd --user units); seori down stops them"
