@@ -23,6 +23,7 @@ import { GLOBAL_LESSONS_HEADING, LESSONS_HEADING, lessonsForRepo, lessonWarnings
 import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
 import { refText, sameSession } from "./refs.ts";
+import { loadHooks, runHook } from "./hooks.ts";
 
 export { KEY_RE, reservedKey };
 export { resolveTarget };
@@ -152,8 +153,11 @@ export function memFreePct(
   return freePct();
 }
 
+/** `SEORI_PROMPTS_DIR` when set, else the repo's `prompts/`. */
+export const promptsDir = (): string => process.env["SEORI_PROMPTS_DIR"] || PROMPTS;
+
 const prompt = (name: string, vars: Record<string, string>): string =>
-  readFileSync(join(PROMPTS, name), "utf8").replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? `{{${k}}}`);
+  readFileSync(join(promptsDir(), name), "utf8").replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? `{{${k}}}`);
 
 // ---------- pane messaging ----------
 
@@ -486,6 +490,7 @@ export async function report(d: Deps, key: string, text: string, status?: "worki
   // its status stays paused so duty keeps leaving it alone and resume still works.
   if (status && lane.status !== "paused") lane.status = status;
   d.store.saveLane(lane);
+  void runHook(d, "onReport", { key, text, evidence: "" });
   return settled(tellLead(d, `[REPORT ${key}${status === "waiting" ? " WAITING" : ""}] ${text}`, key));
 }
 
@@ -507,6 +512,7 @@ export async function ready(d: Deps, key: string, text: string, evidence: readon
   d.store.saveLane(lane);
   const claim = closeAfterMin === undefined ? "" : `\n${claimLeadLine(d.seoriCmd, key, closeAfterMin)}`;
   const result = await settled(tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}${claim}`, key));
+  void runHook(d, "onReady", { key, text, evidence: evidence.join(" ") });
   if (closeAfterMin !== undefined) await send(d, key, claimText(closeAfterMin), "lead");
   return result;
 }
@@ -582,6 +588,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
         lane.status = "lost";
         lane.log.push({ at: now, kind: "lost", text: "pane disappeared without READY" });
         d.store.saveLane(lane);
+        void runHook(d, "onLost", { key: lane.key, text: "pane disappeared without READY", evidence: "" });
         await tellLead(d, `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed without a final answer`, "duty");
         events.push({ lane: lane.key, action: "lost" });
         continue;
@@ -964,6 +971,8 @@ export function reviewerAnswer(stdout: string): { text: string; stopReason?: str
  */
 export async function review(d: Deps, prId: string, model: string | undefined = d.model): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
   const pr = parsePr(prId);
+  // The reviewer is always omp: a hooks.reviewCommand left in config.json is refused here (exit 2), never ignored.
+  loadHooks(d.store.root);
   const sha = await headSha(d, pr);
   const text = prompt("review.md", { pr: pr.id, repo: pr.repo, number: String(pr.number), sha });
   const res = await d.exec(d.agentCmd, d.agent.reviewArgs(text, model));

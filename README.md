@@ -485,6 +485,18 @@ A malformed field is an error naming it, never a silent default, so a typo canno
 
 The commands that read the config (`start`, `ready` for a lane with a Done line, `merge`, `verify-pr`, `can-launch`, `guard`, `heavy`) exit 2 with the error. In the duty loop, each part that needs it reports it as an event (`autoclose-failed`, `supervise-failed`, `guard-failed`, `progress-failed`) and the rest of the pass goes on; `seori boot` shows `CONFIG invalid`. The file is read on every command and duty pass, so a change takes effect without a restart.
 
+### Hooks
+
+`hooks` in config.json takes argv templates (a non-empty array of strings; element 0 is the command, nothing is shell-expanded). Placeholders `{key}`, `{text}`, `{evidence}` are substituted inside each element.
+
+| hook | runs | placeholders |
+|---|---|---|
+| `onReport` | after `seori report` saved the lane | `key`, `text` |
+| `onReady` | after `seori ready` saved the lane | `key`, `text`, `evidence` |
+| `onLost` | when duty or supervision marks a lane lost | `key`, `text` |
+
+The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name> failed (...)` line on stderr and never changes the command's result; the CLI waits at most 2 s for hooks still running at exit. No hook replaces the reviewer: `seori review` always runs omp, and a `hooks.reviewCommand` key is refused. A malformed `hooks` value is a config error (exit 2).
+
 ## seori mode skill
 
 `skills/seori-mode/` is an omp skill that sets seori up and sums up how the lead works. omp loads it when you say `seori mode`, `서리 모드`, or "<name> mode" for the name you gave seori. It is written in English and talks to you in your language. The steps are in `references/`: `setup.md`, `messengers.md`, `onboarding.md` and `writing.md`.
@@ -532,6 +544,7 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 | variable | meaning |
 |---|---|
 | `SEORI_HOME` | state directory, default `~/.seori`; one per instance ([Several instances on one PC](#several-instances-on-one-pc)) |
+| `SEORI_PROMPTS_DIR` | directory the reviewer prompt and the lead/duty/lane prompts are read from instead of the repo's `prompts/` (the rendered copies still go to `$SEORI_HOME/prompts`) |
 | `SEORI_AGENT_CMD` | the reviewer's omp command, default `omp` (lead, duty and lanes always start through `herdr agent start --kind omp`); its basename must be `omp`, anything else refuses every command (exit 2) |
 | `SEORI_MODEL` | model for every omp seori starts (`--model`), and the reviewer's default model; unset = omp's default |
 | `SEORI_CMD` | how the agents and loop panes call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <path>/src/cli.ts` |

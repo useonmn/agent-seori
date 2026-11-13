@@ -17,7 +17,8 @@ import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList,
 import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
 import { pidAlive, type Lane, type Role } from "./store.ts";
-import { parsePr } from "./harness.ts";
+import { parsePr, promptsDir } from "./harness.ts";
+import { hooksSettled } from "./hooks.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
 import { canLaunch, canLaunchLine, guardLines } from "./guard.ts";
 import { runHeavy } from "./heavy.ts";
@@ -163,7 +164,7 @@ function deliveryOutcome(result: SendResult | undefined, target: string): number
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
   mkdirSync(dir, { recursive: true });
-  const src = readFileSync(join(import.meta.dir, "..", "prompts", name), "utf8").replaceAll("{{seori}}", d.seoriCmd);
+  const src = readFileSync(join(promptsDir(), name), "utf8").replaceAll("{{seori}}", d.seoriCmd);
   const out = join(dir, name);
   writeFileSync(out, src);
   return out;
@@ -1101,6 +1102,8 @@ if (import.meta.main) {
     if (!(e instanceof Refusal || e instanceof WatchRefusal || e instanceof ConfigError)) throw e;
     console.error(e.message);
     code = 2;
+  } finally {
+    await hooksSettled();
   }
   process.exit(code);
 }
