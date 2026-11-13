@@ -63,6 +63,9 @@ const until = async <T>(what: string, probe: () => Promise<T | undefined> | T | 
   }
   throw new Error(`timed out after ${ms / 1000} s waiting for ${what}`);
 };
+/** A process whose whole command line is `cmd` runs: the shell command a scenario told the lead (or its subagent) to run. */
+const waitRunning = (cmd: string, ms = 90_000) =>
+  until(`\`${cmd}\` running`, async () => ((await spawnExec("ps", ["-axo", "args="])).stdout.split("\n").some((l) => l.trim() === cmd) ? true : undefined), ms, 300);
 const log = (line: string) => console.log(`[e2e-channel ${new Date().toISOString().slice(11, 19)}] ${line}`);
 
 // --- the fake messenger and the channel files ---
@@ -91,11 +94,13 @@ const waitReplied = (msgId: string, ms: number) =>
   until(`a reply to ${msgId}`, () => (events(msgId, "replied").length ? true : undefined), ms, 1000);
 
 /**
- * Exactly one reply per id, also after a quiet period (a second reply would come from a redelivery a few seconds
- * later), and nothing for the strangers sent so far.
+ * Exactly one reply per id once the lead has settled, and nothing for the strangers sent so far. A replied id is final
+ * for the delivery schedule (lead-delivery.ts), so a second reply could only come from a turn that already holds the
+ * message: wait until every id is replied and the lead is idle, then count.
  */
-async function expectOneReply(msgIds: readonly string[], quietMs = 15_000): Promise<void> {
-  await Bun.sleep(quietMs);
+async function expectOneReply(msgIds: readonly string[]): Promise<void> {
+  for (const m of msgIds) await waitReplied(m, 60_000);
+  await waitLeadIdle();
   for (const m of msgIds) {
     expect(events(m, "replied")).toHaveLength(1);
     expect(events(m, "send-uncertain")).toHaveLength(0);
@@ -142,8 +147,9 @@ async function restartLead(exports: Record<string, string> = {}): Promise<void> 
   process.kill(pid, "SIGTERM");
   await until("the lead omp gone", async () => ((await paneInfo(lead())).agent ? undefined : true), 30_000);
   if (Object.keys(exports).length) {
-    await herdr("pane", "run", lead(), `export ${Object.entries(exports).map(([k, v]) => `${k}=${shq(v)}`).join(" ")}`);
-    await Bun.sleep(500);
+    const marker = join(home, `exported-${Date.now()}`);
+    await herdr("pane", "run", lead(), `export ${Object.entries(exports).map(([k, v]) => `${k}=${shq(v)}`).join(" ")} && touch ${shq(marker)}`);
+    await until("the exports in the lead pane's shell", () => (existsSync(marker) ? true : undefined), 15_000, 200);
   }
   const d = { runtimes: defaultRuntimes(herdrApi), model } as unknown as Deps;
   // herdr clears the pane's agent before it frees the agent's name: a start right after the exit can get
@@ -199,7 +205,7 @@ test.skipIf(!scenario("2"))("2 busy lead: a message mid-task is delivered aside 
   const done = join(home, "task2.done");
   await prompt(`Run exactly this shell command and nothing else: sleep 20 && echo ok > ${done}  -- then say finished.`);
   await waitLeadWorking();
-  await Bun.sleep(5000);
+  await waitRunning("sleep 20");
   const t0 = Date.now();
   sendStranger("s2");
   sendFake([{ msgId: "m2", text: "Quick question while you work: what is the capital of France? Reply with one word." }]);
@@ -236,8 +242,8 @@ test.skipIf(!scenario("4"))("4 lead killed after delivery, before replying: rest
   sendStranger("s4");
   sendFake([{ msgId: "m4", text: "First run the shell command `sleep 15`, and only after it has finished, reply with the word kill-ok." }]);
   await until("m4 entered", () => (events("m4", "entered").length ? true : undefined), 60_000);
-  // Long enough for the lead to be inside `sleep 15`, well before it could reply.
-  await Bun.sleep(6000);
+  // The lead is inside `sleep 15`, well before it could reply.
+  await waitRunning("sleep 15");
   expect(events("m4", "replied")).toHaveLength(0);
   const before = events("m4", "delivered").at(-1)!;
   await restartLead();
@@ -247,7 +253,7 @@ test.skipIf(!scenario("4"))("4 lead killed after delivery, before replying: rest
   const delivered = events("m4", "delivered");
   expect(delivered.length).toBeGreaterThanOrEqual(2);
   expect(delivered.at(-1)!.session).not.toBe(before.session);
-  await expectOneReply(["m4"], 25_000);
+  await expectOneReply(["m4"]);
 }, 360_000);
 
 test.skipIf(!scenario("5"))("5 /new with an open id: carried into the new session and answered once", async () => {
@@ -256,7 +262,7 @@ test.skipIf(!scenario("5"))("5 /new with an open id: carried into the new sessio
   sendStranger("s5");
   sendFake([{ msgId: "m5", text: "First run the shell command `sleep 15`, and only after it has finished, reply with the word new-ok." }]);
   await until("m5 entered", () => (events("m5", "entered").length ? true : undefined), 60_000);
-  await Bun.sleep(4000);
+  await waitRunning("sleep 15");
   const before = events("m5", "delivered").at(-1)!;
   // omp takes /new only at an idle prompt: stop the turn first, then switch sessions right away (well within the
   // 10 s grace an aborted turn gets before a plain redelivery, so the carry-over is what answers it).
@@ -268,7 +274,7 @@ test.skipIf(!scenario("5"))("5 /new with an open id: carried into the new sessio
   const after = events("m5", "delivered");
   expect(after.some((e) => e.session !== before.session)).toBe(true);
   expect(after.length).toBeLessThanOrEqual(MAX_DELIVERIES);
-  await expectOneReply(["m5"], 25_000);
+  await expectOneReply(["m5"]);
 }, 360_000);
 
 test.skipIf(!scenario("6"))("6 subagent running: the delivery lands only in the lead's session, never in the subagent's", async () => {
@@ -279,7 +285,7 @@ test.skipIf(!scenario("6"))("6 subagent running: the delivery lands only in the 
   const subFiles = () => (existsSync(subDir) ? readdirSync(subDir).filter((f) => f.endsWith(".jsonl") && !f.startsWith("__")) : []);
   const known = new Set(subFiles());
   const sub = await until("a subagent session", () => subFiles().find((f) => !known.has(f)), 90_000);
-  await Bun.sleep(3000);
+  await waitRunning("sleep 20");
   const t0 = Date.now();
   sendStranger("s6");
   sendFake([{ msgId: "m6", text: "Reply with the word pong." }]);
@@ -298,7 +304,7 @@ test.skipIf(!scenario("7"))("7 Esc mid-task, then a message: answered within abo
   await waitLeadIdle();
   await prompt("Run exactly this shell command and nothing else: sleep 25  -- then say finished.");
   await waitLeadWorking();
-  await Bun.sleep(5000);
+  await waitRunning("sleep 25");
   await herdr("pane", "send-keys", lead(), "esc");
   await until("the lead idle after Esc", async () => ((await leadStatus()) === "idle" ? true : undefined), 15_000, 300);
   const t0 = Date.now();
@@ -316,12 +322,13 @@ test.skipIf(!scenario("7b"))("7b message delivered aside to a busy lead, then Es
   await waitLeadIdle();
   await prompt("Run exactly this shell command and nothing else: sleep 25  -- then say finished.");
   await waitLeadWorking();
-  await Bun.sleep(3000);
+  await waitRunning("sleep 25");
   const t0 = Date.now();
   sendStranger("s7b");
   sendFake([{ msgId: "m7b", text: "Reply with the word aside-esc-ok." }]);
   await until("m7b delivered", () => (events("m7b", "delivered").length ? true : undefined), 15_000, 300);
-  await Bun.sleep(2000);
+  // `delivered` is written once omp holds the aside; Esc while the lead's command still runs, before any reply.
+  expect(events("m7b", "replied")).toHaveLength(0);
   await herdr("pane", "send-keys", lead(), "esc");
   await waitReplied("m7b", 120_000);
   log(`7b: replied ${(Date.now() - t0) / 1000} s after sending; deliveries ${events("m7b", "delivered").map((e) => e.mode).join(",")}`);
