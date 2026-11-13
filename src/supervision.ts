@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, statSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, statSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ConfigError, loadConfig, type SeoriConfig } from "./config.ts";
 import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
@@ -46,6 +46,33 @@ export async function laneUsage(d: Deps, lane: Lane): Promise<LaneUsage> {
     if (typeof usage?.cost?.total === "number" && Number.isFinite(usage.cost.total)) costUsd = (costUsd ?? 0) + usage.cost.total;
   }
   return { ...(tokens !== undefined ? { tokens } : {}), ...(costUsd !== undefined ? { costUsd } : {}) };
+}
+
+/** One lane close's reading in `$SEORI_HOME/cost.jsonl`: unknown totals are null, never 0. */
+export type CostRecord = { key: string; closeKey: string; tokens: number | null; costUsd: number | null; at: number };
+
+/**
+ * Records what a lane spent when it closes (dori-superagent 4ea8bd1): its omp session's totals, read while the session
+ * is still open, appended to `cost.jsonl` once per lane (`closeKey` = key@createdAt, so a retried close adds nothing
+ * and a reopened key gets its own line). `hooks.recordCost`, when configured, runs once with a known reading. Local
+ * only: nothing is sent anywhere unless that hook is set.
+ */
+export async function recordCloseCost(d: Deps, lane: Lane): Promise<void> {
+  const path = join(d.store.root, "cost.jsonl");
+  const closeKey = `${lane.key}@${lane.createdAt}`;
+  const recorded = existsSync(path) && readFileSync(path, "utf8").split("\n").some((line) => {
+    try {
+      return (JSON.parse(line) as Partial<CostRecord>).closeKey === closeKey;
+    } catch {
+      return false;
+    }
+  });
+  if (recorded) return;
+  const usage = await laneUsage(d, lane);
+  const record: CostRecord = { key: lane.key, closeKey, tokens: usage.tokens ?? null, costUsd: usage.costUsd ?? null, at: d.now() };
+  appendFileSync(path, JSON.stringify(record) + "\n");
+  if (record.tokens === null && record.costUsd === null) return;
+  void runHook(d, "recordCost", { key: lane.key, tokens: String(record.tokens), cost: String(record.costUsd), closeKey });
 }
 
 type CeilingName = keyof Ceilings;
