@@ -49,8 +49,8 @@ export type SeoriConfig = {
     readonly hungAfterMin: number;
     /** Files or directories (relative to a lane's cwd) whose change counts as every lane's progress, beside git status. */
     readonly activityPaths: readonly string[];
-    /** Ceilings a ulw-plan lane gets when neither its start nor `defaults` sets them (null: none). */
-    readonly ulwPlan: { readonly tokens: number | null; readonly wallMinutes: number | null };
+    /** The wall-clock ceiling a ulw-plan lane gets when neither its start nor `defaults` sets one (null: none). */
+    readonly ulwPlan: { readonly wallMinutes: number | null };
   };
   readonly guard: GuardThresholds;
   readonly heavy: { readonly slots: number; readonly maxLoadPct: number };
@@ -71,7 +71,7 @@ export const DEFAULT_CONFIG: SeoriConfig = {
   progressEveryMin: 15,
   blockedPromptMin: 10,
   startupWaitSeconds: 180,
-  supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20, activityPaths: [], ulwPlan: { tokens: 300_000, wallMinutes: 60 } },
+  supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20, activityPaths: [], ulwPlan: { wallMinutes: 60 } },
   guard: { loadAlertPct: 150, loadOkPct: 80, memFreeMinPct: 10, diskFreeMinGb: 20, panesMax: 30 },
   heavy: { slots: 1, maxLoadPct: 80 },
 };
@@ -142,7 +142,7 @@ export function loadConfig(root: string): SeoriConfig {
   only(sup, ["defaults", "hungAfterMin", "activityPaths", "ulwPlan"], `${path} supervision`);
   const ulwPlan = sup["ulwPlan"] ?? {};
   if (!isObj(ulwPlan)) throw new ConfigError(`${path}: supervision.ulwPlan must be an object`);
-  only(ulwPlan, ["tokens", "wallMinutes"], `${path} supervision.ulwPlan`);
+  only(ulwPlan, ["wallMinutes"], `${path} supervision.ulwPlan`);
   const activityPaths = sup["activityPaths"] ?? D.supervision.activityPaths;
   if (!Array.isArray(activityPaths) || !activityPaths.every((p) => typeof p === "string" && p !== "")) {
     throw new ConfigError(`${path} supervision.activityPaths must be a list of non-empty paths`);
@@ -182,7 +182,6 @@ export function loadConfig(root: string): SeoriConfig {
       hungAfterMin: num(sup, "hungAfterMin", `${path} supervision`, D.supervision.hungAfterMin),
       activityPaths: activityPaths as string[],
       ulwPlan: {
-        tokens: ceiling(ulwPlan["tokens"], `${path} supervision.ulwPlan.tokens`, D.supervision.ulwPlan.tokens),
         wallMinutes: ceiling(ulwPlan["wallMinutes"], `${path} supervision.ulwPlan.wallMinutes`, D.supervision.ulwPlan.wallMinutes),
       },
     },

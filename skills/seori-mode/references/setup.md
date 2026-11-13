@@ -79,7 +79,7 @@ Tell the owner the lead is up and which terminal it is in.
 Write it only with the owner's go, and only the fields they want changed.
 
 - `workflow`: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` starts every lane under that omp-ulw workflow (below); leave it out for plain omp goal mode. `seori start --workflow <W>|none` picks it per lane.
-- `supervision.ulwPlan`: the token and wall-clock ceilings a ulw-plan lane gets when neither its start nor `supervision.defaults` sets them (default `{ "tokens": 300000, "wallMinutes": 60 }`, `null` switches one off).
+- `supervision.ulwPlan`: the wall-clock ceiling a ulw-plan lane gets when neither its start nor `supervision.defaults` sets one (default `{ "wallMinutes": 60 }`, `null` switches it off).
 
 ### Optional: omp-ulw
 

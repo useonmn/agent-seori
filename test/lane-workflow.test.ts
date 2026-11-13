@@ -72,11 +72,11 @@ describe("seori start --workflow", () => {
     });
   }
 
-  test("ulw-plan gets a default token and wall-clock ceiling unless the start or config.json sets them", async () => {
+  test("ulw-plan gets a default wall-clock ceiling unless the start or config.json sets one", async () => {
     const { w, d, brief } = setup();
     w.ompPlugins = ULW_PLUGIN;
     await start(d, brief, "--workflow", "ulw-plan");
-    expect(d.store.lane("fix-login")!.ceilings).toEqual({ wallMinutes: 60, tokens: 300_000, costUsd: null });
+    expect(d.store.lane("fix-login")!.ceilings).toEqual({ wallMinutes: 60, tokens: null, costUsd: null });
     const out: string[] = [];
     const log = console.log;
     console.log = (...args: unknown[]) => void out.push(args.join(" "));
@@ -91,7 +91,7 @@ describe("seori start --workflow", () => {
   });
 
   test("config.json supervision.ulwPlan changes or switches off the ulw-plan defaults; supervision.defaults win", async () => {
-    const off = setup({ supervision: { ulwPlan: { tokens: null, wallMinutes: null } } });
+    const off = setup({ supervision: { ulwPlan: { wallMinutes: null } } });
     off.w.ompPlugins = ULW_PLUGIN;
     await start(off.d, off.brief, "--workflow", "ulw-plan");
     expect(off.d.store.lane("fix-login")!.ceilings).toBeUndefined();
@@ -99,7 +99,7 @@ describe("seori start --workflow", () => {
     set.w.ompPlugins = ULW_PLUGIN;
     await start(set.d, set.brief, "--workflow", "ulw-plan");
     expect(set.d.store.lane("fix-login")!.ceilings).toEqual({ wallMinutes: 30, tokens: 100_000, costUsd: null });
-    expect(() => loadConfig(setup({ supervision: { ulwPlan: { tokens: -1 } } }).d.store.root)).toThrow(/supervision.ulwPlan.tokens/);
+    expect(() => loadConfig(setup({ supervision: { ulwPlan: { wallMinutes: -1 } } }).d.store.root)).toThrow(/supervision.ulwPlan.wallMinutes/);
   });
 
   test("unset: the kickoff is stock omp goal mode, exactly as before, and omp's plugins are not asked", async () => {
