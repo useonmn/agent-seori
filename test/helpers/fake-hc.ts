@@ -37,6 +37,8 @@ export type FakeKnobs = {
   readError?: string;
   /** A send into a silent terminal makes omp report idle in front (an agent start). */
   agentReports?: boolean;
+  /** The status word the agent reports after such a start (default idle). */
+  agentReportsAs?: string;
 };
 
 export type FakeState = { terminals: Record<string, FakeTerminal>; knobs: FakeKnobs; next: number; sent: { id: string; text: string }[] };
@@ -164,7 +166,7 @@ export function answer(s: FakeState, args: string[]): Out {
       s.sent.push({ id, text });
       const before = { started: t.status === null ? null : true, status: t.status?.state ?? null, turn: t.turn };
       if (k.agentReports && t.status === null) {
-        t.status = { app: "omp", state: "idle" };
+        t.status = { app: "omp", state: k.agentReportsAs ?? "idle" };
         t.foreground = { name: "omp", argv: ["/opt/omp/bin/omp"], pid: 7777 };
       }
       return ok(k.started === undefined ? before : { ...before, started: k.started });

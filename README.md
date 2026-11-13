@@ -111,6 +111,9 @@ seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
                                             register an already-running session as a lane (types nothing into it)
 seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
                                             vanished lane is marked lost (no session is ever closed)
+seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
+                                            hand sessions over to another runtime: checkpoint, handoff brief, replacement
+                                            verified, inbox moved; exit 3 after a rollback (docs/runtime.md)
 seori transcribe <audio-file>                run hooks.transcribe (config.json, argv template with {file}) and print the text
 seori report <key> --text T [--status working|waiting]
 seori ready <key> --text T --evidence LINK [--evidence LINK ...]

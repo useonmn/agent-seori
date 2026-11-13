@@ -1,3 +1,4 @@
+// Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -24,6 +25,7 @@ import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
 import { refText, sameSession } from "./refs.ts";
 import { loadHooks, runHook } from "./hooks.ts";
+import { migrating } from "./migrate-journal.ts";
 
 export { KEY_RE, reservedKey };
 export { resolveTarget };
@@ -223,13 +225,18 @@ export async function sendToShell(d: Deps, target: string, text: string, from: s
  * Delivers a pane's queued messages as one batch. `held`: only messages held after an ambiguous delivery are left;
  * they wait for a person or the lead (#89). `queued` also when another flush of this pane holds its inbox lock: one
  * flush per pane at a time, across processes (#108). Throws DeliveryUncertain, having recorded the attempt on the
- * queued messages, when the batch may already have reached the pane, and Refusal when the pane is gone.
+ * queued messages, when the batch may already have reached the pane, and Refusal when the pane is gone. A session
+ * being migrated (seori migrate) is held: `queued`. One whose inbox was forwarded by a migration is flushed at its new
+ * ref, the old entries merged in first.
  */
-export async function flushInbox(d: Deps, to: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
-  if (d.store.queued(to).length === 0) return "delivered";
+export async function flushInbox(d: Deps, from: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
+  const to = d.store.forwardOf(from) ?? from;
+  if (migrating(d.store.root, from) || migrating(d.store.root, to)) return "queued";
+  if (d.store.queued(to).length === 0 && !d.store.forwardPending(to)) return "delivered";
   const release = d.store.lockInbox(to, d.now());
   if (!release) return "queued";
   try {
+    d.store.mergeForwarded(to);
     return await flushLocked(d, to);
   } finally {
     release();
@@ -455,7 +462,7 @@ const KICKOFF_POLL_MS = 500;
  * the session later (up to 16 s after start on a loaded host), and a prompt typed before that can lose its
  * Enter. Waits for the session, at most AGENT_SESSION_WAIT_MS; the kickoff then goes in either way.
  */
-async function agentSessionReported(d: Deps, ref: SessionRef): Promise<void> {
+export async function agentSessionReported(d: Deps, ref: SessionRef): Promise<void> {
   const until = d.now() + AGENT_SESSION_WAIT_MS;
   const rt = d.runtimes.for(ref);
   if (rt.kind === "hc") return; // hc reports no agent session id (agentSession() is always undefined): nothing to wait for
@@ -581,6 +588,8 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   }
   for (const lane of d.store.lanes()) {
     if (lane.status !== "working" && lane.status !== "waiting") continue;
+    // A lane being migrated (seori migrate) is left alone: no nudge, no lost, no blocked mark.
+    if (lane.migration === true) continue;
     try {
       const st = await statusOf(d.runtimes, lane.sessionRef);
       const now = d.now();

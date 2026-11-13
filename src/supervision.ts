@@ -218,6 +218,11 @@ export async function superviseTick(d: Deps): Promise<DutyEvent[]> {
   const activity = readActivity(d.store.root);
   const seen = new Set<string>();
   for (const lane of d.store.lanes()) {
+    // A lane being migrated (seori migrate) is left alone until the handover ends; its change history is kept.
+    if (lane.migration === true) {
+      seen.add(lane.key);
+      continue;
+    }
     try {
       if (lane.status === "paused") await pausedCheck(d, lane, events);
       else if (lane.status === "working" || lane.status === "waiting") {

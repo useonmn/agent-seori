@@ -49,6 +49,10 @@ export type Lane = {
   blockedSince?: number;
   /** The last report posted to `thread`, and when. */
   posted?: { at: number; text: string };
+  /** The sessions the lane ran in before a `seori migrate`, oldest first. */
+  migratedFrom?: SessionRef[];
+  /** A `seori migrate` handover is in progress: the duty loop leaves the record alone (no nudge, no lost). */
+  migration?: true;
   log: { at: number; kind: LaneLogKind; text: string }[];
 };
 
@@ -144,6 +148,11 @@ const inboxRef = (stem: string): SessionRef =>
   stem.startsWith(HC_INBOX_PREFIX)
     ? { runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) }
     : { runtime: "herdr", id: stem.replaceAll("_", ":") };
+
+const readQueue = (path: string): QueuedMessage[] =>
+  existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as QueuedMessage) : [];
+
+const queueKey = (m: QueuedMessage): string => `${m.at}\u0000${m.from}\u0000${m.text}`;
 
 const checkedId = (id: string): string => {
   if (!KEY_RE.test(id)) throw new Error(`invalid id ${JSON.stringify(id)}: must match ${KEY_RE}`);
@@ -299,14 +308,69 @@ export class Store {
     return join(this.root, "inbox", `${inboxName(ref)}.jsonl`);
   }
 
+  /** Appends to the inbox of the session `ref` was forwarded to by a migration, if it was. */
   enqueue(ref: SessionRef, msg: QueuedMessage): void {
-    appendFileSync(this.inboxPath(ref), JSON.stringify(msg) + "\n");
+    appendFileSync(this.inboxPath(this.forwardOf(ref) ?? ref), JSON.stringify(msg) + "\n");
   }
 
   queued(ref: SessionRef): QueuedMessage[] {
-    const p = this.inboxPath(ref);
-    if (!existsSync(p)) return [];
-    return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as QueuedMessage);
+    return readQueue(this.inboxPath(ref));
+  }
+
+  // A `.forward` file beside an inbox (`w1_p3.jsonl.forward`, holding a ref) says that session moved (seori migrate):
+  // new messages go to the ref's inbox, and entries a sender still appended to the old file are merged by the next flush.
+
+  /** The session this one's inbox was forwarded to by a migration (its `.forward` marker), or undefined. */
+  forwardOf(ref: SessionRef): SessionRef | undefined {
+    const marker = `${this.inboxPath(ref)}.forward`;
+    const text = readOrUndefined(marker)?.trim();
+    return text ? refFromText(text) : undefined;
+  }
+
+  /** The old inbox files whose `.forward` marker names `ref`. */
+  private forwardedInto(ref: SessionRef): string[] {
+    const dir = join(this.root, "inbox");
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl.forward"))
+      .map((f) => join(dir, f.slice(0, -".forward".length)))
+      .filter((old) => {
+        const to = readOrUndefined(`${old}.forward`)?.trim();
+        return Boolean(to) && sameSession(refFromText(to!), ref);
+      });
+  }
+
+  /** True when an old inbox forwarded into `ref` still holds entries. */
+  forwardPending(ref: SessionRef): boolean {
+    return this.forwardedInto(ref).some((old) => readQueue(old).length > 0 || readQueue(`${old}.merging`).length > 0);
+  }
+
+  /**
+   * Moves the entries of every old inbox forwarded into `ref` to the end of ref's inbox; call it under ref's inbox lock.
+   * The old file is renamed aside first, so an append racing the merge lands in a fresh old file for the next one; an
+   * entry ref's inbox already holds (a merge cut short after its append) is not added again.
+   */
+  mergeForwarded(ref: SessionRef): void {
+    const into = this.inboxPath(ref);
+    for (const old of this.forwardedInto(ref)) {
+      const aside = `${old}.merging`;
+      for (let pass = 0; pass < 2; pass++) {
+        if (!existsSync(aside)) {
+          try {
+            renameSync(old, aside);
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === "ENOENT") break;
+            throw e;
+          }
+        }
+        const seen = new Set(readQueue(into).map(queueKey));
+        for (const m of readQueue(aside)) {
+          if (seen.has(queueKey(m))) continue;
+          seen.add(queueKey(m));
+          appendFileSync(into, JSON.stringify(m) + "\n");
+        }
+        rmSync(aside, { force: true });
+      }
+    }
   }
 
   saveInbox(ref: SessionRef, msgs: readonly QueuedMessage[]): void {
