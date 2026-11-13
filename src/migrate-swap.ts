@@ -28,11 +28,15 @@ async function closeQuietly(d: Deps, ref: SessionRef): Promise<void> {
 
 const why = (e: unknown): string => (e instanceof Error ? e.message : String(e)).trim().split("\n")[0] ?? "";
 
-/** Rollback: the replacement (if any) closed, the inbox put back, the journal removed, the hold lifted; exit 3. */
+/**
+ * Rollback: the replacement (if any) closed, the inbox put back, the record pointed back at the old session (a run
+ * resumed after the switch), the journal removed, the hold lifted; exit 3.
+ */
 async function rollback(d: Deps, s: Subject, j: MigrateJournal, newRef: SessionRef | undefined, reason: string, opts: MigrateOpts) {
   if (newRef !== undefined) {
     await closeQuietly(d, newRef).catch(() => undefined);
     await moveBack(d, j.from, newRef);
+    s.switchBack(j.from, newRef);
   }
   removeJournal(d.store.root, s.name);
   s.setHold(false);

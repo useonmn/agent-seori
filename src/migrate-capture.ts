@@ -31,6 +31,8 @@ export type Subject = {
   readonly open: (rt: SessionRuntime, briefPath: string, resume: string | undefined) => Promise<SessionRef>;
   readonly setHold: (on: boolean) => void;
   readonly switchTo: (ref: SessionRef) => void;
+  /** Undoes switchTo(`to`) when the record points at `to`: a rollback of a run resumed after the switch. */
+  readonly switchBack: (from: SessionRef, to: SessionRef) => void;
 };
 
 export const POLL_MS = 5_000;

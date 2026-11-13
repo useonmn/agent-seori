@@ -66,6 +66,12 @@ function laneSubject(d: Deps, key: string): Subject {
     // A run resumed after a crash between the switch and the journal write switches again: the record stays as it is.
     switchTo: (ref) =>
       save((l) => (sameSession(l.sessionRef, ref) ? l : { ...l, sessionRef: ref, migratedFrom: [...(l.migratedFrom ?? []), l.sessionRef] })),
+    switchBack: (from, to) =>
+      save(({ migratedFrom, ...l }) => {
+        if (!sameSession(l.sessionRef, to)) return { ...l, ...(migratedFrom === undefined ? {} : { migratedFrom }) };
+        const rest = (migratedFrom ?? []).slice(0, -1);
+        return { ...l, sessionRef: from, ...(rest.length === 0 ? {} : { migratedFrom: rest }) };
+      }),
   };
 }
 
@@ -93,6 +99,10 @@ function roleSubject(d: Deps, role: Role, from: SessionRef, leadExtension: strin
     // A role has no record to mark: the journal alone holds its inbox (see migrating()).
     setHold: () => {},
     switchTo: (ref) => d.store.setRole(role, ref),
+    switchBack: (from, to) => {
+      const now = d.store.roles()[role];
+      if (now !== undefined && sameSession(now, to)) d.store.setRole(role, from);
+    },
   };
 }
 
@@ -166,7 +176,9 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtensi
   if (lanes.length + roles.length === 0 && !t.all) throw new Refusal("give --lane K, --role lead|duty or --all");
   let code = 0;
   const isSelf = (name: string, ref: SessionRef): boolean => {
-    if (opts.self === undefined || !sameSession(opts.self, ref)) return false;
+    // A resumed run: the record may already name the replacement, while the session closed at the end is the journal's.
+    const from = readJournal(d.store.root, name)?.from;
+    if (opts.self === undefined || !(sameSession(opts.self, ref) || (from !== undefined && sameSession(opts.self, from)))) return false;
     if (!t.all) throw new Refusal(`${name} is the session running this seori migrate; run it from another session`);
     opts.log(`SKIP ${name} is the session running seori migrate`);
     return true;
