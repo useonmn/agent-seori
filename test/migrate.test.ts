@@ -177,6 +177,44 @@ describe("seori migrate: one lane herdr -> hc", () => {
     expect(readFileSync(/Read your brief at (\S+) and execute it/.exec(kickoff)![1]!, "utf8")).toContain("CHECKPOINT-WRITTEN-AFTER-THE-ASK");
   });
 
+  test("a journal at opened whose lane record already points at the replacement: migratedFrom gets no second entry", async () => {
+    const { w, r, d, lines, opts } = migrateWorld("idle", {}, { t9: terminal() });
+    d.store.saveLane({ ...d.store.lane("k")!, migration: true, sessionRef: T9, migratedFrom: [OLD] });
+    const briefPath = join(d.store.root, "briefs", "k.migrate-1.md");
+    writeFileSync(briefPath, "handoff");
+    writeJournal(d.store.root, { name: "k", kind: "lane", phase: "opened", from: OLD, to: "hc", at: 1, briefPath, newRef: T9 });
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(0);
+    expect(lines).toEqual(["MIGRATED k w1:p3 -> hc:t9"]);
+    expect(r.terminals()["t9"]).toBeDefined();
+    expect(d.store.lane("k")!.sessionRef).toEqual(T9);
+    expect(d.store.lane("k")!.migratedFrom).toEqual([OLD]);
+    expect(w.panes.has("w1:p3")).toBe(false);
+    expect(readJournal(d.store.root, "k")).toBeUndefined();
+  });
+
+  test("the replacement fails to open: MIGRATE_ROLLBACK, exit 3, hold lifted, no journal, inbox and record untouched", async () => {
+    const { w, d, lines, opts } = migrateWorld("idle", { sendError: "unavailable" });
+    d.store.saveInbox(OLD, [msg("one", 1)]);
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(3);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("MIGRATE_ROLLBACK k hc:- did not open: ");
+    const lane = d.store.lane("k")!;
+    expect(lane.migration).toBeUndefined();
+    expect(lane.sessionRef).toEqual(OLD);
+    expect(lane.migratedFrom).toBeUndefined();
+    expect(readJournal(d.store.root, "k")).toBeUndefined();
+    expect(d.store.queued(OLD).map((m) => m.text)).toEqual(["one"]);
+    expect(w.panes.has("w1:p3")).toBe(true);
+  });
+
+  test("the session running seori migrate is refused: nothing asked, nothing written", async () => {
+    const { d, opts, asks } = migrateWorld();
+    const before = snapshot(d.store.root);
+    await expect(migrate(d, { lane: "k" }, opts({ self: OLD }))).rejects.toThrow("k is the session running this seori migrate");
+    expect(asks()).toEqual([]);
+    expect(snapshot(d.store.root)).toEqual(before);
+  });
+
   test.each(["idle", "shell"] as const)("a checkpoint an earlier run left is not reused (agent %s, writes none)", async (status) => {
     const { r, d, opts } = migrateWorld(status);
     writeFileSync(join(d.store.root, "briefs", "k.handoff.md"), "STALE-CHECKPOINT-FROM-AN-EARLIER-RUN\n");
@@ -267,6 +305,13 @@ describe("seori migrate: roles, --all and --resume", () => {
     expect(lines).toEqual(["MIGRATED duty w1:p2 -> hc:t1"]);
     expect(refText(d.store.roles().duty!)).toBe("hc:t1");
     expect(r.sent().find((s) => s.id === "t1")!.text).toStartWith("'omp' '--append-system-prompt' ");
+  });
+
+  test("--all run from the lead: the lead is skipped, the lane still migrates", async () => {
+    const { d, lines, opts } = migrateWorld();
+    expect(await migrate(d, { all: true }, opts({ self: herdrRef("w1:p1") }))).toBe(0);
+    expect(lines).toEqual(["MIGRATED k w1:p3 -> hc:t1", "SKIP lead is the session running seori migrate"]);
+    expect(refText(d.store.roles().lead!)).toBe("w1:p1");
   });
 
   test("--all: every open lane first, then lead and duty", async () => {

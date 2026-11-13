@@ -9,7 +9,7 @@ import { agentSessionReported, paneEnv, promptsDir, Refusal, startAgent, type De
 import { askCheckpoint, capture, handoffPath, type MigrateOpts, type Subject } from "./migrate-capture.ts";
 import { createJournal, lockMigration, type MigrateJournal, readJournal, removeJournal, writeJournal } from "./migrate-journal.ts";
 import { swapAgent } from "./migrate-swap.ts";
-import { refText } from "./refs.ts";
+import { refText, sameSession } from "./refs.ts";
 import { deliverOrThrow } from "./runtime/index.ts";
 import { formatRef, type CreateSpec, type RuntimeKind, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
 import type { Lane, Role } from "./store.ts";
@@ -63,7 +63,9 @@ function laneSubject(d: Deps, key: string): Subject {
       return openOn(d, rt, { name: key, cwd: lane.cwd, env, role: "lane" }, key, resumeArgs(resume), kickoff);
     },
     setHold: (on) => save(({ migration: _, ...l }) => (on ? { ...l, migration: true } : l)),
-    switchTo: (ref) => save((l) => ({ ...l, sessionRef: ref, migratedFrom: [...(l.migratedFrom ?? []), l.sessionRef] })),
+    // A run resumed after a crash between the switch and the journal write switches again: the record stays as it is.
+    switchTo: (ref) =>
+      save((l) => (sameSession(l.sessionRef, ref) ? l : { ...l, sessionRef: ref, migratedFrom: [...(l.migratedFrom ?? []), l.sessionRef] })),
   };
 }
 
@@ -155,16 +157,24 @@ async function migrateName(d: Deps, name: string, from: SessionRef, opts: Migrat
 
 /**
  * `seori migrate`: hands sessions over to `opts.to`. `--all` = every open lane, then lead and duty. Returns the exit
- * code: 3 when any session rolled back, else 0.
+ * code: 3 when any session rolled back, else 0. The session the command runs in (`opts.self`) is refused, or skipped
+ * under --all: closing the old session at the end would kill this run before it drains the inbox and drops the journal.
  */
 export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtension = ""): Promise<number> {
   const lanes = t.all ? d.store.lanes().filter(isOpen).map((l) => l.key) : t.lane ? [t.lane] : [];
   const roles = t.all ? MIGRATE_ROLES : t.role ? [t.role] : [];
   if (lanes.length + roles.length === 0 && !t.all) throw new Refusal("give --lane K, --role lead|duty or --all");
   let code = 0;
+  const isSelf = (name: string, ref: SessionRef): boolean => {
+    if (opts.self === undefined || !sameSession(opts.self, ref)) return false;
+    if (!t.all) throw new Refusal(`${name} is the session running this seori migrate; run it from another session`);
+    opts.log(`SKIP ${name} is the session running seori migrate`);
+    return true;
+  };
   for (const key of lanes) {
     const lane = d.store.lane(key);
     if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
+    if (isSelf(key, lane.sessionRef)) continue;
     code = Math.max(code, await migrateName(d, key, lane.sessionRef, opts, () => laneSubject(d, key)));
   }
   for (const role of roles) {
@@ -173,6 +183,7 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtensi
       if (t.all) continue;
       throw new Refusal(`no ${role} session registered`);
     }
+    if (isSelf(role, ref)) continue;
     code = Math.max(code, await migrateName(d, role, ref, opts, () => roleSubject(d, role, ref, leadExtension)));
   }
   return code;
@@ -195,10 +206,18 @@ export async function runMigrate(d: Deps, flag: (name: string) => string | undef
   if (!(Number.isFinite(wait) && wait >= 0)) throw new Refusal("--wait-minutes must be a number of minutes, 0 or more");
   const lane = flag("lane");
   if (lane === "") throw new Refusal("--lane needs a lane key");
+  const self = d.runtimes.selfAny(process.env);
   return migrate(
     d,
     { ...(lane === undefined ? {} : { lane }), ...(role === undefined ? {} : { role }), all: flag("all") === "true" },
-    { to, dryRun: flag("dry-run") === "true", waitMinutes: wait, resume: flag("resume") === "true", log: console.log },
+    {
+      to,
+      dryRun: flag("dry-run") === "true",
+      waitMinutes: wait,
+      resume: flag("resume") === "true",
+      ...(self === undefined ? {} : { self }),
+      log: console.log,
+    },
     leadExtension,
   );
 }
