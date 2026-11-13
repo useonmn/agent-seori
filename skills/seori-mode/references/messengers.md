@@ -34,7 +34,7 @@ The bot app runs in Socket Mode, so no public URL is needed:
        "app_home": { "messages_tab_enabled": true, "messages_tab_read_only_enabled": false }
      },
      "oauth_config": {
-       "scopes": { "bot": ["chat:write", "im:history", "app_mentions:read", "channels:history"] }
+       "scopes": { "bot": ["chat:write", "im:history", "app_mentions:read", "channels:history", "reactions:write"] }
      },
      "settings": {
        "event_subscriptions": { "bot_events": ["message.im", "app_mention", "message.channels"] },
@@ -64,7 +64,7 @@ seori reads only the DM with the owner and the group DMs, channels and threads w
 
 1. https://discord.com/developers/applications → New Application, with the chosen name.
 2. Bot → Reset Token → copy it. That is the secret. On the same page turn on MESSAGE CONTENT INTENT (without it seori reads DMs only, and only after removing that intent from `options.intents`).
-3. OAuth2 → URL Generator → scope `bot`, permissions Send Messages, Read Message History, Send Messages in Threads → open the URL and add the bot to a server the owner is in. Discord lets a user DM a bot only when they share a server.
+3. OAuth2 → URL Generator → scope `bot`, permissions Send Messages, Read Message History, Send Messages in Threads, Add Reactions, Manage Threads → open the URL and add the bot to a server the owner is in. Discord lets a user DM a bot only when they share a server.
 4. The owner DMs the bot once.
 
 ## 2. Write the secrets

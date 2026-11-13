@@ -25,6 +25,8 @@ curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh
 - 데몬: `seori daemon`입니다. 메신저로 온 메시지를 받아 리드에게 전할 수 있게 저장하고, 에이전트가 걸어 둔 감시(watch)를 돌립니다. 자세한 내용은 [메신저 채널](#메신저-채널)과 [감시](#감시)에 있습니다.
 - 리뷰와 머지 관문: PR은 정확히 지금 헤드(head) 커밋에 대한 CLEAR 리뷰 기록이 있고, 체크가 모두 통과하고, verify-pr도 통과해야만 머지됩니다.
 
+리드가 말하는 방식: 내 메시지마다 눈 리액션을 달고 처리합니다. 답장이면 원래 메시지부터 읽습니다. 일 하나에는 스레드 하나가 생기고, 그 안의 상태 메시지 하나를 계속 고쳐 씁니다(일하는 중 ⏳, 끝나면 ✅). 스레드 이름 앞에는 상태 이모지가 붙습니다(🔄 진행 중, ⏸ 기다리는 중, ✅ 완료). 일이 끝나면 리액션을 떼고 스레드를 닫습니다. 닫힌 스레드에 다시 쓰면 스레드와 그 일의 레인을 다시 엽니다. 답은 메시지를 여러 개 보내는 대신 한 메시지를 고쳐 가며 늘리고, 완성된 파일은 메인 채널에 올립니다. 이 상태 표시 말고는 이모지를 쓰지 않고, 언제나 봇으로 보내며 내 계정으로는 보내지 않습니다. 슬랙, 텔레그램, 디스코드마다 안 되는 것이 있습니다. [writing.md](skills/seori-mode/references/writing.md#platforms)를 보세요.
+
 런타임이 세션마다 터미널을 만들어 주고, 그 안의 에이전트가 지금 쉬는 중(idle)인지, 일하는 중(working)인지, 막혀 있는지(blocked) 알려 줍니다. seori는 세션에 무언가를 하기 전에 항상 이 상태부터 확인합니다. 기본 런타임은 hc이고, herdr도 쓸 수 있습니다. 에이전트는 언제나 omp입니다. [docs/runtime.md](docs/runtime.md)에 런타임을 고르는 방법과 두 런타임의 차이가 나와 있습니다.
 
 아래 예시는 hc 참조(`hc:t7`)를 보여 줍니다. herdr에서는 같은 명령에 `w1:p3` 같은 pane id를 씁니다.
@@ -147,6 +149,14 @@ seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--a
                                             리드 확장이 돌고 있으면 초안으로 두었다가 리드의 차례가 끝나면 보냅니다
                                             (--now: 바로 보냄). 같은 id로 다시 보내면 초안을 바꿉니다
 seori msg send --replace DRAFT --text T      열린 초안(답이나 알림)의 내용을 바꿉니다
+seori msg edit --to SOURCE:CHAT[:THREAD] --message MID --text T
+                                            seori가 보낸 메시지를 고칩니다 (MID는 msg send가 출력한 message= 값)
+seori msg react <id> [--remove]              리드 채널 메시지에 눈 리액션을 답니다 (--remove: 뗍니다)
+seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
+                                            보내기 직전에 입력 중 표시를 한 번 띄웁니다
+seori msg thread (--to SOURCE:CHAT:THREAD | --of ID) [--name T] [--status working|waiting|done] [--close|--reopen]
+                                            스레드 이름 앞에 상태 이모지를 붙여 정하고, 스레드를 닫거나 다시 엽니다
+                                            (--of ID: 리드 채널 메시지 ID가 들어온 스레드)
 seori msg drafts                             열린 초안: 초안  지난 시간  reply ID들|notice SOURCE:CHAT  내용
 seori msg drop <draft> --why T               열린 초안을 버립니다. 그 id는 다시 열립니다
 seori msg flush                              열린 초안을 지금 모두, 오래된 것부터 보냅니다
@@ -378,7 +388,7 @@ seori worklog list --open
 | source | 만들 것 | `owner` | 환경 변수 |
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기. 앱 대신 멤버 계정의 사용자 토큰과 `d` 쿠키(`userToken`, `cookie`)도 됩니다(유료 좌석 필요, 1분마다 확인) | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (또는 `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
+| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기. 앱 대신 멤버 계정의 사용자 토큰과 `d` 쿠키(`userToken`, `cookie`)도 됩니다(유료 좌석 필요, 1분마다 확인) | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (또는 `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
 | `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
