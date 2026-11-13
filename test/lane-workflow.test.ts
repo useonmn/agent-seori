@@ -5,10 +5,11 @@ import { main } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { type Deps, Refusal } from "../src/harness.ts";
 import { pauseLane, resumeLane } from "../src/pause.ts";
+import type { Workflow } from "../src/workflow.ts";
 import { World } from "./fake.ts";
 
-// A lane's workflow: `seori start --workflow ulw` (or config.json "workflow") puts the word between /goal and the brief
-// in the kickoff, so a host with the omp-ulw extension runs the lane as ULW while omp's native goal stays the same.
+// A lane's workflow: `seori start --workflow <W>` (or config.json "workflow") puts the workflow and its keyword between
+// /goal and the brief in the kickoff, so a host with the omp-ulw extension runs that workflow under omp's native goal.
 
 const ULW_PLUGIN = { npm: [{ name: "omp-ulw", version: "0.1.0", enabled: true }], marketplace: [] };
 
@@ -37,15 +38,68 @@ async function start(d: Deps, brief: string, ...extra: string[]): Promise<{ code
 }
 
 describe("seori start --workflow", () => {
-  test("ulw: the kickoff is /goal ulw <brief prompt>, the startup verdict is STARTUP_OK and the lane keeps its workflow", async () => {
-    const { w, d, brief, id } = setup();
+  const KICKOFFS: [Workflow, string][] = [
+    ["ulw", "/goal ulw "],
+    ["mass-ulw", "/goal mass-ulw workflowz "],
+    ["ulw-research", "/goal ulw-research workflowz "],
+    ["ulw-plan", "/goal ulw-plan ultrathink "],
+    ["ulw-loop", "/goal ulw-loop orchestrate "],
+    ["ulw-execute", "/goal ulw-execute orchestrate "],
+  ];
+  for (const [workflow, prefix] of KICKOFFS) {
+    test(`${workflow}: the kickoff is "${prefix}<brief prompt>", STARTUP_OK, the lane keeps it, and its native goal pauses and resumes`, async () => {
+      const { w, d, brief, id } = setup();
+      w.ompPlugins = ULW_PLUGIN;
+      const r = await start(d, brief, "--workflow", workflow);
+      expect(r.code).toBe(0);
+      expect(r.out[1]).toBe(`STARTUP_OK fix-login ${id}`);
+      expect(w.panes.get(id)!.received[0]).toBe(
+        `${prefix}Read your brief at ${d.store.briefPath("fix-login")} and execute it. Your lane key is fix-login. ` +
+          `The work is finished only when the brief's exit condition holds and you have sent seori ready.`,
+      );
+      expect(d.store.lane("fix-login")!.workflow).toBe(workflow);
+      expect(w.calls.filter((c) => c.cmd === "omp").map((c) => c.argv)).toEqual([["plugin", "list", "--json"]]);
+      const pane = w.panes.get(id)!;
+      pane.status = "idle";
+      pane.screen = ["working on it"];
+      pane.onPrompt = (text) => {
+        if (text === "/goal pause") pane.screen!.push(" Goal mode paused.");
+        if (text === "/goal resume") pane.screen!.push(" Goal mode resumed.");
+      };
+      const noSleep = { sleep: async () => {} };
+      expect((await pauseLane(d, "fix-login", undefined, noSleep)).lines).toEqual(["PAUSED fix-login goal paused"]);
+      expect((await resumeLane(d, "fix-login", undefined, noSleep)).lines[0]).toStartWith("RESUMED fix-login");
+    });
+  }
+
+  test("ulw-plan gets a default token and wall-clock ceiling unless the start or config.json sets them", async () => {
+    const { w, d, brief } = setup();
     w.ompPlugins = ULW_PLUGIN;
-    const r = await start(d, brief, "--workflow", "ulw");
-    expect(r.code).toBe(0);
-    expect(r.out[1]).toBe(`STARTUP_OK fix-login ${id}`);
-    expect(w.panes.get(id)!.received[0]).toStartWith(`/goal ulw Read your brief at ${d.store.briefPath("fix-login")} and execute it.`);
-    expect(d.store.lane("fix-login")!.workflow).toBe("ulw");
-    expect(w.calls.filter((c) => c.cmd === "omp").map((c) => c.argv)).toEqual([["plugin", "list", "--json"]]);
+    await start(d, brief, "--workflow", "ulw-plan");
+    expect(d.store.lane("fix-login")!.ceilings).toEqual({ wallMinutes: 60, tokens: 300_000, costUsd: null });
+    const out: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => void out.push(args.join(" "));
+    try {
+      await main(["start", "fix-hard", "--brief", brief, "--workspace", "w1", "--force", "--workflow", "ulw-plan", "--token-limit", "500000"], d);
+      await main(["start", "fix-ulw", "--brief", brief, "--workspace", "w1", "--force", "--workflow", "ulw"], d);
+    } finally {
+      console.log = log;
+    }
+    expect(d.store.lane("fix-hard")!.ceilings).toEqual({ wallMinutes: null, tokens: 500_000, costUsd: null });
+    expect(d.store.lane("fix-ulw")!.ceilings).toBeUndefined();
+  });
+
+  test("config.json supervision.ulwPlan changes or switches off the ulw-plan defaults; supervision.defaults win", async () => {
+    const off = setup({ supervision: { ulwPlan: { tokens: null, wallMinutes: null } } });
+    off.w.ompPlugins = ULW_PLUGIN;
+    await start(off.d, off.brief, "--workflow", "ulw-plan");
+    expect(off.d.store.lane("fix-login")!.ceilings).toBeUndefined();
+    const set = setup({ supervision: { defaults: { tokens: 100_000 }, ulwPlan: { wallMinutes: 30 } } });
+    set.w.ompPlugins = ULW_PLUGIN;
+    await start(set.d, set.brief, "--workflow", "ulw-plan");
+    expect(set.d.store.lane("fix-login")!.ceilings).toEqual({ wallMinutes: 30, tokens: 100_000, costUsd: null });
+    expect(() => loadConfig(setup({ supervision: { ulwPlan: { tokens: -1 } } }).d.store.root)).toThrow(/supervision.ulwPlan.tokens/);
   });
 
   test("unset: the kickoff is stock omp goal mode, exactly as before, and omp's plugins are not asked", async () => {
@@ -82,10 +136,12 @@ describe("seori start --workflow", () => {
   test("an unknown workflow is refused, on the command line and in config.json, naming the allowed ones", async () => {
     const { w, d, brief } = setup();
     w.ompPlugins = ULW_PLUGIN;
-    await expect(start(d, brief, "--workflow", "mass-ulw")).rejects.toThrow(/--workflow must be ulw or none, got "mass-ulw"/);
+    await expect(start(d, brief, "--workflow", "ulw-bogus")).rejects.toThrow(
+      /--workflow must be ulw, mass-ulw, ulw-research, ulw-plan, ulw-loop, ulw-execute or none, got "ulw-bogus"/,
+    );
     writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ workflow: "ulw research" }));
     expect(() => loadConfig(d.store.root)).toThrow(ConfigError);
-    expect(() => loadConfig(d.store.root)).toThrow(/workflow must be "ulw"/);
+    expect(() => loadConfig(d.store.root)).toThrow(/workflow must be one of "ulw", "mass-ulw", "ulw-research", "ulw-plan", "ulw-loop", "ulw-execute"/);
     expect(w.panes.size).toBe(1);
   });
 
