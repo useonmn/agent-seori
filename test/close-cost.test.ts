@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { closeLane } from "../src/done-flow.ts";
 import { hooksSettled } from "../src/hooks.ts";
-import type { Lane } from "../src/store.ts";
+import { type Lane, lockFile } from "../src/store.ts";
 import { World } from "./fake.ts";
 
 const assistant = (totalTokens: number, cost: number) =>
@@ -52,6 +52,39 @@ describe("cost recorded when a lane closes", () => {
     await hooksSettled(1000);
     expect(ledger()).toHaveLength(1);
     expect(hookCalls()).toEqual([["fix-a", "10", "0.125", "fix-a@7"]]);
+  });
+
+  test("a close that finds another process holding the ledger lock waits, then sees that process's line and adds none", async () => {
+    const { w, d, lane, ledger, hookCalls } = setup([assistant(10, 0.125)], { recordCost: ["record-cost", "{key}"] });
+    // Another process has checked the ledger, holds the lock and has not appended yet.
+    const release = lockFile(join(d.store.root, "cost.jsonl.lock"), d.now())!;
+    let waits = 0;
+    const racing = { ...d, sleep: async (ms: number) => {
+      waits++;
+      if (waits === 1) {
+        appendFileSync(join(d.store.root, "cost.jsonl"), JSON.stringify({ key: "fix-a", closeKey: "fix-a@7", tokens: 10, costUsd: 0.125, at: 1 }) + "\n");
+        release();
+      }
+      w.clock += ms;
+    } };
+    await closeLane(racing, lane, "closed by lead");
+    await hooksSettled(1000);
+    expect(waits).toBe(1);
+    expect(ledger()).toHaveLength(1);
+    expect(hookCalls()).toEqual([]);
+    expect(d.store.lane("fix-a")!.status).toBe("done");
+  });
+
+  test("a ledger lock that is never released times out on the injected clock and the lane still closes", async () => {
+    const { w, d, lane, ledger, hookCalls } = setup([assistant(10, 0.125)], { recordCost: ["record-cost", "{key}"] });
+    lockFile(join(d.store.root, "cost.jsonl.lock"), d.now());
+    const start = w.clock;
+    await closeLane(d, lane, "closed by lead");
+    await hooksSettled(1000);
+    expect(w.clock - start).toBeGreaterThan(2000);
+    expect(ledger()).toEqual([]);
+    expect(hookCalls()).toEqual([]);
+    expect(d.store.lane("fix-a")!.status).toBe("done");
   });
 
   test("usage that cannot be read is recorded as null, never 0, and runs no hook", async () => {

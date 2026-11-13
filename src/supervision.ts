@@ -5,10 +5,12 @@ import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
 import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
 import { type Ceilings, type Lane, type LaneLogKind, lockFile } from "./store.ts";
 
-const COST_LOCK_WAIT_MS = 2000;
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
 import { refText } from "./refs.ts";
 import { runHook } from "./hooks.ts";
+
+/** How long a close waits for another process's hold on the cost ledger before giving up (one stderr line). */
+const COST_LOCK_WAIT_MS = 2000;
 
 // Lane supervision, run by the duty loop: ceilings (wall-clock time, tokens, cost) and stalls are reported to the lead
 // once each. seori never kills or messages a lane for them: the lead decides. A paused lane is left alone, except that
@@ -74,11 +76,11 @@ export async function recordCloseCost(d: Deps, lane: Lane): Promise<void> {
   const usage = await laneUsage(d, lane);
   // Two closes can both pass the check above while usage is read; the check is repeated under the lock so only one appends.
   const lock = join(d.store.root, "cost.jsonl.lock");
-  const deadline = Date.now() + COST_LOCK_WAIT_MS;
+  const deadline = d.now() + COST_LOCK_WAIT_MS;
   let release = lockFile(lock, d.now());
   while (!release) {
-    if (Date.now() > deadline) throw new Error(`cost ledger is locked by another process (${lock})`);
-    await new Promise((r) => setTimeout(r, 5));
+    if (d.now() > deadline) throw new Error(`cost ledger is locked by another process (${lock})`);
+    await d.sleep(5);
     release = lockFile(lock, d.now());
   }
   const record: CostRecord = { key: lane.key, closeKey, tokens: usage.tokens ?? null, costUsd: usage.costUsd ?? null, at: d.now() };
