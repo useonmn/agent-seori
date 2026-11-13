@@ -1,6 +1,6 @@
 # Messengers
 
-seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. Only the owner's messages reach the lead; messages from anyone else, and from bots, are dropped.
+seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. The owner's messages always reach the lead. With `"talkWithOthers": true` in config.json (the default), so do other people's and other agents' messages to the bot: direct messages, channel messages that mention the bot, and every message in a thread the bot was mentioned in or has replied in. Each is labelled `trusted`, `person` or `agent` for the lead, and only the owner's and trusted senders' messages are work requests. With `"talkWithOthers": false` only the owner's messages reach the lead. The bot's own messages never do.
 
 Do every login and every click in the browser with the owner; never ask them to paste a password into this session.
 
