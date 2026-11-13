@@ -6,6 +6,7 @@ import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index
 import type { Ceilings, Lane, LaneLogKind } from "./store.ts";
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
 import { refText } from "./refs.ts";
+import { runHook } from "./hooks.ts";
 
 // Lane supervision, run by the duty loop: ceilings (wall-clock time, tokens, cost) and stalls are reported to the lead
 // once each. seori never kills or messages a lane for them: the lead decides. A paused lane is left alone, except that
@@ -240,6 +241,7 @@ async function pausedCheck(d: Deps, lane: Lane, events: DutyEvent[]): Promise<vo
   if (st === "gone") {
     // As dutyTick does for running lanes: otherwise the key stays paused with no pane, and done/start both refuse it.
     mark(d, lane.key, (l) => { l.status = "lost"; delete l.pausedFrom; }, { kind: "lost", text: "pane disappeared while paused" });
+    void runHook(d, "onLost", { key: lane.key, text: "pane disappeared while paused", evidence: "" });
     await tell(d, `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed while the lane was paused`, lane.key, events);
     events.push({ lane: lane.key, action: "lost" });
     return;

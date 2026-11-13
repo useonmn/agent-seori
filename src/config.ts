@@ -98,7 +98,7 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy"], path);
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy", "hooks"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;
