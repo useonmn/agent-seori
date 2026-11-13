@@ -139,7 +139,6 @@ test.skipIf(!enabled)(
       await waitStatus(id, "idle");
     }
     const status = await seori(home, "status");
-    expect(status).toContain("RUNTIME hc (from env)");
     expect(status).toContain(`hc:${lead}`);
 
     const ctl = () => readFileSync(systemctlLog, "utf8").split("\n").filter(Boolean);

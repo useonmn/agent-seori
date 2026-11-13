@@ -55,7 +55,6 @@ export const unitDir = join(root, "units");
 export const seoriEnv = (home: string) => ({
   ...hcEnv,
   SEORI_HOME: home,
-  SEORI_RUNTIME: "hc",
   SEORI_AGENT_CMD: fixture,
   [TEST_AGENT_CMD_SWITCH]: "1",
   SEORI_SYSTEMD_DIR: unitDir,
@@ -130,7 +129,7 @@ export async function startCore(): Promise<void> {
     ].join("\n"),
   );
   chmodSync(systemctl, 0o755);
-  // Started with the seori env so terminals opened by `seori` inherit SEORI_RUNTIME, PATH and the isolation.
+  // Started with the seori env so terminals opened by `seori` inherit PATH and the isolation.
   const r = await spawn(["hc", "--json", "server", "start"], seoriEnv(newHome("core")));
   if (r.code !== 0) throw new Error(`hc server start -> ${r.code}: ${r.err}`);
   corePid = Number((await hc("server", "status"))["pid"]);
