@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InboundMessage, SendUncertain } from "../src/messenger/adapter.ts";
@@ -112,18 +112,18 @@ describe("TelegramAdapter receive", () => {
     const t = setup();
     t.updates.push(dm(10, 5, "hello"));
     const got = await collect(t.adapter, 1);
-    expect(got).toEqual([{ id: "telegram:42:5", source: "telegram", chat: "42", from: "42", sender: { kind: "owner", id: "42" }, at: 1_700_000_000_000, text: "hello" }]);
+    expect(got).toEqual([{ id: "telegram:42:5", source: "telegram", chat: "42", from: "42", at: 1_700_000_000_000, text: "hello" }]);
     expect(cursor(t.root)).toEqual({ offset: 11 });
     expect(t.calls.filter((c) => c.method === "deleteWebhook")).toEqual([{ method: "deleteWebhook", body: { drop_pending_updates: false } }]);
     const poll = t.calls.find((c) => c.method === "getUpdates")!;
     expect(poll.body).toEqual({ timeout: 0, limit: 100, allowed_updates: ["message", "edited_message"] });
   });
 
-  test("drops the bot's own messages, channel posts, others' unaddressed group messages and empty messages, committing past them; topic messages get a thread", async () => {
+  test("drops other users, bots, other DMs and empty messages, committing past them; topic messages get a thread", async () => {
     const t = setup();
     t.updates.push(
-      { update_id: 1, message: { message_id: 1, from: { id: 777, is_bot: true, username: "seori_bot" }, chat: { id: 42, type: "private" }, date: 1, text: "own" } },
-      { update_id: 2, message: { message_id: 2, from: { id: 9, is_bot: false }, chat: { id: -200, type: "channel" }, date: 1, text: "channel post @seori_bot", entities: [{ type: "mention", offset: 13, length: 10 }] } },
+      { update_id: 1, message: { message_id: 1, from: { id: 9, is_bot: false }, chat: { id: 9, type: "private" }, date: 1, text: "stranger" } },
+      { update_id: 2, message: { message_id: 2, from: { id: 42, is_bot: true }, chat: { id: 42, type: "private" }, date: 1, text: "bot" } },
       { update_id: 3, message: { message_id: 3, from: { id: 9, is_bot: false }, chat: { id: -100, type: "supergroup" }, date: 1, text: "group stranger" } },
       dm(4, 4, ""),
       { update_id: 5, message: { message_id: 6, from: { id: 42 }, chat: { id: -100, type: "supergroup" }, date: 2, text: "reply in General", message_thread_id: 3 } },
@@ -137,84 +137,9 @@ describe("TelegramAdapter receive", () => {
     expect(cursor(t.root)).toEqual({ offset: 7 });
   });
 
-  test("a reply carries the id and text it replies to; a topic message's link to its topic is not a reply", async () => {
-    const t = setup();
-    const chat = { id: 42, type: "private" };
-    t.updates.push(
-      dm(1, 10, "yes, that one", { reply_to_message: { message_id: 7, from: { id: 777, is_bot: true }, chat, date: 1, text: "Shall I ship v1.4?" } }),
-      dm(2, 11, "in a topic", { is_topic_message: true, message_thread_id: 5, reply_to_message: { message_id: 5, chat, date: 1, forum_topic_created: { name: "Fix login" } } }),
-      dm(3, 12, "about the photo", { reply_to_message: { message_id: 8, chat, date: 1, caption: "before" } }),
-    );
-    const got = await collect(t.adapter, 3);
-    expect(got.map((m) => m.replyTo)).toEqual([{ id: "telegram:42:7", text: "Shall I ship v1.4?" }, undefined, { id: "telegram:42:8", text: "before" }]);
-  });
-
-  test("others: DMs from people and agents, group messages that mention or reply to the bot, and topics it was mentioned in", async () => {
-    const t = setup();
-    const group = { id: -100, type: "supergroup" };
-    const ann = { id: 9, is_bot: false, first_name: "Ann", last_name: "Lee" };
-    const other = { id: 55, is_bot: true, first_name: "Helper", username: "helper_bot" };
-    const msg = (update_id: number, from: unknown, chat: unknown, text: string, extra: Record<string, unknown> = {}) => ({ update_id, message: { message_id: update_id, from, chat, date: 1, text, ...extra } });
-    t.updates.push(
-      msg(1, ann, { id: 9, type: "private" }, "hi from Ann"),
-      msg(2, other, { id: 55, type: "private" }, "hi from a bot"),
-      msg(3, ann, group, "just chatting"),
-      msg(4, ann, group, "hey @SEORI_bot look", { entities: [{ type: "mention", offset: 4, length: 10 }] }),
-      msg(5, ann, group, "hey @helper_bot", { entities: [{ type: "mention", offset: 4, length: 11 }] }),
-      msg(6, ann, group, "hey you", { entities: [{ type: "text_mention", offset: 4, length: 3, user: { id: 777, is_bot: true } }] }),
-      msg(7, ann, group, "answering you", { reply_to_message: { message_id: 1, from: { id: 777, is_bot: true }, chat: group, date: 1, text: "a question" } }),
-      msg(8, ann, group, "topic start @seori_bot", { is_topic_message: true, message_thread_id: 50, entities: [{ type: "mention", offset: 12, length: 10 }] }),
-      msg(9, other, group, "more in the topic", { is_topic_message: true, message_thread_id: 50 }),
-      msg(10, ann, group, "another topic", { is_topic_message: true, message_thread_id: 60 }),
-      msg(11, { id: 42, is_bot: true }, { id: 42, type: "private" }, "a bot with the owner's id"),
-      msg(12, ann, group, "photo for @seori_bot", { text: undefined, caption: "photo for @seori_bot", caption_entities: [{ type: "mention", offset: 10, length: 10 }] }),
-    );
-    const got = await collect(t.adapter, 8);
-    expect(got.map((m) => [m.id, m.sender, m.thread])).toEqual([
-      ["telegram:9:1", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
-      ["telegram:55:2", { kind: "agent", id: "55", name: "Helper" }, undefined],
-      ["telegram:-100:4", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
-      ["telegram:-100:6", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
-      ["telegram:-100:7", { kind: "person", id: "9", name: "Ann Lee" }, undefined],
-      ["telegram:-100:8", { kind: "person", id: "9", name: "Ann Lee" }, "50"],
-      ["telegram:-100:9", { kind: "agent", id: "55", name: "Helper" }, "50"],
-      ["telegram:42:11", { kind: "agent", id: "42" }, undefined],
-    ]);
-    expect((await collect(t.make(), 1)).map((m) => m.id)).toEqual(["telegram:-100:12"]);
-  });
-
-  test("others' messages pass in a topic the bot has posted in, also when another process sent the post", async () => {
-    const t = setup();
-    const group = { id: -100, type: "supergroup" };
-    await t.make().send({ chat: "-100", thread: "70" }, "I'll look into it");
-    t.updates.push(
-      { update_id: 1, message: { message_id: 1, from: { id: 9 }, chat: group, date: 1, text: "elsewhere", is_topic_message: true, message_thread_id: 71 } },
-      { update_id: 2, message: { message_id: 2, from: { id: 9 }, chat: group, date: 1, text: "thanks", is_topic_message: true, message_thread_id: 70 } },
-    );
-    expect((await collect(t.adapter, 1)).map((m) => [m.id, m.thread])).toEqual([["telegram:-100:2", "70"]]);
-  });
-
-  test("a mention in a topic joins it only once handled: a rejected one leaves the topic unjoined", async () => {
-    const t = setup();
-    const group = { id: -100, type: "supergroup" };
-    t.updates.push({ update_id: 1, message: { message_id: 1, from: { id: 9 }, chat: group, date: 1, text: "@seori_bot help", is_topic_message: true, message_thread_id: 80, entities: [{ type: "mention", offset: 0, length: 10 }] } });
-    await expect(t.adapter.receive(new AbortController().signal, async () => { throw new Error("disk full"); })).rejects.toThrow("disk full");
-    expect(existsSync(join(t.root, "messenger", "telegram", "topics"))).toBe(false);
-    t.updates.push({ update_id: 2, message: { message_id: 2, from: { id: 9 }, chat: group, date: 1, text: "follow-up", is_topic_message: true, message_thread_id: 80 } });
-    expect((await collect(t.make(), 2)).map((m) => m.id)).toEqual(["telegram:-100:1", "telegram:-100:2"]);
-  });
-
-  test("pairing mode does not ask getMe", async () => {
-    const t = setup();
-    const a = new TelegramAdapter({ source: "telegram", owner: "", options: { apiBase: t.apiBase, pollTimeoutSec: 0 } }, t.root, { env: { SEORI_TELEGRAM_TOKEN: TOKEN }, pairing: true, cursorRoot: home() });
-    t.updates.push({ update_id: 1, message: { message_id: 1, from: { id: 9 }, chat: { id: 9, type: "private" }, date: 1, text: "pair me" } });
-    expect((await collect(a, 1)).map((m) => m.from)).toEqual(["9"]);
-    expect(t.calls.some((c) => c.method === "getMe")).toBe(false);
-  });
-
   test("a rejected onMessage keeps the cursor, so the same id is offered again", async () => {
     const t = setup();
-    t.updates.push(dm(1, 1, "skip me", { from: { id: 9 }, chat: { id: -100, type: "supergroup" } }), dm(2, 8, "important"));
+    t.updates.push(dm(1, 1, "skip me", { from: { id: 9 }, chat: { id: 9, type: "private" } }), dm(2, 8, "important"));
     await expect(t.adapter.receive(new AbortController().signal, async () => { throw new Error("disk full"); })).rejects.toThrow("disk full");
     expect(cursor(t.root)).toEqual({ offset: 2 }); // past the dropped stranger, not past the failed message
     expect((await collect(t.make(), 1)).map((m) => m.id)).toEqual(["telegram:42:8"]);
@@ -234,7 +159,7 @@ describe("TelegramAdapter receive", () => {
   test("an edit becomes an :edit:<edit_date> id with an (edited) prefix", async () => {
     const t = setup();
     t.updates.push({ update_id: 1, edited_message: { message_id: 5, from: { id: 42 }, chat: { id: 42, type: "private" }, date: 100, edit_date: 160, text: "fixed" } });
-    expect(await collect(t.adapter, 1)).toEqual([{ id: "telegram:42:5:edit:160", source: "telegram", chat: "42", from: "42", sender: { kind: "owner", id: "42" }, at: 160_000, text: "(edited) fixed" }]);
+    expect(await collect(t.adapter, 1)).toEqual([{ id: "telegram:42:5:edit:160", source: "telegram", chat: "42", from: "42", at: 160_000, text: "(edited) fixed" }]);
   });
 
   test("attachments add one line each with telegram-file refs; the caption is the text", async () => {
@@ -425,15 +350,6 @@ describe("TelegramAdapter voice transcription that never finishes", () => {
 });
 
 describe("TelegramAdapter send", () => {
-  test("a post into a topic still succeeds when the topic cannot be noted, with one warning", async () => {
-    const t = setup();
-    mkdirSync(join(t.root, "messenger", "telegram", "topics"), { recursive: true }); // a directory: not writable as the list
-    const warnings: string[] = [];
-    const a = new TelegramAdapter({ source: "telegram", owner: OWNER, options: { apiBase: t.apiBase } }, t.root, { env: { SEORI_TELEGRAM_TOKEN: TOKEN }, warn: (l) => warnings.push(l) });
-    expect(await a.send({ chat: "-100", thread: "70" }, "on it")).toEqual({ messageId: "100" });
-    expect(warnings).toHaveLength(1);
-  });
-
   test("splits at 4096, replies the first part to the stored id and keeps the topic on every part", async () => {
     const t = setup();
     const text = `${"a".repeat(4000)}\n\n${"b".repeat(200)}`;

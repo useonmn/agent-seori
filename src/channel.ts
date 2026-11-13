@@ -1,7 +1,6 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import type { ReplyRef, Sender } from "./messenger/adapter.ts";
 import { Outbox } from "./outbox.ts";
 import { lockFile, pidAlive } from "./store.ts";
 
@@ -19,19 +18,8 @@ export type MessengerRow = {
   readonly chat: string;
   readonly thread?: string;
   readonly from: string;
-  /** Who sent it. Rows stored before senders were recorded have none: they all came from the owner. */
-  readonly sender?: Sender;
   readonly at: number;
   readonly text: string;
-  /** The message this one replies to (src/messenger/adapter.ts InboundMessage.replyTo). */
-  readonly replyTo?: ReplyRef;
-  /** The platform marks the author as a bot or app, whatever `sender.kind` says (a trusted bot is still a bot). */
-  readonly agent?: true;
-  /**
-   * Set on the one row that stands for an agent message past config.json agentTurnLimit (the limit then in force): its
-   * text says the agent loop in that conversation was stopped; the agent's own text was not delivered.
-   */
-  readonly loopStopped?: number;
 };
 
 /** One event of a lead-owned watch; ids are `watch:<watch id>:<seq>`, seq counting that watch's rows from 1. */

@@ -1,12 +1,12 @@
 # Messengers
 
-seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. The owner's messages always reach the lead. With `"talkWithOthers": true` in config.json (the default), so do other people's and other agents' messages to the bot: direct messages, channel messages that mention the bot, and every message in a thread the bot was mentioned in or has replied in. Each is labelled `trusted`, `person` or `agent` for the lead, and only the owner's and trusted senders' messages are work requests. With `"talkWithOthers": false` only the owner's messages reach the lead. The bot's own messages never do. Adapter support comes one messenger at a time: an adapter that doesn't pass on other senders yet still drops everyone but the owner, whatever `talkWithOthers` says. Check the README's "Talking with others" section for which ones do.
+seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. Only the owner's messages reach the lead; the bot's own messages never do.
 
 Do every login and every click in the browser with the owner; never ask them to paste a password into this session.
 
 ## agent-messenger
 
-agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself, such as sending files. Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use its bot command, given the same bot token seori uses:
+agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself: sending files, the eyes reaction, reading a replied-to message, thread names and closing (`references/writing.md`, Platforms). Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use its bot command, given the same bot token seori uses:
 
 - Slack: `agent-slackbot auth set <xoxb-token>`.
 - Discord: `agent-discordbot auth set <token>`.
@@ -52,7 +52,6 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
 2. Basic Information → App-Level Tokens → Generate, scope `connections:write`. That is the app token (`xapp-...`).
 3. Install App → Install to Workspace → allow. That gives the bot token (`xoxb-...`).
 4. The owner opens the app in Slack (Apps → the app → Messages tab) so the DM exists.
-5. Optional, to show seori as an agent: Agents → turn on "Mark this app as an agent app" (adds `assistant:write`), Event Subscriptions → add `assistant_thread_started` and `assistant_thread_context_changed`, then reinstall the app (the tokens stay the same). Add `"options": { "agent": true }` to the slack entry of `~/.seori/messengers.json` so seori answers each DM in its thread and shows a working status there while the lead works.
 
 ### Discord
 

@@ -1,42 +1,18 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  type ActionNotes, type FetchedMessage, type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain, type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
-} from "./adapter.ts";
+import { type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain } from "./adapter.ts";
 
 // A messenger made of files under $SEORI_HOME/messenger/fake/, so tests and humans can drive the whole channel without a
 // platform account: append a row to in.jsonl to "send" a message to the lead; read out.jsonl to see what was sent back;
 // write ok|timeout|error to send-mode to make sends succeed, end uncertain, or fail.
-// With an owner set (the daemon's adapter), rows follow the platforms' delivery rules: the owner's always pass; anyone
-// else's pass in a direct message (`dm`), when they mention the bot (`mentions`), or inside a thread the bot was
-// mentioned in or has replied in. `bot` marks an agent's row, and rows from FAKE_BOT_ID are the bot's own, never passed.
 
 /** One line of in.jsonl. */
-export type FakeInboundRow = {
-  msgId: string;
-  chat: string;
-  thread?: string;
-  from: string;
-  text: string;
-  at?: number;
-  replyTo?: { id: string; text?: string };
-  /** The sender's display name. */
-  name?: string;
-  /** The sender is a bot or app: an agent. */
-  bot?: boolean;
-  /** A direct message to the bot. */
-  dm?: boolean;
-  /** The text mentions the bot. */
-  mentions?: boolean;
-};
+export type FakeInboundRow = { msgId: string; chat: string; thread?: string; from: string; text: string; at?: number };
 /** One line of out.jsonl. */
 export type FakeOutboundRow = { messageId: string; chat: string; thread?: string; replyTo?: string; text: string; at: number };
 export type FakeSendMode = "ok" | "timeout" | "error";
-/** One line of actions.jsonl: a react, edit, typing or thread call, as it was asked. */
-export type FakeActionRow = { action: "react" | "edit" | "typing" | "thread"; at: number } & Record<string, unknown>;
-
-/** The fake bot's own sender id: rows from it in in.jsonl are its own messages echoed back, never delivered. */
-export const FAKE_BOT_ID = "seori";
+/** One line of actions.jsonl: an edit, as it was asked. */
+export type FakeActionRow = { action: "edit"; at: number } & Record<string, unknown>;
 
 export const fakeDir = (root: string): string => join(root, "messenger", "fake");
 
@@ -59,18 +35,13 @@ export class FakeAdapter implements MessengerAdapter {
   private readonly offsetDir: string;
   private readonly pollMs: number;
   private readonly now: () => number;
-  private readonly owner: string | undefined;
 
-  /**
-   * `cursorRoot`: where the offset file lives instead of `root` (`seori msg pair` points it at a temp dir). `owner`: the
-   * owner's id, which turns on the delivery rules; without it every row passes (pairing, tests of the file mechanics).
-   */
-  constructor(root: string, options: { pollMs?: number; now?: () => number; cursorRoot?: string; owner?: string } = {}) {
+  /** `cursorRoot`: where the offset file lives instead of `root` (`seori msg pair` points it at a temp dir). */
+  constructor(root: string, options: { pollMs?: number; now?: () => number; cursorRoot?: string } = {}) {
     this.dir = fakeDir(root);
     this.offsetDir = fakeDir(options.cursorRoot ?? root);
     this.pollMs = options.pollMs ?? 500;
     this.now = options.now ?? Date.now;
-    this.owner = options.owner;
     mkdirSync(this.dir, { recursive: true });
     if (this.offsetDir !== this.dir) mkdirSync(this.offsetDir, { recursive: true });
   }
@@ -114,18 +85,10 @@ export class FakeAdapter implements MessengerAdapter {
   }
 
   async receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
-    // Threads the bot was mentioned in, from the rows read so far: built once, then grown row by row.
-    let mentioned: Set<string> | undefined;
     while (!signal.aborted) {
       const lines = this.lines();
-      const start = this.offset();
-      if (!mentioned) mentioned = new Set(lines.slice(0, start).flatMap((l) => mentionedThread(row(l))));
-      // Threads the bot replied in, read once per poll.
-      const replied = new Set(this.sent().flatMap((s) => (s.thread !== undefined ? [threadKey(s.chat, s.thread)] : [])));
-      for (let i = start; i < lines.length && !signal.aborted; i++) {
-        const r = row(lines[i]!);
-        const m = this.parse(r, (chat, thread) => replied.has(threadKey(chat, thread)) || mentioned!.has(threadKey(chat, thread)));
-        for (const key of mentionedThread(r)) mentioned.add(key);
+      for (let i = this.offset(); i < lines.length && !signal.aborted; i++) {
+        const m = this.parse(lines[i]!);
         // A rejection propagates before the commit, so the message is offered again when receive restarts.
         if (m) await onMessage(m);
         this.commit(i + 1);
@@ -135,21 +98,23 @@ export class FakeAdapter implements MessengerAdapter {
   }
 
   /** Blank or malformed lines are consumed without a message; they can never become valid, so waiting on them would stall the queue. */
-  private parse(r: FakeInboundRow | undefined, joined: (chat: string, thread: string) => boolean): InboundMessage | undefined {
-    if (!r) return undefined;
-    if (r.from === FAKE_BOT_ID) return undefined;
-    const kind = r.bot === true ? "agent" : r.from === this.owner ? "owner" : "person";
-    if (this.owner !== undefined && kind !== "owner" && !r.dm && !r.mentions && !(r.thread !== undefined && joined(r.chat, r.thread))) return undefined;
+  private parse(line: string): InboundMessage | undefined {
+    if (!line.trim()) return undefined;
+    let r: Partial<FakeInboundRow>;
+    try {
+      r = JSON.parse(line) as Partial<FakeInboundRow>;
+    } catch {
+      return undefined;
+    }
+    if (typeof r.msgId !== "string" || typeof r.chat !== "string" || typeof r.from !== "string" || typeof r.text !== "string") return undefined;
     return {
       id: `fake:${r.chat}:${r.msgId}`,
       source: this.source,
       chat: r.chat,
       ...(typeof r.thread === "string" ? { thread: r.thread } : {}),
       from: r.from,
-      sender: { kind, id: r.from, ...(typeof r.name === "string" ? { name: r.name } : {}) },
       at: typeof r.at === "number" ? r.at : this.now(),
       text: r.text,
-      ...(r.replyTo && typeof r.replyTo.id === "string" ? { replyTo: r.replyTo } : {}),
     };
   }
 
@@ -179,47 +144,10 @@ export class FakeAdapter implements MessengerAdapter {
     return readFileSync(this.actionsPath, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as FakeActionRow);
   }
 
-  /** send-mode error makes every action fail too; the others always succeed. */
-  private act(action: FakeActionRow["action"], detail: Record<string, unknown>): void {
-    if (this.sendMode() === "error") throw new Error(`fake messenger: ${action} failed (send-mode error)`);
-    appendFileSync(this.actionsPath, `${JSON.stringify({ action, ...detail, at: this.now() })}\n`);
-  }
-
-  async react(chat: string, message: string, on: boolean): Promise<void> {
-    this.act("react", { chat, message, on });
-  }
-
+  /** send-mode error makes an edit fail too. */
   async edit(target: SendTarget, message: string, text: string): Promise<void> {
-    this.act("edit", { ...target, message, text });
-  }
-
-  async typing(target: ThreadTarget): Promise<ActionNotes> {
-    this.act("typing", { ...target });
-    return [];
-  }
-
-  /** A message the owner sent (in.jsonl) or seori sent (out.jsonl, from "seori"). */
-  async fetchMessage(chat: string, message: string): Promise<FetchedMessage> {
-    for (const line of this.lines()) {
-      let r: Partial<FakeInboundRow>;
-      try {
-        r = JSON.parse(line) as Partial<FakeInboundRow>;
-      } catch {
-        continue;
-      }
-      if (r.chat === chat && r.msgId === message && typeof r.text === "string") return { from: String(r.from), at: r.at ?? 0, text: r.text };
-    }
-    const sent = this.sent().find((r) => r.chat === chat && r.messageId === message);
-    return sent ? { from: "seori", at: sent.at, text: sent.text } : { unavailable: "not found" };
-  }
-
-  async thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult> {
-    this.act("thread", { ...target, ...change });
-    return {
-      ...(change.name !== undefined ? { name: threadName(change.name, change.status) } : change.status !== undefined ? { status: change.status } : {}),
-      ...(change.state !== undefined ? { state: change.state } : {}),
-      notes: [],
-    };
+    if (this.sendMode() === "error") throw new Error("fake messenger: edit failed (send-mode error)");
+    appendFileSync(this.actionsPath, `${JSON.stringify({ action: "edit", ...target, message, text, at: this.now() })}\n`);
   }
 
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {
@@ -239,22 +167,4 @@ export class FakeAdapter implements MessengerAdapter {
     if (mode === "timeout") throw new SendUncertain("fake messenger: send timed out after sending (send-mode timeout)");
     return { messageId };
   }
-}
-
-const threadKey = (chat: string, thread: string): string => JSON.stringify([chat, thread]);
-
-/** The thread a row that mentions the bot puts the bot in: its own thread, or the one it starts as a top-level message. */
-const mentionedThread = (r: FakeInboundRow | undefined): string[] => (r?.mentions === true ? [threadKey(r.chat, r.thread ?? r.msgId)] : []);
-
-/** One valid row of in.jsonl; blank or malformed lines are undefined. */
-function row(line: string): FakeInboundRow | undefined {
-  if (!line.trim()) return undefined;
-  let r: Partial<FakeInboundRow>;
-  try {
-    r = JSON.parse(line) as Partial<FakeInboundRow>;
-  } catch {
-    return undefined;
-  }
-  if (typeof r.msgId !== "string" || typeof r.chat !== "string" || typeof r.from !== "string" || typeof r.text !== "string") return undefined;
-  return r as FakeInboundRow;
 }

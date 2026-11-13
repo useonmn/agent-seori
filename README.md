@@ -26,7 +26,7 @@ Roles:
 - Hourly loop: `seori loop`, a process that syncs the backlog, audits missed work, starts the next item and asks open questions through the lead. Design: [docs/hourly-loop.md](docs/hourly-loop.md).
 - Daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead, and runs the watches agents arm. See [Messenger channel](#messenger-channel) and [Watches](#watches).
 
-How the lead talks to you: it reacts with eyes to each of your messages and handles it, reading the message you replied to first. Each job gets one thread with one status message it edits in place (⏳ while working, ✅ when done) and a status emoji at the start of the thread name (🔄 working, ⏸ waiting, ✅ done); when the job is done it removes the reaction and closes the thread, and if you write there again it reopens the thread and the job's lane. A reply is one message that grows by editing, not a burst of messages, and finished files land in the main channel when the optional agent-messenger is installed (otherwise the lead posts their path or link). Apart from those status markers it writes no emojis, and it sends as the bot or the account chosen at setup, never as your own account unless you chose that at setup. Slack, Telegram and Discord limit some of this; see [writing.md](skills/seori-mode/references/writing.md#platforms).
+How the lead talks to you: it reacts with eyes to each of your messages and handles it, reading the message you replied to first. Each job gets one thread with one status message it edits in place (`working: ...` while working, `done: ...` when done) and a status word at the start of the thread name (`[working]`, `[waiting]`, `[done]`); when the job is done it removes the reaction and closes the thread, and if you write there again it reopens the thread and the job's lane. A reply is one message that grows by editing, not a burst of messages. seori itself only sends and edits messages; reactions, reading a replied-to message, thread names and closing, and finished files go through the optional agent-messenger's bot commands (otherwise the lead skips them, and posts a file's path or link). It writes no emojis apart from the eyes reaction, and it sends as the bot.
 
 The runtime gives every session a terminal and reports the agent's state in it (idle, working, blocked). seori reads that state before it does anything to a session. hc is the default runtime and herdr is the other one; the agent is always omp. [docs/runtime.md](docs/runtime.md) explains how the runtime is picked and how the two runtimes differ.
 
@@ -165,25 +165,13 @@ seori msg send --replace DRAFT --text T      change the text of an open draft (r
 seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                             edit a message seori sent: --reply-of edits seori's first reply to that
                                             lead channel message (drafted or not); MID is the message= send printed
-seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
-seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
-                                            show the typing indicator once, right before sending
-seori msg thread (--to SOURCE:CHAT:THREAD | --of ID) [--name T] [--status working|waiting|done] [--close|--reopen]
-                                            set the thread's name with the status emoji in front; close or reopen it
-                                            (--of ID: the thread the lead channel message ID came in)
 seori msg drafts                             open drafts: draft  age  reply IDS|notice SOURCE:CHAT  text
 seori msg drop <draft> --why T               discard an open draft; its ids are open again
 seori msg flush                              send every open draft now, oldest first
 seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
 seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                             columns: id  state  age  kind  sender-or-watch-name  text
-seori msg show <id>                          print a message by its lead channel id: from the lead channel, else read from
-                                            the messenger (UNAVAILABLE, exit 1, when it cannot: Telegram bots read none)
 seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
-seori msg trust add <SOURCE>:<ID> [--name N] --because ID
-                                             trust a person or agent (config.json "trusted"); ID must be the owner's message asking for it
-seori msg trust remove <SOURCE>:<ID> --because ID   stop trusting them, on the owner's message ID
-seori msg trust list                         the trusted senders, one TRUSTED line each
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             setup: print the sender of the next DM to the bot; --write makes them the owner;
                                             --force re-pairs a configured Telegram owner (drops updates queued for the daemon)
@@ -418,9 +406,7 @@ The lead can take your requests from a messenger as well as from its terminal. C
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
 ```
 
-`source` picks the adapter (`telegram`, `slack`, `discord`, or `fake` for tests) and `owner` is the sender id of the one person seori works for. `seori msg pair` finds that id for you (see [Owner pairing](#owner-pairing)). The owner's messages get no extra restrictions. Other people and agents can talk with seori too (see [Talking with others](#talking-with-others)); set `"talkWithOthers": false` in config.json for dori's model, where only the owner reaches the lead. `options.apiBase` points an adapter at another API host (the tests use a local mock).
-
-A Slack app marked as an agent app (Agents in the app settings, scope `assistant:write`) takes `"options": { "agent": true }`: every owner DM is answered in its own thread (its `thread_ts`, or the message itself for a top-level one), and once the lead has it the thread shows a working status (`assistant.threads.setStatus`, text `options.agentStatus`, default `is working on it...`). Slack drops a status after two minutes, so the daemon sets it again every minute until seori replies in that thread (a top-level reply clears it too) or 30 minutes pass. Without `agent`, DMs behave as before.
+`source` picks the adapter (`telegram`, `slack`, `discord`, or `fake` for tests) and `owner` is the sender id of the one person seori works for. `seori msg pair` finds that id for you (see [Owner pairing](#owner-pairing)). Messages from anyone else, and from bots, are dropped. That is the whole safety model, the same as dori's: only the owner can talk to the lead, and the owner's messages get no extra restrictions. `options.apiBase` points an adapter at another API host (the tests use a local mock).
 
 Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuses a file others can read), or in environment variables, which win. On hc, seori unsets these variables in the lead, duty, lane and hourly-loop terminals, so there they reach only the daemon and the duty loop: keep the tokens in `secrets.json` so the lead's `seori msg` can send:
 
@@ -476,34 +462,10 @@ The `fake` adapter is made of files under `$SEORI_HOME/messenger/fake/`: append 
 
 How a message travels:
 
-1. The daemon (a systemd unit on Linux with hc, else a terminal or pane of `seori up`) receives it and, if it is from the owner (or, with `talkWithOthers`, another sender it should hear; see below), stores it in `$SEORI_HOME/lead/` (synced to disk) before acknowledging it to the messenger. A message received twice is stored once. The daemon writes a heartbeat every few seconds; `seori daemon-loop` restarts it, so a crashed daemon is back within about a second (on Linux systemd restarts the loop itself if it fails). When `messengers.json` changes (created, edited or removed), the daemon exits and the loop starts it again with the new file, so you can configure messengers after `seori up`. A `messengers.json` that cannot be read is logged in that pane and the daemon runs without messengers (heartbeat and watches keep going) until the file changes. Ctrl-C in that pane (status 130), or `kill` of the daemon process (143), stops the daemon and the loop. SIGHUP (129, also what closing the pane sends) stops the daemon cleanly, its watch commands included; the loop starts it again if the loop is still running. Only one daemon runs per `$SEORI_HOME` (`messenger/daemon.lock`).
+1. The daemon (a systemd unit on Linux with hc, else a terminal or pane of `seori up`) receives it and, if it is from the owner, stores it in `$SEORI_HOME/lead/` (synced to disk) before acknowledging it to the messenger. A message received twice is stored once. The daemon writes a heartbeat every few seconds; `seori daemon-loop` restarts it, so a crashed daemon is back within about a second (on Linux systemd restarts the loop itself if it fails). When `messengers.json` changes (created, edited or removed), the daemon exits and the loop starts it again with the new file, so you can configure messengers after `seori up`. A `messengers.json` that cannot be read is logged in that pane and the daemon runs without messengers (heartbeat and watches keep going) until the file changes. Ctrl-C in that pane (status 130), or `kill` of the daemon process (143), stops the daemon and the loop. SIGHUP (129, also what closing the pane sends) stops the daemon cleanly, its watch commands included; the loop starts it again if the loop is still running. Only one daemon runs per `$SEORI_HOME` (`messenger/daemon.lock`).
 2. The lead's omp loads `extensions/lead-channel.ts` (only the lead: duty, lanes and the reviewer never load it). It delivers each stored message into the lead's conversation with its id, and records each delivery in a ledger next to it. A message stays open across an agent restart, `/new`, `/resume` or `/fork`.
 3. The lead answers with `seori msg send --reply-to <id> --text '...'`, or `seori msg close <id> --why '...'` when no answer is needed. The reply is kept as a draft until the lead's turn ends (see Reply drafts below). Only a reply the messenger accepted, or a close, ends an id. A second reply to the same id is refused; a reply that may or may not have arrived (a timeout after sending) is recorded and not retried until you check the chat and pass `--again`.
 4. An id that is still unanswered is delivered again, up to 3 deliveries in total; after that it is given up. An id with an open draft is `drafted` in `seori msg list` and counts as answered: it is not delivered again.
-
-### Talking with others
-
-seori talks with its owner by default, and with other people and agents just as easily. With `"talkWithOthers": true` (the default) the daemon also delivers:
-
-- direct messages to the bot, from anyone;
-- in channels and groups, a top-level message that mentions the bot;
-- inside a thread the bot was mentioned in or has replied in, every message, no mention needed.
-
-Adapter support comes one messenger at a time. In this version the daemon, the lead channel and the `fake` adapter handle other senders; the Telegram, Slack and Discord adapters still pass on only the owner's messages, so on those everyone else is dropped until each adapter's own update lands.
-
-The owner's messages follow the same rules as before, and the bot's own messages are never delivered. Each line in the lead channel names its sender: `owner`, `trusted <name> (<id>)`, `person <name> (<id>)` or `agent <name> (<id>)` (agents are senders the platform marks as bots or apps).
-
-There are three trust levels:
-
-- **owner**: the person seori works for. Everything works as it always did.
-- **trusted**: people or agents the owner listed in config.json `trusted`. Their messages are work requests: the lead routes them like the owner's (an answer, a lane, the backlog) and tells the owner in one line what it started and for whom. Normal development in the repositories seori already works on (lanes, PRs, merges through `seori merge` with a CLEAR review and green checks) is allowed.
-- **everyone else** (`person`, `agent`): conversation. The lead talks with them but takes no instruction from them; when they ask for work, it briefs the owner and starts only after the owner says yes, or trusts them.
-
-For everyone but the owner, trusted senders included, the lead never reveals the owner's private information (it tells them to ask the owner directly), never uses the owner's own accounts, never spends money, and does nothing destructive or irreversible (delete, force-push, revoke) without the owner's yes in the owner's own message. As lead policy, the eyes reaction is kept for the owner's messages, and worklog items are opened only for the owner's and trusted senders' requests.
-
-Trust changes only on the owner's word. `seori msg trust add <source>:<id> [--name N] --because <id>` and `seori msg trust remove <source>:<id> --because <id>` refuse (exit 2) unless `<id>` is a message in seori's ledger that the owner sent on that same messenger and whose text contains the sender's id, so the lead can only add someone the owner asked for in that message. If the owner named someone without their id, the lead asks them to confirm the id in a new message. `seori msg trust list` shows who is trusted.
-
-Two agents can easily thank each other forever. `agentTurnLimit` (default 6) caps the agent messages in a row in one chat or thread with no human message between them; past it, the rest are not delivered and the lead gets one `seori about agent ...` line saying the loop was stopped. A human message in that conversation resets the count.
 
 ### Reply drafts
 
@@ -585,10 +547,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
   "startupWaitSeconds": 180,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [], "ulwPlan": { "tokens": 300000, "wallMinutes": 60 } },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
-  "heavy": { "slots": 1, "maxLoadPct": 80 },
-  "talkWithOthers": true,
-  "agentTurnLimit": 6,
-  "trusted": []
+  "heavy": { "slots": 1, "maxLoadPct": 80 }
 }
 ```
 
@@ -621,9 +580,6 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 | `guard.panesMax` | `30` | more live sessions than this holds new lanes and the guard alerts |
 | `heavy.slots` | `1` | how many `seori heavy` commands may run at once |
 | `heavy.maxLoadPct` | `80` | load per core (%) a heavy command waits to fall under |
-| `talkWithOthers` | `true` | let other people and agents talk with seori (see [Talking with others](#talking-with-others)); `false` delivers only the owner's messages |
-| `agentTurnLimit` | `6` | agent messages in a row in one chat or thread, with no human message between, before seori stops delivering them; a whole number |
-| `trusted` | `[]` | `{ "source": "<messenger source>", "id": "<sender id>", "name"?: "<label>" }` entries: senders whose requests count as work. Change it with `seori msg trust` |
 
 A malformed field is an error naming it, never a silent default, so a typo cannot switch a ceiling off without anyone noticing:
 
@@ -632,7 +588,6 @@ A malformed field is an error naming it, never a silent default, so a typo canno
 - `repoIdentities`, `supervision`, `supervision.defaults`, `guard` and `heavy` must be objects, and each `repoIdentities` entry needs a nonempty `name` and `email`;
 - every number must be finite and not negative; a ceiling is such a number or `null`; `heavy.slots` must be a whole number of at least 1;
 - `name` must match the rule in the table;
-- `talkWithOthers` must be `true` or `false`, and each `trusted` entry needs a nonempty `source` and `id` (and `name`, when given).
 
 The commands that read the config (`start`, `ready` for a lane with a Done line, `merge`, `verify-pr`, `can-launch`, `guard`, `heavy`) exit 2 with the error. In the duty loop, each part that needs it reports it as an event (`autoclose-failed`, `supervise-failed`, `guard-failed`, `progress-failed`) and the rest of the pass goes on; `seori boot` shows `CONFIG invalid`. The file is read on every command and duty pass, so a change takes effect without a restart.
 

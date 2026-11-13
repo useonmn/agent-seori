@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Channel } from "../src/channel.ts";
 import { Refusal } from "../src/harness.ts";
 import {
   publishWorklog, renderUntilStable, renderWorklog, WORKLOG_MARKER, worklogAdd, worklogClose, WorklogError, worklogItemLine,
@@ -147,26 +146,5 @@ describe("worklog", () => {
       "WORKLOG open=1",
       `OPEN ${a.id} "Say \\"hi\\"" source="telegram:1:2" next="reply"`,
     ]);
-  });
-
-  test("a message from someone other than the owner creates no worklog item", () => {
-    const root = home();
-    const channel = new Channel(root);
-    channel.appendInbound({ id: "fake:c:1", kind: "messenger", source: "fake", chat: "c", from: "u2", sender: { kind: "person", id: "u2" }, at: T0, text: "do my thing" });
-    channel.appendInbound({ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", from: "u1", sender: { kind: "owner", id: "u1" }, at: T0, text: "do it" });
-    expect(() => worklogAdd(root, "their thing", "fake:c:1", T0)).toThrow(WorklogError);
-    expect(() => worklogAdd(root, "their thing", "re fake:c:1 (Bob)", T0)).toThrow(WorklogError);
-    expect(worklogRead(root).items).toEqual([]);
-    expect(worklogAdd(root, "not that one", "fake:c:10", T0).source).toBe("fake:c:10");
-    expect(worklogAdd(root, "owner thing", "fake:c:2", T0).source).toBe("fake:c:2");
-    expect(worklogAdd(root, "from the pane", "pane", T0).source).toBe("pane");
-    channel.appendInbound({ id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u3", sender: { kind: "trusted", id: "u3" }, at: T0, text: "fix it" });
-    // Trusted when it arrived, but no longer: config.json's list decides now.
-    expect(() => worklogAdd(root, "trusted thing", "fake:c:3", T0)).toThrow(WorklogError);
-    writeFileSync(join(root, "config.json"), JSON.stringify({ trusted: [{ source: "fake", id: "u3" }] }));
-    expect(worklogAdd(root, "trusted thing", "fake:c:3", T0).source).toBe("fake:c:3");
-    // seori's own agent-loop notice is never a request, whoever it is about.
-    channel.appendInbound({ id: "fake:c:4", kind: "messenger", source: "fake", chat: "c", from: "u3", sender: { kind: "trusted", id: "u3" }, at: T0, text: "agent loop stopped", loopStopped: 2 });
-    expect(() => worklogAdd(root, "a notice", "fake:c:4", T0)).toThrow(WorklogError);
   });
 });

@@ -1,13 +1,8 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { randomBytes } from "node:crypto";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
-import { ConfigError, loadConfig, type TrustedSender, updateTrusted } from "./config.ts";
-import { replyTarget } from "./messenger/common.ts";
 import { Refusal } from "./harness.ts";
-import {
-  type ActionNotes, loadMessengers, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain, type ThreadChange, type ThreadResult,
-  type ThreadTarget,
-} from "./messenger/adapter.ts";
+import { loadMessengers, SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 import { type Draft, type DraftTarget, Outbox, targetLabel } from "./outbox.ts";
 
@@ -344,39 +339,14 @@ export function flushLine(o: FlushOutcome): string {
   return `FAILED ${what}: ${o.detail}; the draft stays open: flush again, or drop it`;
 }
 
-// ---------- react, edit, typing, thread ----------
-// These act on the messenger at once (never drafted) and never touch the ledger: none of them answers an id.
-
-/** Where typing or a thread change goes: a chat and thread, plus the message it was asked from (`--of`). */
-export type Where = { readonly source: string; readonly target: ThreadTarget };
+// ---------- edit ----------
+// Acts on the messenger at once (never drafted) and never touches the ledger: an edit answers no id.
 
 function messengerRow(root: string, id: string): MessengerRow {
   const row = new Channel(root).inbound().find((r) => r.id === id);
   if (!row) throw new Refusal(`unknown message id ${id}`);
   if (row.kind !== "messenger") throw new Refusal(`${id} is a watch event, not a messenger message`);
   return row;
-}
-
-/** The platform's id of the message (an `:edit:` suffix dropped); chat ids may contain colons, so slice by known parts. */
-const upstreamId = (row: MessengerRow): string => replyTarget(row.id.slice(row.source.length + row.chat.length + 2));
-
-/** `--to source:chat[:thread]`, or `--of <id>`: the chat and thread that lead channel message came in. */
-export function whereOf(root: string, o: { readonly to?: string; readonly of?: string }): Where {
-  if ((o.to === undefined) === (o.of === undefined)) throw new Refusal("give exactly one of --to or --of");
-  if (o.to !== undefined) {
-    const t = parseTo(o.to);
-    return { source: t.source, target: { chat: t.chat, ...(t.thread !== undefined ? { thread: t.thread } : {}) } };
-  }
-  const row = messengerRow(root, o.of!);
-  return { source: row.source, target: { chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}), message: upstreamId(row) } };
-}
-
-export const whereLabel = (w: Where): string => [w.source, w.target.chat, ...(w.target.thread !== undefined ? [w.target.thread] : [])].join(":");
-
-/** `seori msg react`: the eyes reaction on an owner's message, added or removed. */
-export async function msgReact(root: string, id: string, on: boolean, d: MsgDeps): Promise<void> {
-  const row = messengerRow(root, id);
-  await adapterFor(d, row.source).react(row.chat, upstreamId(row), on);
 }
 
 /** `seori msg edit --to`: new text for a message seori sent (its id as `msg send` printed it). */
@@ -398,45 +368,6 @@ export async function msgEditReplyOf(root: string, id: string, text: string, d: 
   if (!text.trim()) throw new Refusal("refusing to edit a message to empty text");
   await adapterFor(d, row.source).edit({ chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}) }, first.messageId, text);
   return first.messageId;
-}
-
-export async function msgTyping(w: Where, d: MsgDeps): Promise<ActionNotes> {
-  return adapterFor(d, w.source).typing(w.target);
-}
-
-export async function msgThread(w: Where, change: ThreadChange, d: MsgDeps): Promise<ThreadResult> {
-  if (change.name === undefined && change.status === undefined && change.state === undefined) {
-    throw new Refusal("nothing to change: give --name, --status, --close or --reopen");
-  }
-  return adapterFor(d, w.source).thread(w.target, change);
-}
-
-/**
- * `seori msg show <id>`: one message by its lead channel id, from the lead channel when it is stored there (with what it
- * replies to), else read from the messenger. `ok` false: the messenger could not give it (the first line says why).
- */
-export async function msgShow(root: string, id: string, d: MsgDeps): Promise<{ readonly ok: boolean; readonly lines: string[] }> {
-  const row = new Channel(root).inbound().find((r) => r.id === id);
-  if (row?.kind === "messenger") {
-    const reply = row.replyTo ? ` (reply to ${row.replyTo.id})` : "";
-    return { ok: true, lines: [`MESSAGE ${id} from ${row.from} at ${new Date(row.at).toISOString()}${reply}`, row.text] };
-  }
-  const parts = replyTarget(id).split(":");
-  if (parts.length < 3 || parts.some((p) => !p)) throw new Refusal(`msg show takes a lead channel id source:chat:message, got "${id}"`);
-  const [source, ...rest] = parts;
-  const message = rest.pop()!;
-  const got = await adapterFor(d, source!).fetchMessage(rest.join(":"), message);
-  if ("unavailable" in got) return { ok: false, lines: [`UNAVAILABLE ${id}: ${got.unavailable}`] };
-  return { ok: true, lines: [`MESSAGE ${id} from ${got.from} at ${new Date(got.at).toISOString()}`, got.text] };
-}
-
-/** The lines `seori msg thread` prints: what the messenger did (or SKIPPED when it did nothing), then one NOTE per limit. */
-export function threadLine(label: string, r: ThreadResult): string[] {
-  const did = [
-    ...(r.name !== undefined ? [`name=${JSON.stringify(r.name)}`] : r.status !== undefined ? [`status=${r.status}`] : []),
-    ...(r.state === "close" ? ["closed"] : r.state === "reopen" ? ["reopened"] : []),
-  ];
-  return [did.length ? `THREAD ${label} ${did.join(" ")}` : `SKIPPED thread ${label}`, ...r.notes.map((n) => `NOTE ${n}`)];
 }
 
 /** Closes an id without replying (handled elsewhere, not worth an answer). */
@@ -476,83 +407,3 @@ export function msgList(root: string, o: { readonly all?: boolean }, now: number
     return `${row.id}  ${stateOf(s)}  ${age(now - row.at)}  ${row.kind}  ${row.kind === "watch" ? row.name : row.from}  ${JSON.stringify(row.text.slice(0, 60))}`;
   });
 }
-
-// ---------- trust ----------
-
-/** `<source>:<id>` as `seori msg trust` takes it; the id is everything after the first colon. */
-function parseTrustSpec(spec: string): { source: string; id: string } {
-  const at = spec.indexOf(":");
-  if (at <= 0 || at === spec.length - 1) throw new Refusal(`give the sender as <source>:<id> (e.g. slack:U0123), got "${spec}"`);
-  return { source: spec.slice(0, at), id: spec.slice(at + 1) };
-}
-
-/**
- * The owner's say-so for a trust change: `because` must be a lead-channel messenger message from the owner (a row
- * stored before senders were recorded came from the owner) whose text names the sender's id, so the lead can change
- * trust only when the owner asked for that sender, not on any owner message it can find. Whether the message really asks
- * for this (and not "do not trust u3") stays the lead's judgment; this check only keeps it from citing an unrelated one.
- */
-function ownerAsked(root: string, because: string | undefined, source: string, id: string): void {
-  if (because === undefined) throw new Refusal("give --because <id of the owner's message that asked for this>");
-  const row = new Channel(root).inbound().findLast((r) => r.id === because);
-  if (row?.kind !== "messenger") throw new Refusal(`--because ${because} is not a messenger message in the lead channel`);
-  if (row.sender !== undefined && row.sender.kind !== "owner") {
-    throw new Refusal(`--because ${because} is from ${row.sender.kind} ${row.sender.id}, not the owner: only the owner can change who is trusted`);
-  }
-  if (row.source !== source) throw new Refusal(`--because ${because} came in on ${row.source}, not ${source}: cite the owner's message on that messenger`);
-  if (!mentionsWord(row.text, id)) throw new Refusal(`--because ${because} does not name ${id}: cite the owner's message that asks to change trust for that sender`);
-}
-
-/** `word` appears in `text` with no letter, digit or underscore right before or after it (u3 is not in u30). */
-function mentionsWord(text: string, word: string): boolean {
-  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "u").test(text);
-}
-
-export const trustLine = (t: TrustedSender): string => `TRUSTED ${t.source}:${t.id}${t.name !== undefined ? ` name=${JSON.stringify(t.name)}` : ""}`;
-
-/** Refusal for a config.json that does not load: it is never rewritten. */
-function trustedNow(root: string): readonly TrustedSender[] {
-  try {
-    return loadConfig(root).trusted;
-  } catch (e) {
-    if (e instanceof ConfigError) throw new Refusal(`${e.message}; fix config.json before changing who is trusted`);
-    throw e;
-  }
-}
-
-/** updateTrusted with its refusals (a config.json that does not load, another writer holding it) as Refusals. */
-function changeTrusted(root: string, change: (list: readonly TrustedSender[]) => readonly TrustedSender[]): void {
-  try {
-    updateTrusted(root, change, Date.now());
-  } catch (e) {
-    if (e instanceof ConfigError) throw new Refusal(`${e.message}; nothing was changed`);
-    throw e;
-  }
-}
-
-/** `seori msg trust add <source>:<id> [--name N] --because <owner message id>`: adds or renames a trusted sender. */
-export function msgTrustAdd(root: string, spec: string, o: { readonly name?: string; readonly because?: string }): TrustedSender {
-  const { source, id } = parseTrustSpec(spec);
-  if (o.name !== undefined && !o.name.trim()) throw new Refusal("--name must not be empty");
-  ownerAsked(root, o.because, source, id);
-  const entry: TrustedSender = { source, id, ...(o.name !== undefined ? { name: o.name.trim() } : {}) };
-  changeTrusted(root, (list) => {
-    const at = list.findIndex((t) => t.source === source && t.id === id);
-    return at < 0 ? [...list, entry] : list.map((t, i) => (i === at ? entry : t));
-  });
-  return entry;
-}
-
-/** `seori msg trust remove <source>:<id> --because <owner message id>`. */
-export function msgTrustRemove(root: string, spec: string, because: string | undefined): void {
-  const { source, id } = parseTrustSpec(spec);
-  ownerAsked(root, because, source, id);
-  changeTrusted(root, (list) => {
-    if (!list.some((t) => t.source === source && t.id === id)) throw new Refusal(`${source}:${id} is not trusted`);
-    return list.filter((t) => !(t.source === source && t.id === id));
-  });
-}
-
-/** `seori msg trust list`: one TRUSTED line per sender, in config order. */
-export const msgTrustList = (root: string): string[] => trustedNow(root).map(trustLine);

@@ -11,13 +11,11 @@ import { heartbeatPath, runDaemon } from "./daemon.ts";
 import { down, DOWN_GROUPS, liveRunners, running, sleepUnless } from "./down.ts";
 import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
-import { loadMessengers, type ThreadChange, type ThreadStatus } from "./messenger/adapter.ts";
+import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
 import {
-  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgReact, msgSend, msgShow, msgThread, msgTrustAdd, msgTrustList,
-  msgTrustRemove, msgTyping, parseTo, trustLine,
-  threadLine, whereLabel, whereOf,
+  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgSend, parseTo,
 } from "./msg.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
@@ -124,23 +122,10 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori msg flush                              send every open draft now, oldest first
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
-  seori msg trust add <SOURCE>:<ID> [--name N] --because ID
-                                              trust a person or agent (config.json "trusted"); ID must be the owner's message asking for it
-  seori msg trust remove <SOURCE>:<ID> --because ID   stop trusting them, on the owner's message ID
-  seori msg trust list                         the trusted senders, one TRUSTED line each
                                               columns: id  state  age  kind  sender-or-watch-name  text
-  seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
   seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                               replace the text of a message seori sent: --reply-of edits seori's first reply
                                               to that lead channel message (drafted or not); MID: the message= send printed
-  seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
-                                              show the typing indicator once, right before a message goes out
-  seori msg thread (--to SOURCE:CHAT:THREAD | --of ID) [--name T] [--status working|waiting|done] [--close|--reopen]
-                                              name a job's thread with its status emoji in front (🔄 ⏸ ✅), close or reopen it;
-                                              --of ID: the thread that message came in. NOTE lines say what the platform
-                                              cannot do (Slack: status as a reaction on the first message, no close)
-  seori msg show <id>                          print a message by its lead channel id (from the lead channel, else read from
-                                              the messenger; UNAVAILABLE exit 1 when it cannot, e.g. Telegram)
   seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
   seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                               setup: print the sender of the next DM to the bot; --write makes them the owner;
@@ -155,7 +140,7 @@ it is held and never resent, so do not send it again: check the pane, then seori
 QUEUED (exit 0) means it waits in the pane's inbox.
 msg send exits 3 with HELD when the messenger may or may not have the reply: check the chat, then pass --again.
 msg flush prints SENT, HELD or FAILED per draft; it exits 1 if a draft failed (it stays open), else 3 if one is HELD.
-msg react, edit, typing and thread act at once (never drafted) and are safe to repeat; a messenger error prints FAILED and exits 1.
+msg edit acts at once (never drafted) and is safe to repeat; a messenger error prints FAILED and exits 1.
 A second reply to an id is refused (exit 2) unless --again is given.
 SEORI_MODEL=M passes --model M to every agent seori starts (lead, duty, lanes) and is the reviewer's default model.
 seori runs omp only: SEORI_AGENT or "agent" in $SEORI_HOME/config.json naming anything else is refused (exit 2); SEORI_AGENT_CMD overrides the omp command and must name omp (its basename is omp).
@@ -168,7 +153,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume", "remove", "close", "reopen"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -686,101 +671,39 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
       process.off("SIGINT", onInt);
     }
   }
-  if (sub === "react" || sub === "edit" || sub === "typing" || sub === "thread") return msgAction(root, d, a, sub);
-  if (sub === "trust") {
-    const op = a.pos[2];
-    if (op === "list") {
-      const lines = msgTrustList(root);
-      console.log(lines.length ? lines.join("\n") : "EMPTY");
-      return 0;
-    }
-    if (op === "add") {
-      const name = one(a, "name");
-      console.log(trustLine(msgTrustAdd(root, need(a.pos[3], "<source>:<id>"), { ...(name !== undefined ? { name } : {}), ...(one(a, "because") !== undefined ? { because: one(a, "because")! } : {}) })));
-      return 0;
-    }
-    if (op === "remove") {
-      const spec = need(a.pos[3], "<source>:<id>");
-      msgTrustRemove(root, spec, one(a, "because"));
-      console.log(`UNTRUSTED ${spec}`);
-      return 0;
-    }
-    throw new Refusal(`seori msg trust takes add, remove or list\n\n${USAGE}`);
-  }
-  if (sub === "show") {
-    const r = await msgShow(root, need(a.pos[2], "message id"), msgDepsFor(root, d.now));
-    console.log(r.lines.join("\n"));
-    return r.ok ? 0 : 1;
-  }
+  if (sub === "edit") return msgEditCommand(root, d, a);
   throw new Refusal(`unknown msg command ${sub}\n\n${USAGE}`);
 }
 
-const STATUSES: readonly ThreadStatus[] = ["working", "waiting", "done"];
-
-/** react, edit, typing and thread: one line saying what was done (then NOTE lines), or FAILED and exit 1. */
-async function msgAction(root: string, d: Deps, a: Args, sub: "react" | "edit" | "typing" | "thread"): Promise<number> {
+/** `seori msg edit`: EDITED with the message id, or FAILED and exit 1. */
+async function msgEditCommand(root: string, d: Deps, a: Args): Promise<number> {
   const deps = msgDepsFor(root, d.now);
-  let what = "";
-  let done = "";
-  let act: () => Promise<readonly string[] | void>;
-  if (sub === "react") {
-    const id = need(a.pos[2], "message id");
-    const on = one(a, "remove") !== "true";
-    what = id;
-    done = `${on ? "REACTED" : "UNREACTED"} ${id}`;
-    act = () => msgReact(root, id, on, deps);
-  } else if (sub === "edit") {
-    const replyOf = one(a, "reply-of");
-    if ((replyOf === undefined) === (one(a, "to") === undefined)) throw new Refusal("give exactly one of --reply-of ID or --to SOURCE:CHAT[:THREAD] (with --message MID)");
-    const text = await textOf(a);
-    if (replyOf !== undefined) {
-      what = replyOf;
-      act = async () => {
-        done = `EDITED ${replyOf} message=${await msgEditReplyOf(root, replyOf, text, deps)}`;
-      };
-    } else {
-      const to = parseTo(need(one(a, "to"), "--to"));
-      const message = need(one(a, "message"), "--message");
-      what = need(one(a, "to"), "--to");
-      done = `EDITED ${what} message=${message}`;
-      act = () => msgEdit(to, message, text, deps);
-    }
+  const replyOf = one(a, "reply-of");
+  if ((replyOf === undefined) === (one(a, "to") === undefined)) throw new Refusal("give exactly one of --reply-of ID or --to SOURCE:CHAT[:THREAD] (with --message MID)");
+  const text = await textOf(a);
+  let what: string;
+  let act: () => Promise<string>;
+  if (replyOf !== undefined) {
+    what = replyOf;
+    act = () => msgEditReplyOf(root, replyOf, text, deps);
   } else {
-    const where = whereOf(root, { to: one(a, "to"), of: one(a, "of") });
-    what = whereLabel(where);
-    if (sub === "typing") {
-      done = `TYPING ${what}`;
-      act = () => msgTyping(where, deps);
-    } else {
-      const status = one(a, "status");
-      if (status !== undefined && !STATUSES.includes(status as ThreadStatus)) throw new Refusal(`--status must be working, waiting or done, got "${status}"`);
-      const close = one(a, "close") === "true";
-      const reopen = one(a, "reopen") === "true";
-      if (close && reopen) throw new Refusal("give --close or --reopen, not both");
-      const name = one(a, "name");
-      const change: ThreadChange = {
-        ...(name !== undefined ? { name } : {}),
-        ...(status !== undefined ? { status: status as ThreadStatus } : {}),
-        ...(close ? { state: "close" as const } : reopen ? { state: "reopen" as const } : {}),
-      };
-      const label = what;
-      act = async () => {
-        const [first, ...notes] = threadLine(label, await msgThread(where, change, deps));
-        done = first!;
-        return notes.map((n) => n.slice("NOTE ".length));
-      };
-    }
+    const to = parseTo(need(one(a, "to"), "--to"));
+    const message = need(one(a, "message"), "--message");
+    what = need(one(a, "to"), "--to");
+    act = async () => {
+      await msgEdit(to, message, text, deps);
+      return message;
+    };
   }
-  let notes: readonly string[];
+  let message: string;
   try {
-    notes = (await act()) ?? [];
+    message = await act();
   } catch (e) {
     if (e instanceof Refusal) throw e;
-    console.log(`FAILED ${sub} ${what}: ${redact((e as Error)?.message ?? String(e))}`);
+    console.log(`FAILED edit ${what}: ${redact((e as Error)?.message ?? String(e))}`);
     return 1;
   }
-  console.log(done);
-  for (const n of notes) console.log(`NOTE ${n}`);
+  console.log(`EDITED ${what} message=${message}`);
   return 0;
 }
 

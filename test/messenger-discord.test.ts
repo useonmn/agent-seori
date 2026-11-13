@@ -45,9 +45,6 @@ class MockDiscord {
   postPlan: PostMode[] = [];
   gatewayStatus = 200;
   historyStatus = 200;
-  /** GET /channels/{id} answers with these channel types (0 text, 1 DM, 11 public thread); others are 404. */
-  channelTypes: Record<string, number> = { C1: 0 };
-  meCalls = 0;
   nextId = 900;
   /** A `hang` post answers only once this resolves (at the end of the test, after the adapter gave up). */
   readonly hung = Promise.withResolvers<void>();
@@ -118,15 +115,7 @@ class MockDiscord {
     const path = url.pathname.replace(/^\/api\/v10/, "");
     if (req.headers.get("authorization") !== "Bot T0K") return Response.json({ message: "401: Unauthorized", code: 0 }, { status: 401 });
     if (path === "/gateway/bot") return Response.json({ url: this.ws }, { status: this.gatewayStatus });
-    if (path === "/users/@me") {
-      this.meCalls++;
-      return Response.json({ id: "BOT", username: "seori" });
-    }
-    const ch = /^\/channels\/([^/]+)$/.exec(path);
-    if (ch && req.method === "GET") {
-      const type = this.channelTypes[ch[1]!];
-      return type === undefined ? new Response("not found", { status: 404 }) : Response.json({ id: ch[1], type });
-    }
+    if (path === "/users/@me") return Response.json({ id: "BOT", username: "seori" });
     const m = /^\/channels\/([^/]+)\/messages$/.exec(path);
     if (m && req.method === "GET") {
       const after = BigInt(url.searchParams.get("after") ?? "0");
@@ -205,37 +194,26 @@ const until = async (cond: () => boolean, ms = 1_000) => {
 };
 
 describe("DiscordAdapter receive", () => {
-  test("delivers owner messages with discord:<channel>:<id>, drops others' and bots' unmentioned server messages, and commits past them", async () => {
+  test("delivers owner messages with discord:<channel>:<id>, drops others and bots, and commits past them", async () => {
     const m = mock();
     const root = home();
     m.afterReady = [
       ["MESSAGE_CREATE", msg("101")],
-      ["MESSAGE_CREATE", msg("102", { guild_id: "S1", author: { id: "7" } })],
-      ["MESSAGE_CREATE", msg("103", { guild_id: "S1", author: { id: OWNER, bot: true } })],
+      ["MESSAGE_CREATE", msg("102", { author: { id: "7" } })],
+      ["MESSAGE_CREATE", msg("103", { author: { id: OWNER, bot: true } })],
       ["MESSAGE_CREATE", msg("104", { content: "" })], // nothing to say: skipped
       ["MESSAGE_CREATE", msg("105", { type: 7 })], // a system message
       ["MESSAGE_CREATE", msg("106", { content: "last" })],
     ];
     const got = await collect(adapter(m, root), 2);
     expect(got).toEqual([
-      { id: "discord:C1:101", source: "discord", chat: "C1", from: OWNER, sender: { kind: "owner", id: OWNER }, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "m101" },
-      { id: "discord:C1:106", source: "discord", chat: "C1", from: OWNER, sender: { kind: "owner", id: OWNER }, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "last" },
+      { id: "discord:C1:101", source: "discord", chat: "C1", from: OWNER, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "m101" },
+      { id: "discord:C1:106", source: "discord", chat: "C1", from: OWNER, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "last" },
     ]);
     const c = cursorOf(root)!;
     expect(c.channels).toEqual({ C1: "106" });
     expect(c.session).toEqual({ sessionId: "S1", resumeUrl: m.ws, seq: 7 });
     expect(m.identifies).toBe(1);
-  });
-
-  test("a reply carries the id and text of the message it replies to", async () => {
-    const m = mock();
-    m.afterReady = [
-      ["MESSAGE_CREATE", msg("110", { type: 19, content: "yes", message_reference: { message_id: "99", channel_id: "C1" }, referenced_message: { id: "99", content: "Shall I ship?" } })],
-      ["MESSAGE_CREATE", msg("111", { type: 19, message_reference: { message_id: "98", channel_id: "C1" }, referenced_message: null })],
-      ["MESSAGE_CREATE", msg("112")],
-    ];
-    const got = await collect(adapter(m, home()), 3);
-    expect(got.map((x) => x.replyTo)).toEqual([{ id: "discord:C1:99", text: "Shall I ship?" }, { id: "discord:C1:98" }, undefined]);
   });
 
   test("a rejected onMessage is redelivered with the same id (resume replays from the committed seq)", async () => {
@@ -521,106 +499,6 @@ describe("DiscordAdapter send and check", () => {
   });
 });
 
-describe("DiscordAdapter talking with others", () => {
-  const AT = Date.parse("2026-11-07T00:00:00.000Z");
-  const EDITED = "2026-11-07T00:00:05.000Z";
-  const person = { id: "7", username: "kim", global_name: "Kim" };
-  const agent = { id: "8", username: "helper", bot: true };
-  const self = { id: "BOT", username: "seori", bot: true };
-  const inbound = (chat: string, id: string, sender: InboundMessage["sender"], text: string): InboundMessage => ({ id: `discord:${chat}:${id}`, source: "discord", chat, from: sender.id, sender, at: AT, text });
-
-  test("a DM from a person or an agent is delivered with its sender; the bot's own messages never are", async () => {
-    const m = mock();
-    const root = home();
-    m.afterReady = [
-      ["MESSAGE_CREATE", msg("101", { channel_id: "D1", author: person, content: "hi" })],
-      ["MESSAGE_CREATE", msg("102", { channel_id: "D1", author: self, content: "hello" })],
-      ["MESSAGE_CREATE", msg("103", { channel_id: "D2", author: agent, content: "ping" })],
-    ];
-    const got = await collect(adapter(m, root), 2);
-    expect(got).toEqual([inbound("D1", "101", { kind: "person", id: "7", name: "Kim" }, "hi"), inbound("D2", "103", { kind: "agent", id: "8", name: "helper" }, "ping")]);
-    expect(cursorOf(root)!.channels).toEqual({ D1: "102", D2: "103" });
-  });
-
-  test("a top-level server message from someone else is delivered only when it mentions the bot", async () => {
-    const m = mock();
-    m.afterReady = [
-      ["MESSAGE_CREATE", msg("201", { guild_id: "S1", author: person, content: "chatter" })],
-      ["MESSAGE_CREATE", msg("202", { guild_id: "S1", author: person, content: "<@BOT> look", mentions: [{ id: "BOT" }] })],
-      ["MESSAGE_CREATE", msg("203", { guild_id: "S1", author: agent, content: "hey <@!BOT>" })],
-      ["MESSAGE_CREATE", msg("204", { guild_id: "S1", author: person, content: "more chatter" })],
-      ["MESSAGE_CREATE", msg("205", { guild_id: "S1", content: "owner" })],
-    ];
-    const got = await collect(adapter(m, home()), 3);
-    expect(got).toEqual([
-      inbound("C1", "202", { kind: "person", id: "7", name: "Kim" }, "<@BOT> look"),
-      inbound("C1", "203", { kind: "agent", id: "8", name: "helper" }, "hey <@!BOT>"),
-      inbound("C1", "205", { kind: "owner", id: OWNER }, "owner"),
-    ]);
-  });
-
-  test("in a thread the bot posted or was mentioned in, every message and edit is delivered without a mention", async () => {
-    const m = mock();
-    const root = home();
-    m.channelTypes = { C1: 0, T1: 11, T2: 11 };
-    m.afterReady = [
-      ["MESSAGE_CREATE", msg("301", { channel_id: "T1", guild_id: "S1", author: person, content: "before" })],
-      ["MESSAGE_CREATE", msg("302", { channel_id: "T1", guild_id: "S1", author: self, content: "seori here" })],
-      ["MESSAGE_CREATE", msg("303", { channel_id: "T1", guild_id: "S1", author: person, content: "no mention needed" })],
-      ["MESSAGE_CREATE", msg("304", { channel_id: "T2", guild_id: "S1", author: agent, content: "<@BOT> join", mentions: [{ id: "BOT" }] })],
-      ["MESSAGE_CREATE", msg("305", { channel_id: "T2", guild_id: "S1", author: agent, content: "and on" })],
-      ["MESSAGE_UPDATE", msg("201", { guild_id: "S1", author: person, content: "edited chatter", edited_timestamp: EDITED })],
-      ["MESSAGE_UPDATE", msg("303", { channel_id: "T1", guild_id: "S1", author: person, content: "edited", edited_timestamp: EDITED })],
-      ["MESSAGE_CREATE", msg("306", { channel_id: "T1", guild_id: "S1", content: "end" })],
-    ];
-    const got = await collect(adapter(m, root), 5);
-    expect(got.map((x) => [x.id, x.sender.kind, x.text])).toEqual([
-      ["discord:T1:303", "person", "no mention needed"],
-      ["discord:T2:304", "agent", "<@BOT> join"],
-      ["discord:T2:305", "agent", "and on"],
-      [`discord:T1:303:edit:${Date.parse(EDITED)}`, "person", "(edited) edited"],
-      ["discord:T1:306", "owner", "end"],
-    ]);
-    const c = cursorOf(root)!;
-    expect(c.threads).toEqual(["T1", "T2"]);
-    expect(c.channels).toEqual({ T1: "306", T2: "305" });
-  });
-
-  test("catch-up applies the same rules to tracked DMs, threads and channels", async () => {
-    const m = mock();
-    const root = home();
-    CursorFile.for<DiscordCursor>(root, "discord").save({ channels: { T1: "1000", C1: "1000", D1: "1000" }, threads: ["T1"] });
-    m.channelTypes = { C1: 0, T1: 11, D1: 1 };
-    m.history["T1"] = [msg("1001", { channel_id: "T1", author: person, content: "in thread" })];
-    m.history["C1"] = [msg("1002", { author: person, content: "chatter" }), msg("1003", { author: person, content: "<@BOT> q", mentions: [{ id: "BOT" }] })];
-    m.history["D1"] = [msg("1004", { channel_id: "D1", author: agent, content: "dm" }), msg("1005", { channel_id: "D1", author: self, content: "mine" })];
-    const got = await collect(adapter(m, root), 3);
-    expect(got.map((x) => [x.id, x.sender.kind])).toEqual([
-      ["discord:T1:1001", "person"],
-      ["discord:C1:1003", "person"],
-      ["discord:D1:1004", "agent"],
-    ]);
-    const c = cursorOf(root)!;
-    expect([c.channels["T1"], c.channels["C1"]]).toEqual(["1001", "1003"]);
-  });
-
-  test("a resumed session without a known bot id asks Discord who the bot is before judging others' messages", async () => {
-    const m = mock();
-    const root = home();
-    m.afterReady = [["MESSAGE_CREATE", msg("501")]];
-    expect((await collect(adapter(m, root), 1)).map((x) => x.id)).toEqual(["discord:C1:501"]);
-    const c = cursorOf(root)!;
-    delete c.self;
-    CursorFile.for<DiscordCursor>(root, "discord").save(c);
-    m.emit("MESSAGE_CREATE", msg("502", { channel_id: "D1", author: self, content: "mine" }));
-    m.emit("MESSAGE_CREATE", msg("503", { channel_id: "D1", author: person, content: "yo" }));
-    const got = await collect(adapter(m, root), 1);
-    expect(got.map((x) => [x.id, x.sender.kind])).toEqual([["discord:D1:503", "person"]]);
-    expect(m.resumes.length).toBe(1);
-    expect(m.meCalls).toBe(1);
-  });
-});
-
 describe("DiscordAdapter pairing mode", () => {
   test("passes a DM from any non-bot user with its real sender; server channels, bots and edits never pass; no catch-up runs", async () => {
     const m = mock();
@@ -639,7 +517,7 @@ describe("DiscordAdapter pairing mode", () => {
       pairing: true,
     });
     const got = await collect(a, 1);
-    expect(got).toEqual([{ id: "discord:D1:103", source: "discord", chat: "D1", from: "7", sender: { kind: "owner", id: "7" }, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "pair me" }]);
+    expect(got).toEqual([{ id: "discord:D1:103", source: "discord", chat: "D1", from: "7", at: Date.parse("2026-11-07T00:00:00.000Z"), text: "pair me" }]);
     expect(m.historyCalls).toEqual([]);
   });
 });
