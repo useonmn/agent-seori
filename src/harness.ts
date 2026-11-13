@@ -627,6 +627,22 @@ function failureDetail(e: unknown): string {
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 }
 
+/** A lane duty still supervises: working or waiting, and not being migrated. */
+const dutyOwned = (lane: Lane | undefined): lane is Lane =>
+  lane !== undefined && (lane.status === "working" || lane.status === "waiting") && lane.migration !== true;
+
+/**
+ * Re-reads the lane, applies `change` and saves it, but only while duty still owns it: a pause, report, ready or done
+ * written by another process during the pass is kept, never overwritten by an older copy. Returns the saved lane.
+ */
+function updateDutyLane(d: Deps, key: string, change: (lane: Lane) => void): Lane | undefined {
+  const lane = d.store.lane(key);
+  if (!dutyOwned(lane)) return undefined;
+  change(lane);
+  d.store.saveLane(lane);
+  return lane;
+}
+
 /** One proactive pass: flush inboxes of panes that became idle, nudge lanes with no recent report, escalate, detect lost panes. */
 export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   // Kill switch: a stopped duty loop delivers, nudges and escalates nothing. Queued messages wait for the resume.
@@ -651,17 +667,21 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       else events.push({ pane: paneId, action: "flush-failed", detail: failureDetail(e) });
     }
   }
-  for (const lane of d.store.lanes()) {
-    if (lane.status !== "working" && lane.status !== "waiting") continue;
+  for (const listed of d.store.lanes()) {
     // A lane being migrated (seori migrate) is left alone: no nudge, no lost, no blocked mark.
-    if (lane.migration === true) continue;
+    if (!dutyOwned(listed)) continue;
     try {
-      const st = await statusOf(d.runtimes, lane.sessionRef);
+      const st = await statusOf(d.runtimes, listed.sessionRef);
       const now = d.now();
+      // Re-read: a pause, report, ready or done may have landed while the pane was read (or an earlier lane nudged).
+      const lane = d.store.lane(listed.key);
+      if (!dutyOwned(lane)) continue;
       if (st === "gone") {
-        lane.status = "lost";
-        lane.log.push({ at: now, kind: "lost", text: "pane disappeared without READY" });
-        d.store.saveLane(lane);
+        const lost = updateDutyLane(d, lane.key, (l) => {
+          l.status = "lost";
+          l.log.push({ at: now, kind: "lost", text: "pane disappeared without READY" });
+        });
+        if (!lost) continue;
         void runHook(d, "onLost", { key: lane.key, text: "pane disappeared without READY", evidence: "" });
         await tellLead(d, `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed without a final answer`, "duty");
         events.push({ lane: lane.key, action: "lost" });
@@ -675,27 +695,30 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
         continue;
       }
       if (lane.blockedSince !== undefined) {
-        delete lane.blockedSince;
-        if (lane.alerts) for (const k of Object.keys(lane.alerts)) if (k.startsWith("blocked-prompt:")) delete lane.alerts[k];
-        d.store.saveLane(lane);
+        updateDutyLane(d, lane.key, (l) => {
+          delete l.blockedSince;
+          if (l.alerts) for (const k of Object.keys(l.alerts)) if (k.startsWith("blocked-prompt:")) delete l.alerts[k];
+        });
       }
       if (lane.status === "waiting") continue;
       const silentMin = (now - lane.lastActivityAt) / 60_000;
       const due = NUDGE_MINUTES[lane.nudges];
       if (due === undefined || silentMin < due) continue;
-      lane.nudges += 1;
-      lane.log.push({ at: now, kind: "nudge", text: `no report ${Math.floor(silentMin)} min` });
-      d.store.saveLane(lane);
-      if (lane.nudges < NUDGE_MINUTES.length) {
+      const nudged = updateDutyLane(d, lane.key, (l) => {
+        l.nudges += 1;
+        l.log.push({ at: now, kind: "nudge", text: `no report ${Math.floor(silentMin)} min` });
+      });
+      if (!nudged) continue;
+      if (nudged.nudges < NUDGE_MINUTES.length) {
         await sendOrThrow(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(silentMin)), seori: d.seoriCmd }), "duty");
-        events.push({ lane: lane.key, action: `nudge-${lane.nudges}` });
+        events.push({ lane: lane.key, action: `nudge-${nudged.nudges}` });
       } else {
-        await tellLead(d, `[ESCALATE ${lane.key}] no report for ${Math.floor(silentMin)} min after ${lane.nudges - 1} nudges`, "duty");
+        await tellLead(d, `[ESCALATE ${lane.key}] no report for ${Math.floor(silentMin)} min after ${nudged.nudges - 1} nudges`, "duty");
         events.push({ lane: lane.key, action: "escalated" });
       }
     } catch (e) {
       // One lane's failed status read or delivery must not end the loop for the other lanes.
-      events.push({ lane: lane.key, action: "lane-failed", detail: failureDetail(e) });
+      events.push({ lane: listed.key, action: "lane-failed", detail: failureDetail(e) });
     }
   }
   try {
@@ -729,8 +752,9 @@ export const BLOCKED_PROMPT_MINUTES = DEFAULT_CONFIG.blockedPromptMin;
  */
 async function blockedPrompt(d: Deps, lane: Lane, now: number, events: DutyEvent[]): Promise<void> {
   if (lane.blockedSince === undefined) {
-    lane.blockedSince = now;
-    d.store.saveLane(lane);
+    updateDutyLane(d, lane.key, (l) => {
+      l.blockedSince = now;
+    });
     return;
   }
   const key = `blocked-prompt:${lane.blockedSince}`;
@@ -740,9 +764,11 @@ async function blockedPrompt(d: Deps, lane: Lane, now: number, events: DutyEvent
   const minutes = waited >= 60_000 ? `${Math.floor(waited / 60_000)} min` : `${Math.round(waited / 1000)} s`;
   const text = `[BLOCKED-PROMPT ${lane.key}] pane ${refText(lane.sessionRef)} waits on a dialog (a tool approval or question) for ${minutes}; nothing is sent to the lane while it is open`;
   // Marked before telling: tellLead queues the notice in the lead's inbox first, so it is not lost if delivery waits.
-  lane.alerts = { ...(lane.alerts ?? {}), [key]: now };
-  lane.log.push({ at: now, kind: "blocked", text });
-  d.store.saveLane(lane);
+  const marked = updateDutyLane(d, lane.key, (l) => {
+    l.alerts = { ...(l.alerts ?? {}), [key]: now };
+    l.log.push({ at: now, kind: "blocked", text });
+  });
+  if (!marked) return;
   await tellLead(d, text, "duty");
   events.push({ lane: lane.key, action: "blocked-prompt", detail: minutes });
 }

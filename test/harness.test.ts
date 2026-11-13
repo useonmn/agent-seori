@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { agentName, defaultSeoriCmd, done, paneEnv, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { deliverOrThrow, session } from "../src/runtime/index.ts";
+import { refText } from "../src/refs.ts";
 import { ompJson, World, herdrRef } from "./fake.ts";
 
 /** The harness's delivery to one stored pane id, through its runtime. */
@@ -627,6 +628,49 @@ describe("duty loop", () => {
     w.panes.delete(lane.paneId);
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
     expect(lead.received.at(-1)).toContain("[LOST busy]");
+  });
+
+  /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */
+  const duringStatusRead = (d: ReturnType<World["deps"]>, paneId: string, during: () => void): void => {
+    const forRef = d.runtimes.for.bind(d.runtimes);
+    d.runtimes.for = (ref) => {
+      const rt = forRef(ref);
+      if (refText(ref) !== paneId) return rt;
+      return Object.assign(Object.create(rt), {
+        status: async (r: typeof ref) => {
+          const st = await rt.status(r);
+          during();
+          return st;
+        },
+      });
+    };
+  };
+
+  test("a lane paused while dutyTick reads its pane keeps the pause and is not nudged", async () => {
+    const { w, d, brief } = setup();
+    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
+    w.panes.get(lane.paneId)!.status = "idle";
+    w.clock = lane.createdAt + 10 * 60_000;
+    duringStatusRead(d, lane.paneId, () => {
+      const cur = d.store.lane("busy")!;
+      if (cur.status === "working") d.store.saveLane({ ...cur, status: "paused", pausedFrom: "working" });
+    });
+    const events = await dutyTick(d);
+    expect(events.filter((e) => e.lane === "busy")).toEqual([]);
+    expect(d.store.lane("busy")).toMatchObject({ status: "paused", pausedFrom: "working", nudges: 0 });
+  });
+
+  test("a lane closed while dutyTick reads its gone pane stays done, not lost", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
+    w.panes.delete(lane.paneId);
+    duringStatusRead(d, lane.paneId, () => {
+      const cur = d.store.lane("busy")!;
+      if (cur.status === "working") d.store.saveLane({ ...cur, status: "done" });
+    });
+    expect((await dutyTick(d)).filter((e) => e.lane === "busy")).toEqual([]);
+    expect(d.store.lane("busy")!.status).toBe("done");
+    expect(lead.received.some((m) => m.includes("[LOST busy]"))).toBe(false);
   });
 });
 
