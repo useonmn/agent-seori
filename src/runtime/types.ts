@@ -1,3 +1,4 @@
+// Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 // The session runtime interface: everything seori does to an agent session (create, start, read, deliver, close) goes
 // through a SessionRuntime, so the terminal multiplexer behind it (herdr today, hc next) is one adapter.
 
@@ -95,6 +96,9 @@ export type SubmitResult = "submitted" | "wait" | "changed";
 export type Key = "enter" | "escape";
 export type CloseScope = "session" | "container";
 
+/** `unwrapped`: a line the terminal wrapped over several rows comes back as one line, not one line per row. */
+export type ReadOptions = { readonly unwrapped?: boolean };
+
 export interface SessionRuntime {
   readonly kind: RuntimeKind;
   /** The caller's own session from the runtime's env (HERDR_PANE_ID + HERDR_WORKSPACE_ID / HC_TERMINAL_ID), or undefined. */
@@ -108,7 +112,8 @@ export interface SessionRuntime {
   /** Every session (of one group when given). Throws when the runtime's answer cannot be read: a failed list is never an empty one. */
   list(filter?: { readonly group?: string }): Promise<readonly SessionInfo[]>;
   probe(ref: SessionRef): Promise<Probe>;
-  read(ref: SessionRef, lines: number): Promise<string>;
+  /** herdr: `pane read --source recent-unwrapped` (always unwrapped). hc: `read`; unwrapped joins rows as wide as the terminal's `cols`. */
+  read(ref: SessionRef, lines: number, opts?: ReadOptions): Promise<string>;
   /** Never types into a session whose foreground is an interactive shell, whatever the status word says. */
   deliver(ref: SessionRef, text: string, opts?: DeliverOptions): Promise<DeliverOutcome>;
   /**
