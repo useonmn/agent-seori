@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } 
 import { hostname, tmpdir, uptime } from "node:os";
 import { join } from "node:path";
 import { Channel, type InboundRow } from "../src/channel.ts";
+import { msgList } from "../src/msg.ts";
 
 const T0 = 1_700_000_000_000;
 const row = (id: string, text = `text of ${id}`): InboundRow => ({ id, kind: "messenger", source: "fake", chat: "c1", from: "u1", at: T0, text });
@@ -18,6 +19,7 @@ describe("rows stored by an earlier seori from someone other than the owner", ()
     c.appendLedger({ id: "fake:c1:3", ev: "delivered", at: T0, attempt: 1, mode: "followUp" });
     expect(c.open().map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2"]);
     expect(c.states().filter((s) => s.closed).map((s) => s.row.id)).toEqual(["fake:c1:3", "fake:c1:4", "fake:c1:5"]);
+    expect(msgList(c.root, { all: true }, T0).map((l) => l.split("  ")[1])).toEqual(["open", "open", "closed-other", "closed-other", "closed-other"]);
   });
 });
 
