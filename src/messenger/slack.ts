@@ -242,7 +242,14 @@ export class SlackAdapter implements MessengerAdapter {
    * User mode: the member's token and its `d` cookie. A client token (xoxc-) is only valid with the cookie of the same
    * signed-in session; an OAuth user token (xoxp-) works alone, so its cookie is optional.
    */
+  private userAuthCache: { token: string; cookie: string | undefined } | undefined;
+
+  /** Read once per adapter: the daemon builds a new adapter when its configuration changes. */
   private userAuth(): { token: string; cookie: string | undefined } {
+    return (this.userAuthCache ??= this.readUserAuth());
+  }
+
+  private readUserAuth(): { token: string; cookie: string | undefined } {
     const need = `slack ${this.source}: user mode needs the account's user token and its d cookie: set ${USER_ENV} and ${COOKIE_ENV}, or "${this.source}": { "userToken": "xoxc-...", "cookie": "xoxd-..." } in ${secretsPath(this.root)}`;
     const read = (key: string, envName: string): string => {
       try {
@@ -504,6 +511,8 @@ export class SlackAdapter implements MessengerAdapter {
       const replies = (t.unread_replies ?? []).filter((m) => m.ts);
       const root = t.root_msg?.ts ?? replies[0]?.thread_ts;
       if (!channel || !root || !replies.length) continue;
+      // Another person's DM with this account is never read, even when a thread there is followed.
+      if (channel.startsWith("D") && ownerDm !== undefined && channel !== ownerDm) continue;
       open(channel);
       this.track(channel, root, replies.map((m) => m.ts!).sort(compareTs).at(-1)!, ctx);
       channels.add(channel);
@@ -764,7 +773,10 @@ export class SlackAdapter implements MessengerAdapter {
       ? dm && (!fromHistory || this.userMode) && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
       : ev.user === this.config.owner && !ev.bot_id;
     // Catch-up reads every message of a channel; outside DMs only those addressed to the bot are commands.
-    const addressed = dm || !fromHistory || (ctx.botUser !== "" && (ev.text ?? "").includes(`<@${ctx.botUser}>`));
+    // A reply in a thread this account follows (it posted there, or the threads view lists it) is addressed like a live
+    // thread event: the owner answers seori's thread without mentioning it again.
+    const followed = ev.thread_ts !== undefined && ev.thread_ts !== ts && ctx.cursor.threads[channel]?.[ev.thread_ts] !== undefined;
+    const addressed = dm || !fromHistory || followed || (ctx.botUser !== "" && (ev.text ?? "").includes(`<@${ctx.botUser}>`));
     const text = owner && addressed ? bodyText(ev) : "";
     if (!text) {
       if (ctx.botUser !== "" && ev.user === ctx.botUser) {

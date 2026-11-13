@@ -270,6 +270,47 @@ describe("SlackAdapter user mode receive", () => {
     expect(r.clock.sleeps[0]).toBe(5_000);
   });
 
+  test("the owner's reply in a channel thread the account follows counts without a mention, as a live thread event would", async () => {
+    const mock = startMock();
+    const reply = msg("1700000000.000300", { thread_ts: "1700000000.000010", text: "and the other one too" });
+    mock.threadView = [{ root_msg: { channel: "C3", ts: "1700000000.000010" }, unread_replies: [reply] }];
+    mock.replies["C3:1700000000.000010"] = [reply, msg("1700000000.000400", { thread_ts: "1700000000.000010", user: "UX", text: "me too" })];
+    const r = run(mock, home());
+    await r.clock.parked();
+    await r.stop();
+    expect(r.got.map((m) => [m.id, m.thread, m.text])).toEqual([["slack:C3:1700000000.000300", "1700000000.000010", "and the other one too"]]);
+  });
+
+  test("a colleague's DM thread in the threads view is never opened or read", async () => {
+    const mock = startMock();
+    const reply = msg("1700000000.000300", { thread_ts: "1700000000.000010", user: "UCOLLEAGUE", text: "about lunch" });
+    mock.threadView = [{ root_msg: { channel: "D9", ts: "1700000000.000010" }, unread_replies: [reply] }];
+    mock.replies["D9:1700000000.000010"] = [reply];
+    mock.history["D9"] = [reply];
+    const root = home();
+    const r = run(mock, root);
+    await r.clock.parked();
+    await r.stop();
+    expect(r.got).toEqual([]);
+    expect(mock.calls.some((c) => c.query.get("channel") === "D9")).toBe(false);
+    expect(cursorOf(root).channels["D9"]).toBeUndefined();
+  });
+
+  test("the token and cookie are read once, not on every call", async () => {
+    const mock = startMock();
+    const root = home();
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "secrets.json"), JSON.stringify({ slack: { userToken: "xoxc-file", cookie: "xoxd-file" } }), { mode: 0o600 });
+    const a = adapter(mock, root, { env: {} });
+    await a.send({ chat: "D1" }, "x");
+    writeFileSync(join(root, "secrets.json"), JSON.stringify({ slack: { userToken: "xoxc-changed", cookie: "xoxd-changed" } }), { mode: 0o600 });
+    await a.send({ chat: "D1" }, "y");
+    expect(mock.calls.filter((c) => c.path === "chat.postMessage").map((c) => [c.auth, c.cookie])).toEqual([
+      ["Bearer xoxc-file", "d=xoxd-file"],
+      ["Bearer xoxc-file", "d=xoxd-file"],
+    ]);
+  });
+
   test("the cursor is committed only after onMessage resolved; a rejection rejects receive and the restart redelivers", async () => {
     const mock = startMock();
     mock.counts = { ims: [{ id: "D1", has_unreads: true }] };
