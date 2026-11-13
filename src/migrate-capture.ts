@@ -39,16 +39,22 @@ export const askText = (d: Deps, name: string): string =>
   `[MIGRATE ${name}] write a handoff checkpoint now (goal, open todos, last state) to ${handoffPath(d, name)}, then stop`;
 
 /**
- * Step (2): asks the old agent for a checkpoint and waits until it stops working. `blocked` is returned without
- * delivering anything (a blocked agent waits for a person); `working` when it is still working after the wait.
+ * Step (2): waits until the old agent is no longer working, asks it for a checkpoint, and waits until it stops working
+ * again. Nothing is ever delivered to a working agent: `working` (nothing delivered) when it is still working after
+ * the wait. `blocked` is returned without delivering anything (a blocked agent waits for a person).
  * `gone`: no agent there to ask (a gone session, a bare shell), so the capture says so.
  */
 export async function askCheckpoint(d: Deps, s: Subject, opts: MigrateOpts): Promise<"stopped" | "gone" | "blocked" | "working"> {
   const rt = d.runtimes.for(s.from);
-  const first = await rt.status(s.from);
+  const idleBy = d.now() + opts.waitMinutes * 60_000;
+  let first: AgentStatus = await rt.status(s.from);
+  for (; first === "working"; first = await rt.status(s.from)) {
+    if (d.now() >= idleBy) return "working";
+    await d.sleep(POLL_MS);
+  }
   if (first === "blocked") return "blocked";
   if (first === "gone" || first === "shell") return "gone";
-  const out = await rt.deliver(s.from, askText(d, s.name), { when: first === "working" ? "working" : "idle" });
+  const out = await rt.deliver(s.from, askText(d, s.name), { when: "idle" });
   if (out.kind === "no-agent") return "gone";
   if (out.kind === "not-ready") return out.status === "blocked" ? "blocked" : "working";
   const deadline = d.now() + opts.waitMinutes * 60_000;

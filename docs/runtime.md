@@ -50,7 +50,7 @@ seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] 
 `--to` defaults to the selected runtime (see above). `--all` takes every open lane, then lead and duty. For each session the steps are:
 
 1. Hold. A journal is created at `$SEORI_HOME/migrate/<name>.json` and the lane is marked as migrating, so the duty loop neither nudges it nor flushes its inbox (or the replacement's) while the journal exists.
-2. Checkpoint. omp is asked to write a handoff checkpoint (goal, open todos, last state) to `briefs/<name>.handoff.md` and stop. seori waits until it stops working, up to `--wait-minutes` (default 10). A `blocked` agent is asked nothing.
+2. Checkpoint. A checkpoint left by an earlier migration is removed first. omp is asked to write a handoff checkpoint (goal, open todos, last state) to `briefs/<name>.handoff.md` and stop, but only once it is idle: a working agent is never interrupted, and seori waits up to `--wait-minutes` (default 10) for it to turn idle. After the ask, seori waits until it stops working, again up to `--wait-minutes`. A `blocked` agent is asked nothing, and neither is one still working when the wait runs out.
 3. Capture. A handoff brief `briefs/<name>.migrate-<time>.md` is written: the original brief (for lead and duty, their prompt file), a `## Handoff` section with the last 20 lane log entries, the checkpoint, the last 80 screen lines and the queued messages, then the lane rules.
 4. Open. The replacement opens on the target, a terminal labelled with this home's `seori.group` on hc or a new workspace on herdr, and omp starts the way `seori start` (a lane: `/goal` kickoff on the handoff brief) or `seori up` (lead and duty: the handoff brief as `--append-system-prompt`) starts it.
 5. Verify. The replacement must report `idle` or `working` within 3 minutes.
@@ -61,8 +61,8 @@ seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] 
 Each session ends with one line:
 
 - `MIGRATED <name> <old> -> <new>`: done.
-- `MIGRATE_ROLLBACK <name> <new> <why>`: the replacement did not start or did not verify. It is closed, the inbox goes back unchanged with held entries still held, the hold is lifted, and the exit code is 3.
-- `DEFERRED <name> blocked` or `DEFERRED <name> working past N min`: nothing moved, and the hold is lifted.
+- `MIGRATE_ROLLBACK <name> <new> <why>`: the replacement did not start or did not verify. It is closed, and the inbox entries go back to the old inbox: queued entries go back queued, held entries stay held, and entries that were typed come back as ambiguous (held), never retyped. The hold is lifted, and the exit code is 3.
+- `DEFERRED <name> blocked` or `DEFERRED <name> working past N min`: nothing moved, the session got no message, and the hold is lifted.
 - `SKIP <name> already on <runtime>`.
 
 `--dry-run` prints `PLAN <name> <old> -> <runtime> (inbox entries: N)` and changes nothing. A run that was cut short resumes at the phase its journal recorded when it is started again, and a second `seori migrate` of the same session is refused while one runs.

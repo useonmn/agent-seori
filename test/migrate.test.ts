@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { dutyTick, flushInbox, Refusal } from "../src/harness.ts";
 import { migrate } from "../src/migrate.ts";
+import { moveBack } from "../src/migrate-inbox.ts";
 import { readJournal, writeJournal } from "../src/migrate-journal.ts";
 import { refText } from "../src/refs.ts";
 import { herdrRef } from "./fake.ts";
@@ -148,13 +149,64 @@ describe("seori migrate: one lane herdr -> hc", () => {
     expect(r.calls()).toEqual([]);
   });
 
-  test("DEFERRED when the lane keeps working past the wait", async () => {
-    const { w, r, d, lines, opts } = migrateWorld("working");
+  test("DEFERRED when the lane keeps working past the wait: nothing was delivered to it", async () => {
+    const { w, r, d, lines, opts, asks } = migrateWorld("working");
     expect(await migrate(d, { lane: "k" }, opts({ waitMinutes: 1 }))).toBe(0);
     expect(lines).toEqual(["DEFERRED k working past 1 min"]);
-    expect(w.panes.get("w1:p3")!.received).toHaveLength(1);
+    expect(w.panes.get("w1:p3")!.received).toEqual([]);
+    expect(asks()).toEqual([]);
     expect(readJournal(d.store.root, "k")).toBeUndefined();
     expect(r.calls()).toEqual([]);
+  });
+
+  test("a lane working at first gets the checkpoint ask only once it is idle", async () => {
+    const { w, d, lines, opts, pane } = migrateWorld("idle");
+    pane.workingReads = 3;
+    const events: string[] = [];
+    const real = w.exec;
+    w.exec = async (cmd, argv) => {
+      const res = await real(cmd, argv);
+      if (cmd === "herdr" && argv[0] === "pane" && argv[1] === "get" && argv[2] === "w1:p3") {
+        events.push(`get:${/"agent_status":"(\w+)"/.exec(res.stdout)?.[1]}`);
+      }
+      if (cmd === "herdr" && argv[0] === "agent" && argv[1] === "prompt" && argv[2] === "w1:p3") events.push("ask");
+      return res;
+    };
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(0);
+    expect(lines).toEqual(["MIGRATED k w1:p3 -> hc:t1"]);
+    expect(events.slice(0, 3)).toEqual(["get:working", "get:working", "get:working"]);
+    expect(events.filter((e) => e === "ask")).toHaveLength(1);
+    expect(events.indexOf("ask")).toBeGreaterThan(events.indexOf("get:idle"));
+  });
+
+  test.each(["idle", "shell"] as const)("a checkpoint an earlier run left is not reused (agent %s, writes none)", async (status) => {
+    const { r, d, opts } = migrateWorld(status);
+    writeFileSync(join(d.store.root, "briefs", "k.handoff.md"), "STALE-CHECKPOINT-FROM-AN-EARLIER-RUN\n");
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(0);
+    const kickoff = r.sent().find((s) => s.id === "t1" && s.text.startsWith("/goal "))!.text;
+    const text = readFileSync(/Read your brief at (\S+) and execute it/.exec(kickoff)![1]!, "utf8");
+    expect(text).toContain("## Handoff");
+    expect(text).not.toContain("STALE-CHECKPOINT-FROM-AN-EARLIER-RUN");
+  });
+
+  test("moveBack with both <inbox>.merging and <inbox> left: every entry lands in the old inbox once, both files gone", async () => {
+    const { d } = migrateWorld();
+    const inbox = d.store.inboxPath(T9);
+    writeFileSync(`${d.store.inboxPath(OLD)}.forward`, "hc:t9\n");
+    d.store.saveInbox(OLD, [msg("already", 1)]);
+    const line = (m: ReturnType<typeof msg>): string => `${JSON.stringify(m)}\n`;
+    writeFileSync(`${inbox}.merging`, [msg("already", 1), msg("aside", 2), msg("held", 3, HELD)].map(line).join(""));
+    writeFileSync(inbox, [msg("aside", 2), msg("fresh", 4)].map(line).join(""));
+    await moveBack(d, OLD, T9);
+    expect(d.store.queued(OLD).map((m) => [m.text, m.attempt?.state])).toEqual([
+      ["already", undefined],
+      ["aside", undefined],
+      ["held", "ambiguous"],
+      ["fresh", undefined],
+    ]);
+    expect(existsSync(inbox)).toBe(false);
+    expect(existsSync(`${inbox}.merging`)).toBe(false);
+    expect(existsSync(`${d.store.inboxPath(OLD)}.forward`)).toBe(false);
   });
 
   test("a migration already running for the name is refused", async () => {

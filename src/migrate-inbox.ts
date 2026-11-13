@@ -44,17 +44,20 @@ async function underLocks(d: Deps, refs: readonly SessionRef[], body: () => void
  * Appends every entry of `src` (and a `.merging` copy a cut-short run left) to `dst`, never rename-overwriting `dst`.
  * The source is renamed aside first, so an append racing the move lands in a fresh source file for a later merge; an
  * entry `dst` already holds (keyed by at+from+text) is not added again, so a re-run after a crash adds no duplicates.
+ * When both a `.merging` copy and a fresh source exist (a run cut short twice), both are merged in one pass.
  */
 function mergeFile(src: string, dst: string, map: (m: QueuedMessage) => QueuedMessage): void {
   const aside = `${src}.merging`;
+  const both = existsSync(aside) && existsSync(src);
   if (!existsSync(aside) && existsSync(src)) renameSync(src, aside);
   const seen = new Set(readQueue(dst).map(keyOf));
-  for (const m of readQueue(aside)) {
+  for (const m of [...readQueue(aside), ...(both ? readQueue(src) : [])]) {
     if (seen.has(keyOf(m))) continue;
     seen.add(keyOf(m));
     appendFileSync(dst, `${JSON.stringify(map(m))}\n`);
   }
   rmSync(aside, { force: true });
+  if (both) rmSync(src, { force: true });
 }
 
 /**
