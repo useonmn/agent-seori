@@ -36,8 +36,6 @@ type Mock = {
   postAnswers: Array<(body: Record<string, unknown>) => Response | Promise<Response>>;
   /** Bodies of assistant.threads.setStatus calls, in order. */
   statuses: Record<string, unknown>[];
-  /** Date.now() when each status call arrived. */
-  statusAt: number[];
   statusAnswer: () => Response;
   stop: () => void;
 };
@@ -67,7 +65,6 @@ function startMock(): Mock {
     openAnswer: () => json({ ok: true, url: `ws://127.0.0.1:${server.port}/link` }),
     postAnswers: [],
     statuses: [],
-    statusAt: [],
     statusAnswer: () => json({ ok: true }),
     stop: () => server.stop(true),
   };
@@ -106,7 +103,6 @@ function startMock(): Mock {
       }
       if (url.pathname === "/api/assistant.threads.setStatus") {
         mock.statuses.push((await req.json()) as Record<string, unknown>);
-        mock.statusAt.push(Date.now());
         return mock.statusAnswer();
       }
       if (url.pathname === "/api/chat.postMessage") {
@@ -455,6 +451,11 @@ describe("SlackAdapter receive", () => {
 
 describe("SlackAdapter agent mode", () => {
   const agent = (mock: Mock, root: string, options: Record<string, unknown> = {}) => adapter(mock, root, { options: { agent: true, ...options } });
+  /** The working-status refresh, captured instead of run by a timer: the test runs each refresh and awaits it. */
+  const manualRefresh = () => {
+    let tick: (() => Promise<void>) | undefined;
+    return { every: (t: () => Promise<void>) => ((tick = t), () => {}), refresh: () => tick!() };
+  };
 
   test("every owner DM gets its own thread and a working status once delivered; without agent mode nothing changes", async () => {
     const mock = startMock();
@@ -482,30 +483,50 @@ describe("SlackAdapter agent mode", () => {
 
   test("the status is set again until seori replies in the thread; a top-level reply clears it; the limit ends it", async () => {
     const mock = startMock();
-    let replied = false;
+    let socket: ServerWebSocket<unknown> | undefined;
     mock.onConnect = (ws) => {
+      socket = ws;
       ws.send(envelope("e1", dm("1700000000.000100")));
       ws.send(envelope("e2", dm("1700000000.000200")));
-      void until(() => mock.statuses.length >= 4).then(() => {
-        replied = true;
-        ws.send(envelope("e3", dm("1700000000.000300", { user: "UBOT", bot_id: "B1", thread_ts: "1700000000.000100" })));
-        ws.send(envelope("e4", dm("1700000000.000400", { user: "UBOT", bot_id: "B1" })));
-      });
     };
-    const cleared = () => mock.statusAt[mock.statuses.findIndex((s) => s["status"] === "")] ?? Infinity;
-    // Runs on for several refresh periods after the clear: once both threads were answered nothing is set again.
-    await collect(agent(mock, home(), { statusRefreshMs: 20 }), () => mock.acks.length >= 4 && Date.now() > cleared() + 150, undefined, 3_000);
-    expect(replied).toBe(true);
-    const late = mock.statuses.filter((s, i) => s["status"] !== "" && (mock.statusAt[i] ?? 0) > cleared() + 20); // a refresh already in flight may land just after
-    expect(late).toEqual([]);
-    expect(mock.statuses.filter((s) => s["status"] === "")).toEqual([{ channel_id: "D1", thread_ts: "1700000000.000200", status: "" }]);
-    expect(mock.statuses.some((s) => s["thread_ts"] === "1700000000.000100" && s["status"] === "")).toBe(false);
+    const working = (thread: string) => ({ channel_id: "D1", thread_ts: thread, status: "Working..." });
+    const m = manualRefresh();
+    let finished = false;
+    const run = collect(adapter(mock, home(), { options: { agent: true, agentStatus: "Working..." }, every: m.every }), () => finished, undefined, 3_000);
+    try {
+      await until(() => mock.statuses.length >= 2, 3_000);
+      await m.refresh();
+      expect(mock.statuses).toEqual([working("1700000000.000100"), working("1700000000.000200"), working("1700000000.000100"), working("1700000000.000200")]);
+      socket!.send(envelope("e3", dm("1700000000.000300", { user: "UBOT", bot_id: "B1", thread_ts: "1700000000.000100" })));
+      socket!.send(envelope("e4", dm("1700000000.000400", { user: "UBOT", bot_id: "B1" })));
+      await until(() => mock.acks.length >= 4 && mock.statuses.length >= 5, 3_000);
+      // Two refresh periods after both threads were answered: nothing is set again.
+      await m.refresh();
+      await m.refresh();
+    } finally {
+      finished = true;
+      await run;
+    }
+    expect(mock.statuses.slice(4)).toEqual([{ channel_id: "D1", thread_ts: "1700000000.000200", status: "" }]);
 
     let clock = 0;
     const limited = startMock();
     limited.onConnect = (ws) => ws.send(envelope("e1", dm("1700000000.000100")));
-    await collect(adapter(limited, home(), { options: { agent: true, statusRefreshMs: 10, statusLimitMs: 1_000 }, now: () => (clock += 400) }), () => limited.statuses.some((s) => s["status"] === ""));
+    const l = manualRefresh();
+    let done = false;
+    const limitedRun = collect(adapter(limited, home(), { options: { agent: true, statusLimitMs: 1_000 }, now: () => (clock += 400), every: l.every }), () => done, undefined, 3_000);
+    try {
+      await until(() => limited.statuses.length >= 1, 3_000);
+      // Each refresh reads the clock once (+400 ms): the third is past the 1 s limit and clears the status.
+      await l.refresh();
+      await l.refresh();
+      await l.refresh();
+    } finally {
+      done = true;
+      await limitedRun;
+    }
     expect(limited.statuses.at(-1)).toEqual({ channel_id: "D1", thread_ts: "1700000000.000100", status: "" });
+    expect(limited.statuses.filter((s) => s["status"] === "")).toHaveLength(1);
   });
 
   test("a refused status never blocks delivery and is not retried by the refresh", async () => {
@@ -515,15 +536,14 @@ describe("SlackAdapter agent mode", () => {
     const errors: unknown[] = [];
     const original = console.error;
     console.error = (...a: unknown[]) => errors.push(a.join(" "));
-    let refresh: (() => Promise<void>) | undefined;
+    const m = manualRefresh();
     let finished = false;
     try {
-      const a = adapter(mock, home(), { options: { agent: true }, every: (tick) => ((refresh = tick), () => {}) });
-      const run = collect(a, () => finished, undefined, 3_000);
+      const run = collect(adapter(mock, home(), { options: { agent: true }, every: m.every }), () => finished, undefined, 3_000);
       await until(() => errors.length >= 1, 3_000);
       // Two refresh periods after the refusal came back.
-      await refresh!();
-      await refresh!();
+      await m.refresh();
+      await m.refresh();
       finished = true;
       expect((await run).map((m) => m.thread)).toEqual(["1700000000.000100"]);
     } finally {
