@@ -547,7 +547,7 @@ async function daemon(root: string): Promise<number> {
 /** `seori start --workflow`: a known workflow, or none for stock omp goal mode whatever config.json says. */
 function workflowFlag(v: string): Workflow | null {
   if (v === "none") return null;
-  if (!isWorkflow(v)) throw new Refusal(`--workflow must be ${WORKFLOWS.join(" or ")} or none, got ${JSON.stringify(v)}`);
+  if (!isWorkflow(v)) throw new Refusal(`--workflow must be ${WORKFLOWS.join(", ")} or none, got ${JSON.stringify(v)}`);
   return v;
 }
 
