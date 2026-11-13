@@ -202,15 +202,23 @@ export function installedUnits(dir: string, instance: string, home: string, kind
 /**
  * Stops and disables the units of `kinds` the home has installed (installedUnits), removes their files and reloads
  * systemd. Returns one STOPPED UNIT line per unit (none when no unit file is there: a home not started by `seori up` on hc).
+ * With no reachable user manager nothing can run the units: stop, disable and reload are skipped, the files are still
+ * removed (REMOVED UNIT lines), so `seori down` and `seori uninstall` always finish.
  */
 export async function removeUnits(dir: string, instance: string, home: string, kinds: readonly UnitKind[], ctl: Systemctl): Promise<string[]> {
   const names = installedUnits(dir, instance, home, kinds);
   if (names.length === 0) return [];
   // A unit that never loaded (a bad file, or one already stopped by hand) makes `stop` fail with "not loaded"; that
   // unit is already stopped, so only that failure is ignored. `disable` alone works for loaded and unloaded units.
+  let noBus = false;
   await ctl(["stop", ...names]).catch((e: unknown) => {
-    if (!/not loaded/.test(String(e))) throw e;
+    if (/Failed to connect to (user scope )?bus/.test(String(e))) noBus = true;
+    else if (!/not loaded/.test(String(e))) throw e;
   });
+  if (noBus) {
+    for (const name of names) rmSync(join(dir, name), { force: true });
+    return names.map((name) => `REMOVED UNIT ${name} (systemd --user not reachable: not stopped or disabled; removed from ${dir})`);
+  }
   await ctl(["disable", ...names]);
   for (const name of names) rmSync(join(dir, name), { force: true });
   await ctl(["daemon-reload"]);
