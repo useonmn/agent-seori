@@ -61,8 +61,7 @@ export async function startupVerdict(d: Deps, lane: Lane, kickedAt: number, took
   if (d.now() < firstAt) await d.sleep(firstAt - d.now());
   const first = await look(d, lane);
   if (first === "finished") return `STARTUP_DONE ${key}`;
-  // A working agent's own output may quote these phrases (a file or log it reads): same rule as the rechecks below.
-  const bad = first.status !== "working" ? startupFailure(first.screen) : null;
+  const bad = startupFailure(first.screen);
   if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad}`;
   if (first.error) return unconfirmed(first.error, first.screen);
   // No status yet is an agent still starting (a slow host can take minutes): it is waited for below. A `shell`, a
