@@ -36,6 +36,9 @@ export const healthPath = (root: string, source: string): string => join(daemonD
 /** `config` is the messengers.json stamp the failures happened under: a new config starts a fresh attempt. */
 export type MessengerHealth = { readonly failingSince: number; readonly lastAt: number; readonly error: string; readonly failures: number; readonly config?: string };
 
+/** How many conversations the agent-loop guard remembers per messenger; the least recently active is forgotten first. */
+export const AGENT_RUNS_KEPT = 1_000;
+
 /** The longest wait between restarts of a messenger that keeps failing. */
 export const MAX_RESTART_DELAY_MS = 10 * 60_000;
 
@@ -250,8 +253,9 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     }
 
     const runOne = async (config: MessengerConfig): Promise<void> => {
-      // Agent messages in a row per conversation (`<chat>:<thread>`) since the last human one; memory only, so a
-      // restart starts every count afresh.
+      // Agent messages stored in a row per conversation (`<chat>:<thread>`) since the last human one; memory only, so a
+      // restart starts every count afresh. A replayed message (duplicate) is not counted again. Only the most recent
+      // AGENT_RUNS_KEPT conversations are remembered.
       const agentRun = new Map<string, number>();
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.
       const onMessage = async (m: InboundMessage): Promise<void> => {
@@ -261,13 +265,10 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
         const sender = owner ? { ...m.sender, kind: "owner" as const } : m.sender.kind === "owner" ? { ...m.sender, kind: "person" as const } : m.sender;
         const conversation = `${m.chat}:${m.thread ?? ""}`;
         let loopStopped: number | undefined;
+        const run = (agentRun.get(conversation) ?? 0) + 1;
         if (sender.kind !== "agent") agentRun.delete(conversation);
-        else {
-          const run = (agentRun.get(conversation) ?? 0) + 1;
-          agentRun.set(conversation, run);
-          if (run > talk.agentTurnLimit + 1) return emit({ ev: "dropped", id: m.id, from: m.from });
-          if (run > talk.agentTurnLimit) loopStopped = talk.agentTurnLimit;
-        }
+        else if (run > talk.agentTurnLimit + 1) return emit({ ev: "dropped", id: m.id, from: m.from });
+        else if (run > talk.agentTurnLimit) loopStopped = talk.agentTurnLimit;
         const row: MessengerRow = {
           id: m.id,
           kind: "messenger",
@@ -284,6 +285,11 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           ...(loopStopped !== undefined ? { loopStopped } : {}),
         };
         const stored = channel.appendInbound(row);
+        if (stored && sender.kind === "agent") {
+          agentRun.delete(conversation); // re-inserted last: the map keeps the most recently active conversations
+          agentRun.set(conversation, run);
+          if (agentRun.size > AGENT_RUNS_KEPT) agentRun.delete(agentRun.keys().next().value!);
+        }
         emit({ ev: stored ? "stored" : "duplicate", id: m.id });
         // A message got through, so receive works: end any failure streak at once.
         if (failing) {

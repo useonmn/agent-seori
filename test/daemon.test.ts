@@ -419,7 +419,7 @@ describe("talking with people and agents other than the owner", () => {
     const { rows } = await run(root, [{ msgId: "1", chat: "dm2", dm: true, from: "u2", name: "Bob", text: "hi seori", at: 3 }]);
     expect(rows.map((r) => [r.id, r.sender])).toEqual([["fake:dm2:1", { kind: "person", id: "u2", name: "Bob" }]]);
     const text = renderDelivery(new DeliverySchedule().decide(new Channel(root).states(), 10, true, { kind: "scan" }).deliver, "seori");
-    expect(text).toContain("[fake:dm2:1] fake from person Bob (u2): hi seori");
+    expect(text).toContain('[fake:dm2:1] fake from person Bob (u2): "hi seori"');
   });
 
   test("a top-level channel message from a person needs a mention", async () => {
@@ -470,6 +470,26 @@ describe("talking with people and agents other than the owner", () => {
       { msgId: "2", chat: "c", from: FAKE_BOT_ID, text: "@seori", mentions: true },
     ]);
     expect(rows).toEqual([]);
+  });
+
+  test("an agent message replayed by the adapter is not counted twice toward agentTurnLimit", async () => {
+    const root = home([{ source: "x", owner: "u1" }]);
+    writeFileSync(join(root, "config.json"), JSON.stringify({ agentTurnLimit: 2 }));
+    const agentMsg = (id: string): InboundMessage => ({ ...msg(id, "b1"), sender: { kind: "agent", id: "b1" } });
+    const replaying: MessengerAdapter = {
+      ...noActions,
+      source: "x",
+      async receive(signal, onMessage) {
+        for (const id of ["x:c:1", "x:c:1", "x:c:2"]) await onMessage(agentMsg(id));
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
+    };
+    const d = start(root, { adapterFor: () => replaying });
+    await until("second message", () => d.events.some((e) => e.ev === "stored" && e.id === "x:c:2"));
+    await d.stop();
+    expect((new Channel(root).inbound() as MessengerRow[]).map((r) => [r.id, r.loopStopped])).toEqual([["x:c:1", undefined], ["x:c:2", undefined]]);
   });
 
   test("the owner's messages need no mention and are labelled owner", async () => {

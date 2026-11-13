@@ -165,12 +165,24 @@ function replyNote(row: MessengerRow, cmd: string): string {
   return r.text !== undefined ? ` (reply to ${r.id}: ${JSON.stringify(r.text.slice(0, 200))})` : ` (reply to ${r.id}; ${cmd} msg show ${r.id} reads it)`;
 }
 
-/** "owner", "person <name> (<id>)" or "agent <name> (<id>)"; a row stored before senders were recorded came from the owner. */
+const fromOwner = (row: MessengerRow): boolean => row.sender === undefined || row.sender.kind === "owner";
+
+/** One line of plain text: control characters (newlines among them) and the Unicode line separators become spaces. */
+const oneLine = (s: string): string => s.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, " ").trim();
+
+/**
+ * "owner", "person <name> (<id>)" or "agent <name> (<id>)"; a row stored before senders were recorded came from the owner.
+ * Name and id come from the platform and may be anyone's, so they are kept to one line.
+ */
 function senderLabel(row: MessengerRow): string {
   const s = row.sender;
   if (!s || s.kind === "owner") return "owner";
-  return `${s.kind} ${s.name ? `${s.name} ` : ""}(${s.id})`;
+  const name = s.name !== undefined ? oneLine(s.name) : "";
+  return `${s.kind} ${name ? `${name} ` : ""}(${oneLine(s.id)})`;
 }
+
+/** The owner's text as it came; anyone else's as one JSON string, so it cannot pass itself off as a line of its own. */
+const messageText = (row: MessengerRow): string => (fromOwner(row) ? row.text : JSON.stringify(row.text));
 
 export function renderDelivery(deliver: Decision["deliver"], cmd: string): string {
   const lines: string[] = [];
@@ -185,7 +197,7 @@ export function renderDelivery(deliver: Decision["deliver"], cmd: string): strin
       const group = messages.filter((d) => d.header === header);
       if (!group.length) continue;
       lines.push("", HEADERS[header]);
-      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${senderLabel(row)}${replyNote(row, cmd)}: ${row.text}`);
+      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${senderLabel(row)}${replyNote(row, cmd)}: ${messageText(row)}`);
     }
   } else lines.push("seori lead channel: events from your watches.");
   const events = deliver.filter((d) => d.row.kind === "watch");
