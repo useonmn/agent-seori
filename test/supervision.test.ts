@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnExec } from "../src/runtime/exec.ts";
@@ -97,6 +97,18 @@ describe("ceilings", () => {
     expect(lead.received).toHaveLength(1);
     expect(pane.received).toEqual([]);
     expect(w.calls.some((c) => c.argv[1] === "close")).toBe(false);
+  });
+
+  test("a lane being migrated is left unchanged: no report, record identical", async () => {
+    const { w, d, lead, pane } = setup("working", { migration: true, ceilings: { wallMinutes: 60, tokens: null, costUsd: null } });
+    pane.status = "idle";
+    w.clock = 61 * MIN;
+    const file = join(d.store.root, "lanes", "fix-a.json");
+    const before = readFileSync(file, "utf8");
+    expect(await superviseTick(d)).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(lead.received).toEqual([]);
+    expect(pane.received).toEqual([]);
   });
 
   test("a limit the lead raised is reported again once reached", async () => {

@@ -3,7 +3,7 @@ import type { Deps } from "./harness.ts";
 import { POLL_MS, type MigrateOpts, type Subject } from "./migrate-capture.ts";
 import { drainForward, moveBack, moveInbox } from "./migrate-inbox.ts";
 import { type MigrateJournal, removeJournal, writeJournal } from "./migrate-journal.ts";
-import { refText } from "./refs.ts";
+import { refText, sameSession } from "./refs.ts";
 import { formatRef, type SessionRef } from "./runtime/types.ts";
 
 export const VERIFY_MS = 3 * 60_000;
@@ -57,6 +57,12 @@ export async function swapAgent(d: Deps, s: Subject, j: MigrateJournal, opts: Mi
     writeJournal(d.store.root, j);
   }
   const newRef = j.newRef as SessionRef;
+  // A run cut short between the switch and the journal write: the record already points at the replacement.
+  const current = s.current();
+  if (j.phase === "opened" && current !== undefined && sameSession(current, newRef)) {
+    j = { ...j, phase: "switched" };
+    writeJournal(d.store.root, j);
+  }
   if (j.phase === "opened") {
     const failed = await verify(d, newRef);
     if (failed !== undefined) return rollback(d, s, j, newRef, failed, opts);
