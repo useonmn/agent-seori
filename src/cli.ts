@@ -38,6 +38,7 @@ import { WatchRefusal } from "./watch/store.ts";
 import { refText } from "./refs.ts";
 import { parseRef } from "./runtime/types.ts";
 import { removeUnits, systemctl, unitDir, writeUnits, type UnitKind } from "./systemd.ts";
+import { runMigrate } from "./migrate.ts";
 
 const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is an option)
 
@@ -55,6 +56,10 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
                                               register an already-running session as a lane (types nothing into it)
   seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
                                               vanished lane is marked lost (no session is ever closed)
+  seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
+                                              hand sessions over to another runtime (default: the selected one): checkpoint,
+                                              handoff brief, replacement verified, inbox moved; prints MIGRATED, DEFERRED,
+                                              SKIP or PLAN per session, exits 3 after a MIGRATE_ROLLBACK
   seori transcribe <audio-file>                run hooks.transcribe (config.json, argv template with {file}) and print the text
   seori report <key> --text T [--status working|waiting]
   seori ready <key> --text T --evidence LINK [--evidence LINK ...]
@@ -133,7 +138,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "resume"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -800,6 +805,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);
       return 0;
     }
+    case "migrate":
+      return runMigrate(d, (name) => one(a, name), LEAD_EXTENSION);
     case "adopt": {
       const lane = await adoptLane(d, need(x, "lane key"), need(one(a, "ref"), "--ref"), { brief: one(a, "brief"), cwd: one(a, "cwd") });
       console.log(`ADOPTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);

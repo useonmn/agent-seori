@@ -104,6 +104,9 @@ seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널 
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
                                             닫기 전에 Done 줄을 실제로 확인; ID = 진행 상황을 올릴 리드 채널 id;
                                             한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4
+seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
+                                            세션을 다른 런타임으로 옮깁니다: 체크포인트, 인계 브리프, 새 세션 확인,
+                                            모아 둔 메시지 이동; 되돌리면 종료 코드 3 (docs/runtime.md)
 seori report <key> --text T [--status working|waiting]
 seori ready <key> --text T --evidence LINK [--evidence LINK ...]
 seori send <lead|duty|key|pane> --text T     지금 전하거나, 상대가 쉴 때까지 모아 둡니다

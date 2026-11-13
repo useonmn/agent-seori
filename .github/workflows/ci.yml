@@ -48,4 +48,4 @@ jobs:
       - name: hc e2e
         env:
           SEORI_E2E_HC: "1"
-        run: bun test test/e2e-hc.test.ts test/e2e-hc-cli.test.ts --timeout 120000
+        run: bun test test/e2e-hc.test.ts test/e2e-hc-cli.test.ts test/e2e-migrate.test.ts --timeout 120000

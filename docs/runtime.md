@@ -41,14 +41,44 @@ A few rules hold on hc:
 
 herdr needs its omp integration (`herdr integration install omp`). Without it herdr reports omp as idle at all times and seori refuses to start lanes.
 
+## Migrating sessions
+
+```
+seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
+```
+
+`--to` defaults to the selected runtime (see above). `--all` takes every open lane, then lead and duty. For each session the steps are:
+
+1. Hold. A journal is created at `$SEORI_HOME/migrate/<name>.json` and the lane is marked as migrating, so the duty loop neither nudges it nor flushes its inbox (or the replacement's) while the journal exists.
+2. Checkpoint. omp is asked to write a handoff checkpoint (goal, open todos, last state) to `briefs/<name>.handoff.md` and stop. seori waits until it stops working, up to `--wait-minutes` (default 10). A `blocked` agent is asked nothing.
+3. Capture. A handoff brief `briefs/<name>.migrate-<time>.md` is written: the original brief (for lead and duty, their prompt file), a `## Handoff` section with the last 20 lane log entries, the checkpoint, the last 80 screen lines and the queued messages, then the lane rules.
+4. Open. The replacement opens on the target, a terminal labelled with this home's `seori.group` on hc or a new workspace on herdr, and omp starts the way `seori start` (a lane: `/goal` kickoff on the handoff brief) or `seori up` (lead and duty: the handoff brief as `--append-system-prompt`) starts it.
+5. Verify. The replacement must report `idle` or `working` within 3 minutes.
+6. Move the inbox. A `.forward` marker on the old inbox names the new session, and the old entries are merged into the new inbox. Queued entries stay queued, held entries stay held, and an entry that was typed but never submitted becomes held.
+7. Switch. The lane or role record points at the new session, and the lane keeps the old ref in `migratedFrom`.
+8. Close. The old session is closed, messages late senders appended to the old inbox are moved over, the marker is removed, and the journal is deleted.
+
+Each session ends with one line:
+
+- `MIGRATED <name> <old> -> <new>`: done.
+- `MIGRATE_ROLLBACK <name> <new> <why>`: the replacement did not start or did not verify. It is closed, the inbox goes back unchanged with held entries still held, the hold is lifted, and the exit code is 3.
+- `DEFERRED <name> blocked` or `DEFERRED <name> working past N min`: nothing moved, and the hold is lifted.
+- `SKIP <name> already on <runtime>`.
+
+`--dry-run` prints `PLAN <name> <old> -> <runtime> (inbox entries: N)` and changes nothing. A run that was cut short resumes at the phase its journal recorded when it is started again, and a second `seori migrate` of the same session is refused while one runs.
+
+`--resume` starts omp on the old session's own file (`omp --resume <path>`) instead of a kickoff on the handoff brief, and skips the checkpoint ask. It is accepted only when the old session is live and `idle` or `done` and its runtime reports omp's session path; herdr reports it through its omp integration, hc never does, so `--resume` from an hc session is refused and nothing moves.
+
+The duty loop, the hourly loop and the daemon are not migrated, and `--role` accepts only `lead` and `duty`. seori does not record them as runtime sessions: on Linux they are `systemd --user` units, which belong to no runtime, and on macOS and herdr they are terminals or panes seori does not track. They hold no agent state and read the records, so after the lead and duty move they act on the new sessions as they are.
+
 ## Testing against an isolated hc core
 
 The unit tests use a fake hc and a fake systemctl, so they need neither. `bun test` also preloads `test/helpers/preload.ts`, which points the systemd unit directory at a temp dir and `SEORI_SYSTEMCTL` at `false`, so no test can touch your real user units.
 
-The hc end-to-end tests (`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`) start a real hc core of their own:
+The hc end-to-end tests (`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`, `test/e2e-migrate.test.ts`) start a real hc core of their own:
 
 ```sh
-SEORI_E2E_HC=1 bun test test/e2e-hc.test.ts test/e2e-hc-cli.test.ts --timeout 120000
+SEORI_E2E_HC=1 bun test test/e2e-hc.test.ts test/e2e-hc-cli.test.ts test/e2e-migrate.test.ts --timeout 120000
 ```
 
 `test/e2e-hc-setup.ts` gives that core its own session name (`HC_SESSION=e2e-<pid>`) and temp `XDG_RUNTIME_DIR`, config and state dirs with `notes = false`. It drops every inherited `HC_*`, `HERDR_*` and `SEORI_*` variable first, so a test run inside an hc terminal can't reach the core it is running in. When the tests finish it removes their terminals, stops only that core and checks that its process exited and its runtime dir is empty. Copy that pattern for any new hc experiment, and never stop or restart the core your own terminals run on.
