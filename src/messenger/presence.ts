@@ -1,81 +1,57 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { loadMessengers } from "./adapter.ts";
 import { join } from "node:path";
-import { CursorFile, HttpError, httpJson, secret } from "./common.ts";
+import { CursorFile, secret } from "./common.ts";
+import { type OpenLine, type SlackAuth, type SlackCall, slackApi, slackPresence } from "./slack-presence.ts";
 
-// `seori presence slack|discord`: keeps the configured account shown online until stopped. Each platform session runs
-// until its socket closes; then a fresh session is opened after a backoff that starts at 5 s, doubles per fast failure
-// up to 300 s, and resets once a session held for 10 minutes. A configuration error (a rejected token, a refused intent)
-// stops the command with a clear message instead of looping.
-//
-// Discord: a gateway session that identifies with presence status "online" shows the bot online while it is open.
-// After a drop it resumes the previous session (op 6 at resume_gateway_url) when Discord allows, and fresh identifies
-// are capped by a rolling 24 h budget kept in $SEORI_HOME/presence/, well under Discord's daily identify limit.
-// Slack bot (default): Slack shows an Events API / Socket Mode bot active only through the app's "Always Show My Bot
-// as Online" setting; no API call makes it active (users.setPresence takes only auto or away) and a Socket Mode
-// connection does not count. So this mode calls users.setPresence auto with the bot token, which lifts a manual away,
-// re-asserts it every 10 minutes, and sets away on release. It deliberately opens no Socket Mode connection: Slack
-// spreads events across every open connection of the app, so a second one would take events from the daemon.
-// Slack user (--user): a user account is active while a web-client-type socket is open (rtm sockets do not count), and
-// an idle one is auto-awayed, so a tickle frame goes out every minute. Never answer a manual_presence_change event
-// with setPresence: two writers echo each other into a flip-flop loop.
+// `seori presence slack|discord`, the upstream design:
+// Slack: a web-client socket on the user token and `d` cookie (slack-presence.ts), held by hold() once a minute, which
+// prints `PRESENCE slack opened` (users.setPresence auto, then a new socket) or `PRESENCE slack tickled`; a failed tick
+// prints `WARN <why>` and the next minute tries again. Stopping closes the socket and sets away.
+// Discord: a gateway connection that identifies with status online and heartbeats. Unlike upstream, a closed
+// connection (or op 7 / op 9) is followed by a new one after a backoff (5 s doubling to 300 s, reset only after a
+// connection held 10 minutes), every identify counts against a budget persisted in $SEORI_HOME/presence/, and a
+// rejected token or setup (close 4004, 4010-4014) exits 1 instead of identifying again.
 
 export const BACKOFF_START_MS = 5_000;
 export const BACKOFF_CAP_MS = 300_000;
-/** A session that held at least this long (counted from when it became ready) resets the backoff. */
+/** A Discord connection that held at least this long resets the backoff. */
 export const STABLE_MS = 10 * 60_000;
-/** Fresh Discord identifies allowed per rolling IDENTIFY_WINDOW_MS (Discord allows 1,000 a day); resumes do not count. */
+/** Discord identifies allowed per rolling IDENTIFY_WINDOW_MS (Discord allows 1,000 a day and resets the token past it). */
 export const DISCORD_IDENTIFY_BUDGET = 200;
 export const IDENTIFY_WINDOW_MS = 24 * 60 * 60_000;
+/** Slack: how often hold() runs (upstream's `every(1, ...)`). */
+export const SLACK_TICK_MS = 60_000;
 /** How long setting away on release may take once stopped. */
 export const RELEASE_TIMEOUT_MS = 10_000;
-/** Slack bot mode: how often users.setPresence auto is re-asserted. */
-export const SLACK_REASSERT_MS = 10 * 60_000;
-/** Slack user mode: how often a tickle frame keeps the client socket from going idle. */
-export const SLACK_TICKLE_MS = 60_000;
+export const DISCORD_INTENTS_GUILD_MESSAGES = 1 << 9;
 const DISCORD_GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json";
-const SLACK_API = "https://slack.com/api";
-/** Presence needs no events, so the session asks for none (and no privileged intent). */
-const DISCORD_INTENTS = 0;
 
 export type Platform = "slack" | "discord";
-export type Line = { send(frame: string): void; close(code?: number): void };
-export type LineEvents = { onMessage(data: string): void; onClose(code: number): void };
-export type OpenLine = (url: string, headers: Readonly<Record<string, string>>, on: LineEvents) => Line;
 export type Timers = { setInterval(cb: () => void, ms: number): unknown; clearInterval(handle: unknown): void };
-/** One Slack Web API call; resolves the `ok: true` body, throws SlackCallError on `ok: false`; `signal` aborts it. */
-export type SlackCall = (method: string, token: string, params: Record<string, string>, cookie?: string, signal?: AbortSignal) => Promise<Record<string, unknown>>;
+export type GatewaySocket = { send(data: string): void; close(): void; onMessage(cb: (data: string) => void): void; onClose(cb: (code: number) => void): void };
 
 export type PresenceDeps = {
-  readonly open: OpenLine;
+  readonly openSlack: OpenLine;
+  readonly openDiscord: () => GatewaySocket;
+  readonly slackApi: (auth: SlackAuth) => SlackCall;
   readonly timers: Timers;
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => number;
   readonly log: (line: string) => void;
   readonly error: (line: string) => void;
-  readonly slackCall: SlackCall;
   readonly env?: Record<string, string | undefined>;
 };
 
-/** How a session ended: `code` says why and a new session follows; `fatal` stops the command. */
-type End = { readonly code: string } | { readonly fatal: string };
-type Session = (signal: AbortSignal, ready: () => void) => Promise<End>;
+/** How a Discord connection ended: `code` says why and a new one follows; `fatal` stops the command. */
+export type End = { readonly code: string } | { readonly fatal: string };
 
 /** A missing or unreadable token: the command refuses (exit 2) instead of starting. */
 export class PresenceConfigError extends Error {}
-
-export class SlackCallError extends Error {
-  constructor(readonly method: string, readonly error: string) {
-    super(`slack ${method} failed: ${error}`);
-  }
-}
 
 /** Error text bound for output: a socket URL's token parameter and any Slack token are replaced with REDACTED. */
 export function redact(text: string): string {
   return text.replace(/([?&]token=)[^&\s#"']*/g, "$1REDACTED").replace(/xox[a-z]-[A-Za-z0-9-]+/g, "REDACTED");
 }
-
-const SLACK_FATAL = new Set(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired", "not_allowed_token_type", "missing_scope", "invalid_cookie"]);
 
 function pause(ms: number, signal: AbortSignal, sleep: (ms: number) => Promise<void>): Promise<void> {
   if (signal.aborted) return Promise.resolve();
@@ -89,35 +65,7 @@ function pause(ms: number, signal: AbortSignal, sleep: (ms: number) => Promise<v
   return promise;
 }
 
-/** Runs sessions until `signal` aborts (exit 0) or one ends fatally (exit 1). */
-export async function holdPresence(platform: Platform, session: Session, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
-  let delay = BACKOFF_START_MS;
-  let announced = false;
-  let since: number | undefined;
-  const ready = () => {
-    since ??= deps.now();
-    if (announced) return;
-    announced = true;
-    deps.log(`PRESENCE_READY ${platform}`);
-  };
-  while (!signal.aborted) {
-    since = undefined;
-    const end = await session(signal, ready);
-    if (signal.aborted) return 0;
-    if ("fatal" in end) {
-      deps.error(redact(`PRESENCE_FAILED ${platform}: ${end.fatal}`));
-      return 1;
-    }
-    // Held time counts from ready, so a wait inside the session (the identify budget) is not a stable session.
-    if (since !== undefined && deps.now() - since >= STABLE_MS) delay = BACKOFF_START_MS;
-    deps.log(redact(`PRESENCE_RECONNECT ${platform} code=${end.code} retry_in=${delay / 1000}s`));
-    await pause(delay, signal, deps.sleep);
-    delay = Math.min(delay * 2, BACKOFF_CAP_MS);
-  }
-  return 0;
-}
-
-/** Fresh identifies in the last IDENTIFY_WINDOW_MS, persisted so a restart keeps counting. */
+/** Identifies in the last IDENTIFY_WINDOW_MS, persisted so a restart keeps counting. */
 export function identifyBudget(path: string) {
   const file = new CursorFile<number[]>(path);
   const recent = (now: number) => {
@@ -136,247 +84,129 @@ export function identifyBudget(path: string) {
   };
 }
 
-type DiscordResume = { sessionId: string; resumeUrl: string };
+function closeEnd(code: number): End {
+  if (code === 4004) return { fatal: `Discord rejected the bot token (gateway close 4004); reset it in the Developer Portal and update "discord": { "token": ... } in secrets.json or SEORI_DISCORD_TOKEN` };
+  if (code >= 4010 && code <= 4014) return { fatal: `Discord refused the gateway setup (close ${code})` };
+  return { code: String(code) };
+}
 
-/**
- * Gateway connections that identify as online; each ends on close, op 7, op 9 or a missed heartbeat ack. After READY
- * the next connection resumes (op 6 at resume_gateway_url with the last seq) unless Discord dropped the session
- * (op 9 d=false, close 4007/4009). A fresh identify waits while the daily budget is spent.
- */
-export function discordSession(token: string, url: string, deps: PresenceDeps, budgetPath: string): Session {
-  const budget = identifyBudget(budgetPath);
+/** One gateway connection: identify as online after hello, heartbeat with the last sequence. `on.end` reports its end. */
+export const discordPresence = (
+  open: () => GatewaySocket,
+  token: string,
+  clock: Timers,
+  on: { readonly identify: () => void; readonly end: (end: End) => void },
+) => {
+  const ws = open();
   let seq: number | null = null;
-  let resume: DiscordResume | undefined;
-  const drop = () => {
-    resume = undefined;
-    seq = null;
+  let beat: unknown;
+  let over = false;
+  const stopBeat = () => {
+    if (beat !== undefined) clock.clearInterval(beat);
+    beat = undefined;
   };
-  return async (signal, ready) => {
-    for (let wait = resume ? 0 : budget.waitMs(deps.now()); wait > 0 && !signal.aborted; wait = budget.waitMs(deps.now())) {
+  const end = (e: End) => {
+    if (over) return;
+    over = true;
+    stopBeat();
+    on.end(e);
+  };
+  ws.onMessage((raw) => {
+    const m = JSON.parse(raw) as { op: number; s?: number | null; d?: { heartbeat_interval?: number } };
+    if (typeof m.s === "number") seq = m.s;
+    if (m.op === 10 && m.d?.heartbeat_interval) {
+      beat = clock.setInterval(() => ws.send(JSON.stringify({ op: 1, d: seq })), m.d.heartbeat_interval);
+      on.identify();
+      ws.send(
+        JSON.stringify({
+          op: 2,
+          d: {
+            token,
+            intents: DISCORD_INTENTS_GUILD_MESSAGES,
+            properties: { os: process.platform, browser: "seori", device: "seori" },
+            presence: { status: "online", since: null, activities: [], afk: false },
+          },
+        }),
+      );
+    } else if (m.op === 7 || m.op === 9) {
+      ws.close();
+      end({ code: `op${m.op}` });
+    }
+  });
+  ws.onClose((code) => end(closeEnd(code)));
+  return {
+    close() {
+      over = true;
+      stopBeat();
+      ws.close();
+    },
+  };
+};
+
+/** Discord connections until `signal` aborts (exit 0) or one ends fatally (exit 1). */
+async function holdDiscord(token: string, budgetPath: string, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
+  const budget = identifyBudget(budgetPath);
+  let delay = BACKOFF_START_MS;
+  let announced = false;
+  while (!signal.aborted) {
+    for (let wait = budget.waitMs(deps.now()); wait > 0 && !signal.aborted; wait = budget.waitMs(deps.now())) {
       deps.log(`PRESENCE_WAIT discord identify budget spent; next identify in ${Math.ceil(wait / 1000)}s`);
       await pause(wait, signal, deps.sleep);
     }
-    if (signal.aborted) return { code: "stopped" };
-    const resuming = resume;
-    let target = url;
-    if (resuming) {
-      const u = new URL(resuming.resumeUrl);
-      u.search = new URL(url).search;
-      target = u.toString();
-    }
+    if (signal.aborted) break;
     const { promise, resolve } = Promise.withResolvers<End>();
-    let beat: unknown;
-    let acked = true;
-    let done = false;
-    let line: Line | undefined;
-    const send = (p: unknown) => {
-      try {
-        line?.send(JSON.stringify(p));
-      } catch {
-        // closing: the close event ends the session
-      }
+    const p = discordPresence(deps.openDiscord, token, deps.timers, { identify: () => budget.record(deps.now()), end: resolve });
+    const opened = deps.now();
+    if (!announced) {
+      announced = true;
+      deps.log("PRESENCE_READY discord");
+    }
+    const onAbort = () => {
+      p.close();
+      resolve({ code: "stopped" });
     };
-    const finish = (end: End, close: boolean) => {
-      if (done) return;
-      done = true;
-      if (beat !== undefined) deps.timers.clearInterval(beat);
-      signal.removeEventListener("abort", onAbort);
-      if (close) {
-        try {
-          line?.close(1000);
-        } catch {
-          // already closed
-        }
-      }
-      resolve(end);
-    };
-    const onAbort = () => finish({ code: "stopped" }, true);
     signal.addEventListener("abort", onAbort);
+    const end = await promise;
+    signal.removeEventListener("abort", onAbort);
+    if (signal.aborted) break;
+    if ("fatal" in end) {
+      deps.error(redact(`PRESENCE_FAILED discord: ${end.fatal}`));
+      return 1;
+    }
+    if (deps.now() - opened >= STABLE_MS) delay = BACKOFF_START_MS;
+    deps.log(`PRESENCE_RECONNECT discord code=${end.code} retry_in=${delay / 1000}s`);
+    await pause(delay, signal, deps.sleep);
+    delay = Math.min(delay * 2, BACKOFF_CAP_MS);
+  }
+  return 0;
+}
+
+const warn = (e: unknown) => redact(`WARN ${e instanceof Error ? e.message : String(e)}`).slice(0, 300);
+
+/** Slack: hold() every minute until `signal` aborts, then release (exit 0). */
+async function holdSlack(auth: SlackAuth, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
+  const p = slackPresence(deps.slackApi(auth), deps.openSlack, auth);
+  deps.log("PRESENCE_READY slack");
+  while (!signal.aborted) {
     try {
-      line = deps.open(target, {}, {
-        onMessage(raw) {
-          if (done) return;
-          let m: { op?: number; s?: number | null; t?: string | null; d?: unknown };
-          try {
-            m = JSON.parse(raw);
-          } catch {
-            return;
-          }
-          if (typeof m.s === "number") seq = m.s;
-          switch (m.op) {
-            case 10: {
-              const interval = Number((m.d as { heartbeat_interval?: number } | null)?.heartbeat_interval) || 41_250;
-              beat = deps.timers.setInterval(() => {
-                if (!acked) return finish({ code: "heartbeat-not-acked" }, true); // zombie connection
-                acked = false;
-                send({ op: 1, d: seq });
-              }, interval);
-              if (resuming) {
-                send({ op: 6, d: { token, session_id: resuming.sessionId, seq } });
-                return;
-              }
-              budget.record(deps.now());
-              send({
-                op: 2,
-                d: {
-                  token,
-                  intents: DISCORD_INTENTS,
-                  properties: { os: process.platform, browser: "seori", device: "seori" },
-                  presence: { status: "online", since: null, activities: [], afk: false },
-                },
-              });
-              return;
-            }
-            case 11:
-              acked = true;
-              return;
-            case 1:
-              send({ op: 1, d: seq });
-              return;
-            case 7:
-              return finish({ code: "op7" }, true);
-            case 9:
-              if (m.d !== true) drop(); // not resumable: the next connection identifies fresh
-              return finish({ code: "op9" }, true);
-            case 0:
-              if (m.t === "READY") {
-                const d = m.d as { session_id?: unknown; resume_gateway_url?: unknown } | null;
-                if (typeof d?.session_id === "string" && typeof d.resume_gateway_url === "string") resume = { sessionId: d.session_id, resumeUrl: d.resume_gateway_url };
-                ready();
-              } else if (m.t === "RESUMED") ready();
-              return;
-          }
-        },
-        onClose(code) {
-          if (code === 4004) return finish({ fatal: `Discord rejected the bot token (gateway close 4004); reset it in the Developer Portal and update "discord": { "token": ... } in secrets.json or SEORI_DISCORD_TOKEN` }, false);
-          if (code === 4014) return finish({ fatal: "Discord refused a disallowed intent (gateway close 4014)" }, false);
-          if (code >= 4010 && code <= 4013) return finish({ fatal: `Discord rejected the gateway setup (close ${code}); check options.wsUrl` }, false);
-          if (code === 4007 || code === 4009) drop(); // invalid seq / session timed out: identify fresh
-          finish({ code: String(code) }, false);
-        },
-      });
+      deps.log(`PRESENCE slack ${await p.hold(signal)}`);
     } catch (e) {
-      finish({ fatal: `cannot open the Discord gateway at ${target}: ${(e as Error).message}` }, false);
+      if (!signal.aborted) deps.log(warn(e));
     }
-    return promise;
-  };
+    await pause(SLACK_TICK_MS, signal, deps.sleep);
+  }
+  // The stop signal is already aborted, so release gets its own deadline instead of waiting out an outage.
+  const deadline = new AbortController();
+  void deps.sleep(RELEASE_TIMEOUT_MS).then(() => deadline.abort());
+  try {
+    await p.release(deadline.signal);
+  } catch (e) {
+    deps.log(warn(e));
+  }
+  return 0;
 }
 
-function slackEnd(e: unknown, which: string): End {
-  if (e instanceof SlackCallError && SLACK_FATAL.has(e.error)) return { fatal: `Slack rejected the ${which} (${e.error} on ${e.method})` };
-  if (e instanceof HttpError && (e.status === 401 || e.status === 403)) return { fatal: `Slack rejected the ${which} (HTTP ${e.status})` };
-  return { code: e instanceof SlackCallError ? e.error : "network" };
-}
-
-/** Bot mode: users.setPresence auto now and every SLACK_REASSERT_MS; ends when a call fails. */
-export function slackBotSession(botToken: string, deps: PresenceDeps): Session {
-  const which = `bot token ("slack".botToken in secrets.json or SEORI_SLACK_BOT_TOKEN; needs users:write)`;
-  return async (signal, ready) => {
-    while (!signal.aborted) {
-      try {
-        await deps.slackCall("users.setPresence", botToken, { presence: "auto" }, undefined, signal);
-      } catch (e) {
-        if (signal.aborted) break;
-        return slackEnd(e, which);
-      }
-      ready();
-      deps.log("PRESENCE slack auto");
-      await pause(SLACK_REASSERT_MS, signal, deps.sleep);
-    }
-    return { code: "stopped" };
-  };
-}
-
-/** The client-type socket URL for a user token (ported from upstream). */
-export async function clientSocketUrl(call: SlackCall, token: string, cookie: string, signal?: AbortSignal): Promise<string> {
-  const res = await call("client.getWebSocketURL", token, {}, cookie, signal);
-  if (typeof res["primary_websocket_url"] !== "string" || typeof res["routing_context"] !== "string") throw new SlackCallError("client.getWebSocketURL", "unexpected_shape");
-  const url = new URL(res["primary_websocket_url"]);
-  const params: Record<string, string> = {
-    token,
-    sync_desync: "1",
-    slack_client: "desktop",
-    start_args: "?agent=client&org_wide_aware=true&connect_only=true&ms_latest=true",
-    no_query_on_subscribe: "1",
-    flannel: "3",
-    lazy_channels: "1",
-    gateway_server: res["routing_context"],
-    batch_presence_aware: "1",
-  };
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  return url.toString();
-}
-
-/** User mode: one client-type socket, tickled every minute; ends when it closes. setPresence auto only on the first. */
-export function slackUserSession(token: string, cookie: string, deps: PresenceDeps): Session {
-  const which = `user token or cookie ("slack".userToken and "slack".cookie in secrets.json)`;
-  let first = true;
-  return async (signal, ready) => {
-    let url: string;
-    try {
-      if (first) await deps.slackCall("users.setPresence", token, { presence: "auto" }, cookie, signal);
-      first = false;
-      url = await clientSocketUrl(deps.slackCall, token, cookie, signal);
-    } catch (e) {
-      if (signal.aborted) return { code: "stopped" };
-      return slackEnd(e, which);
-    }
-    if (signal.aborted) return { code: "stopped" };
-    const { promise, resolve } = Promise.withResolvers<End>();
-    let done = false;
-    let tickle: unknown;
-    let id = 0;
-    let line: Line | undefined;
-    const finish = (end: End, close: boolean) => {
-      if (done) return;
-      done = true;
-      if (tickle !== undefined) deps.timers.clearInterval(tickle);
-      signal.removeEventListener("abort", onAbort);
-      if (close) {
-        try {
-          line?.close(1000);
-        } catch {
-          // already closed
-        }
-      }
-      resolve(end);
-    };
-    const onAbort = () => finish({ code: "stopped" }, true);
-    signal.addEventListener("abort", onAbort);
-    try {
-      line = deps.open(url, { Cookie: `d=${cookie}`, Origin: "https://app.slack.com" }, {
-        onMessage(raw) {
-          if (done) return;
-          let m: { type?: string; presence?: string };
-          try {
-            m = JSON.parse(raw);
-          } catch {
-            return;
-          }
-          if (m.type === "hello") ready();
-          // manual_presence_change is the owner's own choice: never answered (see the top of this file).
-          else if (m.type === "manual_presence_change") deps.log(`PRESENCE slack manual_presence_change ${m.presence ?? "?"} (left as set)`);
-        },
-        onClose(code) {
-          finish({ code: String(code) }, false);
-        },
-      });
-    } catch (e) {
-      finish({ fatal: `cannot open the Slack client socket: ${(e as Error).message}` }, false);
-      return promise;
-    }
-    if (!done) tickle = deps.timers.setInterval(() => {
-      try {
-        line?.send(JSON.stringify({ type: "tickle", id: ++id }));
-      } catch {
-        // closing: the close event ends the session
-      }
-    }, SLACK_TICKLE_MS);
-    return promise;
-  };
-}
-
-function token(root: string, key: string, envName: string | undefined, env: Record<string, string | undefined>, source: string): string {
+function token(root: string, source: string, key: string, envName: string | undefined, env: Record<string, string | undefined>): string {
   try {
     return secret(root, source, key, envName, env);
   } catch (e) {
@@ -384,66 +214,40 @@ function token(root: string, key: string, envName: string | undefined, env: Reco
   }
 }
 
-/** `seori presence <platform>`: tokens from the messenger config (secrets.json, or the messengers' SEORI_* env). */
-export async function runPresence(root: string, platform: Platform, opts: { readonly user?: boolean }, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
+/** `seori presence <platform>`: Slack reads "slack".userToken and .cookie from secrets.json; Discord the bot token. */
+export async function runPresence(root: string, platform: Platform, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
   const env = deps.env ?? process.env;
-  const options = loadMessengers(root).find((c) => c.source === platform)?.options ?? {};
-  if (platform === "discord") {
-    const url = typeof options["wsUrl"] === "string" ? options["wsUrl"] : DISCORD_GATEWAY;
-    return holdPresence("discord", discordSession(token(root, "token", "SEORI_DISCORD_TOKEN", env, "discord"), url, deps, join(root, "presence", "discord-identify.json")), deps, signal);
+  if (platform === "slack") {
+    const auth = { token: token(root, "slack", "userToken", undefined, env), cookie: token(root, "slack", "cookie", undefined, env) };
+    return holdSlack(auth, deps, signal);
   }
-  let session: Session;
-  let release: (signal: AbortSignal) => Promise<unknown>;
-  if (opts.user) {
-    const userToken = token(root, "userToken", undefined, env, "slack");
-    const cookie = token(root, "cookie", undefined, env, "slack");
-    session = slackUserSession(userToken, cookie, deps);
-    release = (s) => deps.slackCall("users.setPresence", userToken, { presence: "away" }, cookie, s);
-  } else {
-    const botToken = token(root, "botToken", "SEORI_SLACK_BOT_TOKEN", env, "slack");
-    session = slackBotSession(botToken, deps);
-    release = (s) => deps.slackCall("users.setPresence", botToken, { presence: "away" }, undefined, s);
-  }
-  const code = await holdPresence("slack", session, deps, signal);
-  if (!signal.aborted) return code;
-  // The stop signal is already aborted, so release gets its own deadline instead of waiting out an outage.
-  const deadline = new AbortController();
-  void deps.sleep(RELEASE_TIMEOUT_MS).then(() => deadline.abort());
-  try {
-    await release(deadline.signal);
-    deps.log("PRESENCE slack away");
-  } catch (e) {
-    deps.error(redact(`PRESENCE slack: could not set away on release: ${(e as Error).message}`));
-  }
-  return code;
+  const bot = token(root, "discord", "token", "SEORI_DISCORD_TOKEN", env);
+  return holdDiscord(bot, join(root, "presence", "discord-identify.json"), deps, signal);
 }
 
 /** The real sockets, timers and Slack Web API. */
-export function realPresenceDeps(root: string, platform: Platform): PresenceDeps {
-  const options = loadMessengers(root).find((c) => c.source === platform)?.options ?? {};
-  const apiBase = (typeof options["apiBase"] === "string" ? options["apiBase"] : SLACK_API).replace(/\/+$/, "");
+export function realPresenceDeps(): PresenceDeps {
   return {
-    open: (url, headers, on) => {
+    openSlack: (url, headers) => {
       // Bun's WebSocket takes an options object with headers; the DOM typing in scope only knows protocols.
       const BunWebSocket = WebSocket as unknown as new (url: string, init: Bun.WebSocketOptions) => WebSocket;
       const ws = new BunWebSocket(url, { headers: { ...headers } });
-      ws.addEventListener("message", (e) => on.onMessage(typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data as ArrayBuffer)));
-      ws.addEventListener("close", (e) => on.onClose(e.code));
-      return { send: (f) => ws.send(f), close: (code) => ws.close(code) };
+      return { isOpen: () => ws.readyState === WebSocket.OPEN, send: (f) => ws.send(f), close: () => ws.close() };
     },
+    openDiscord: () => {
+      const ws = new WebSocket(DISCORD_GATEWAY);
+      return {
+        send: (d) => ws.send(d),
+        close: () => ws.close(),
+        onMessage: (cb) => ws.addEventListener("message", (e) => cb(String(e.data))),
+        onClose: (cb) => ws.addEventListener("close", (e) => cb(e.code)),
+      };
+    },
+    slackApi: (auth) => slackApi(auth),
     timers: { setInterval: (cb, ms) => setInterval(cb, ms), clearInterval: (h) => clearInterval(h as Timer) },
     sleep: (ms) => Bun.sleep(ms),
     now: Date.now,
     log: (l) => console.log(l),
     error: (l) => console.error(l),
-    slackCall: async (method, tok, params, cookie, signal) => {
-      const headers: Record<string, string> = { authorization: `Bearer ${tok}`, ...(cookie ? { cookie: `d=${cookie}` } : {}) };
-      // The signal also cuts httpJson's retry waits short, so a stop during an outage returns promptly.
-      const sleep = (ms: number) => (signal ? pause(ms, signal, Bun.sleep) : Bun.sleep(ms));
-      const res = await httpJson(`${apiBase}/${method}`, { method: "POST", headers, body: params, ...(signal ? { signal } : {}) }, { mutating: false, sleep });
-      const body = (res.body ?? {}) as Record<string, unknown>;
-      if (body["ok"] !== true) throw new SlackCallError(method, typeof body["error"] === "string" ? body["error"] : "unexpected_answer");
-      return body;
-    },
   };
 }
