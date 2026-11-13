@@ -152,7 +152,7 @@ seori msg check [SOURCE]                     메신저 토큰이 맞는지 확�
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             설정용: 봇에게 다음에 DM을 보낸 사람을 출력. --write는 그 사람을 주인으로 기록;
                                             --force는 이미 등록된 텔레그램 주인을 다시 등록 (데몬 몫으로 쌓인 메시지는 버려짐)
-seori presence <slack|discord> [--user]      멈출 때까지 봇을 온라인으로 보이게 둡니다. 끊기면 간격을 두고 다시 연결 (온라인 표시 참고)
+seori presence <slack|discord>               멈출 때까지 계정을 온라인으로 보이게 둡니다 (온라인 표시 참고)
 seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                  | --pane PANE --status idle|working|blocked|gone)
                  [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
@@ -389,11 +389,10 @@ seori msg pair telegram --write
 
 ### 온라인 표시
 
-`seori presence discord`와 `seori presence slack`은 Ctrl-C나 SIGTERM을 받을 때까지(종료 코드 0) 설정된 계정을 온라인으로 보이게 둡니다. 토큰은 메신저가 쓰는 것을 그대로 씁니다(`secrets.json`, 또는 `SEORI_DISCORD_TOKEN` / `SEORI_SLACK_BOT_TOKEN`). 토큰이 없으면 `secrets.json`의 어느 키가 필요한지 알려 주고 거절합니다(종료 코드 2). 첫 연결이 되면 `PRESENCE_READY <platform>`을 한 번 출력합니다. 연결이 끝나면(소켓이 닫힘, 디스코드가 op 7로 다시 연결하라고 하거나 op 9로 세션을 무효로 함, 하트비트 응답이 없음, 슬랙 호출이 실패함) `PRESENCE_RECONNECT <platform> code=<이유> retry_in=<n>s`를 출력하고 기다렸다가 새로 연결합니다. 기다리는 시간은 5초에서 시작해 빨리 끊길 때마다 두 배로 늘어 300초까지 가고, 한 연결이 10분 넘게 버티면 다시 5초가 됩니다. 토큰을 거절당하거나(디스코드 close 4004, 슬랙 `invalid_auth` 등) 인텐트를 거절당하면(디스코드 close 4014) 다시 시도하지 않고 `PRESENCE_FAILED <platform>: <이유>`를 출력하고 종료 코드 1로 끝납니다.
+`seori presence discord`와 `seori presence slack`은 Ctrl-C나 SIGTERM을 받을 때까지(종료 코드 0) 계정을 온라인으로 보이게 둡니다. 원본 dori와 같은 방식입니다. 토큰이 없으면 `secrets.json`의 어느 키가 필요한지 알려 주고 거절합니다(종료 코드 2). 시작하면 `PRESENCE_READY <platform>`을 한 번 출력합니다.
 
-- 디스코드: 상태를 online으로 해서 identify하는 게이트웨이 연결 하나를 유지합니다. 인텐트는 요청하지 않습니다. 끊기면 디스코드가 세션을 무효로 하지 않은 한 세션을 이어 갑니다(디스코드의 resume URL로 op 6). 그래서 다시 연결해도 대개 identify를 새로 하지 않습니다. 새 identify는 24시간 동안 200번까지만 합니다(`$SEORI_HOME/presence/discord-identify.json`에 셉니다. 디스코드 한도인 하루 1,000번보다 한참 적습니다). 다 쓰면 `PRESENCE_WAIT discord identify budget spent; next identify in <n>s`를 출력하고 기다립니다.
-- 슬랙 기본: 슬랙은 Socket Mode 봇을 앱 설정의 "Always Show My Bot as Online"(App Home, 매니페스트의 `always_online`)으로만 활성으로 보여 줍니다. 봇을 활성으로 만드는 API는 없고, Socket Mode 연결도 치지 않습니다([user presence and status](https://docs.slack.dev/apis/web-api/user-presence-and-status)). 그러니 그 설정을 켜 두세요. 그러면 `seori presence slack`은 봇 토큰(스코프 `users:write`)으로 `users.setPresence` `auto`를 불러 수동 자리 비움을 풀고, 10분마다 다시 부르며, 멈출 때 `away`로 둡니다. 따로 Socket Mode 연결은 열지 않습니다. 슬랙은 이벤트를 앱의 모든 연결에 나눠 보내므로, 연결을 하나 더 열면 데몬이 받을 메시지를 가져가 버리기 때문입니다.
-- 슬랙 `--user`: 일반 슬랙 사용자 계정용입니다. 웹 클라이언트 소켓(`client.getWebSocketURL`)을 열어 두고 1분마다 tickle을 보내 활성으로 유지하고, 멈출 때 `away`로 둡니다. 그 계정의 클라이언트 토큰과 `d` 쿠키가 `secrets.json`에 `"slack": { "userToken": "xoxc-...", "cookie": "..." }`로 있어야 합니다(환경 변수는 안 씁니다). 계정 주인이 손으로 바꾼 상태는 그대로 둡니다.
+- 디스코드: 봇입니다(`secrets.json`의 `"discord": { "token": ... }`, 또는 `SEORI_DISCORD_TOKEN`). 상태를 online으로 해서 identify하고 하트비트를 보내는 게이트웨이 연결을 유지합니다. 연결이 끝나면(소켓이 닫힘, 디스코드가 op 7이나 op 9를 보냄) `PRESENCE_RECONNECT discord code=<이유> retry_in=<n>s`를 출력하고, 기다렸다가 새 연결에서 다시 identify합니다. 기다리는 시간은 5초에서 시작해 두 배씩 늘어 300초까지 가고, 한 연결이 10분 넘게 버티면 다시 5초가 됩니다. identify는 24시간 동안 200번까지만 합니다(`$SEORI_HOME/presence/discord-identify.json`에 셉니다. 하루 1,000번을 넘기면 디스코드가 토큰을 초기화하므로 그보다 한참 적게 잡았습니다). 다 쓰면 `PRESENCE_WAIT discord identify budget spent; next identify in <n>s`를 출력하고 기다립니다. 토큰을 거절당하거나(close 4004) 연결 설정을 거절당하면(close 4010-4014) 다시 identify하지 않고 `PRESENCE_FAILED discord: <이유>`를 출력하고 종료 코드 1로 끝납니다.
+- 슬랙: 일반 슬랙 사용자 계정입니다. 슬랙은 웹 클라이언트 소켓이 열려 있는 동안에만 계정을 활성으로 보여 주기 때문입니다([user presence and status](https://docs.slack.dev/apis/web-api/user-presence-and-status)). 그 계정의 클라이언트 토큰과 `d` 쿠키가 `secrets.json`에 `"slack": { "userToken": "xoxc-...", "cookie": "..." }`로 있어야 합니다(환경 변수는 안 씁니다). 1분마다 소켓을 열거나(`users.setPresence` `auto` 뒤 `client.getWebSocketURL`) `PRESENCE slack opened`를 출력하고, 열린 소켓에는 tickle을 보내고 `PRESENCE slack tickled`를 출력합니다. 실패하면 `WARN <이유>`를 출력하고 다음 1분에 다시 시도합니다. 멈출 때 소켓을 닫고 `away`로 둡니다. 계정 주인이 손으로 바꾼 상태는 그대로 둡니다.
 
 ### 받기
 

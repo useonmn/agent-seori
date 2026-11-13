@@ -41,6 +41,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/boot-checks.ts
 - src/cli.ts
 - src/messenger/presence.ts
+- src/messenger/slack-presence.ts
 - src/refs.ts
 - src/runtime/hc/deliver.ts
 - src/runtime/hc/exec.ts

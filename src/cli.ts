@@ -109,9 +109,10 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                               setup: print the sender of the next DM to the bot; --write makes them the owner;
                                               --force re-pairs a configured Telegram owner (drops updates queued for the daemon)
-  seori presence <slack|discord> [--user]      keep the bot shown online until stopped (Ctrl-C), reconnecting with backoff;
-                                              prints PRESENCE_READY, PRESENCE_RECONNECT <platform> code=C retry_in=Ns;
-                                              --user: Slack user account ("slack".userToken and .cookie in secrets.json)
+  seori presence <slack|discord>               keep the account shown online until stopped (Ctrl-C); prints PRESENCE_READY;
+                                              slack: the user account ("slack".userToken and .cookie in secrets.json),
+                                              PRESENCE slack opened|tickled each minute; discord: the bot, reconnecting
+                                              with backoff (PRESENCE_RECONNECT discord code=C retry_in=Ns)
 ${WATCH_USAGE}
 
 --text may be omitted to read the message from stdin.
@@ -132,7 +133,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global", "user"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -1057,14 +1058,13 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return msg(d, a, x);
     case "presence": {
       if (x !== "slack" && x !== "discord") throw new Refusal(`seori presence takes slack or discord\n\n${USAGE}`);
-      if (one(a, "user") === "true" && x !== "slack") throw new Refusal("--user is for slack only");
       const stop = new AbortController();
       const onSignal = () => stop.abort();
       process.once("SIGINT", onSignal);
       process.once("SIGTERM", onSignal);
       try {
         const root = d.store.root;
-        return await runPresence(root, x, { user: one(a, "user") === "true" }, realPresenceDeps(root, x), stop.signal);
+        return await runPresence(root, x, realPresenceDeps(), stop.signal);
       } catch (e) {
         if (e instanceof PresenceConfigError) throw new Refusal(e.message);
         throw e instanceof Error ? new Error(redact(e.message)) : e;

@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import {
-  DISCORD_IDENTIFY_BUDGET, IDENTIFY_WINDOW_MS, type LineEvents, type PresenceDeps, RELEASE_TIMEOUT_MS, runPresence, SLACK_REASSERT_MS, SLACK_TICKLE_MS, SlackCallError, STABLE_MS,
+  DISCORD_IDENTIFY_BUDGET, discordPresence, IDENTIFY_WINDOW_MS, type PresenceDeps, RELEASE_TIMEOUT_MS, runPresence, SLACK_TICK_MS, STABLE_MS,
 } from "../src/messenger/presence.ts";
+import { type SlackCall, slackPresence } from "../src/messenger/slack-presence.ts";
 import { World } from "./fake.ts";
 
 // `seori presence`: sockets, timers, sleep, clock and the Slack Web API are all injected; nothing touches the network.
@@ -17,280 +18,228 @@ const home = (secrets?: unknown) => {
   return root;
 };
 
-type Conn = { url: string; headers: Record<string, string>; on: LineEvents; sent: unknown[]; closed: number | undefined; at: number };
-
-/** Fake world: `onOpen` runs for each new connection (index from 0) and drives it. */
-function rig(onOpen: (c: Conn, i: number, r: ReturnType<typeof base>) => void = () => {}) {
-  const r = base();
-  r.deps = {
-    ...r.deps,
-    open: (url, headers, on) => {
-      const c: Conn = { url, headers: { ...headers }, on, sent: [], closed: undefined, at: r.clock };
-      r.conns.push(c);
-      queueMicrotask(() => onOpen(c, r.conns.length - 1, r));
-      return {
-        send: (f) => void c.sent.push(JSON.parse(f)),
-        close: (code) => {
-          c.closed = code ?? 1000;
-        },
-      };
+const fakeTimers = () => {
+  const live = new Set<() => void>();
+  return {
+    live,
+    timers: {
+      setInterval: (cb: () => void) => {
+        live.add(cb);
+        return cb;
+      },
+      clearInterval: (h: unknown) => {
+        live.delete(h as () => void);
+      },
+    },
+    fire: () => {
+      for (const cb of live) cb();
     },
   };
-  return r;
-}
+};
 
-function base() {
+type Call = { method: string; params: Record<string, unknown>; signal: AbortSignal | undefined };
+const socketAnswer = (method: string): Record<string, unknown> =>
+  method === "client.getWebSocketURL" ? { ok: true, primary_websocket_url: "wss://wss-primary.example/", routing_context: "gw-1" } : { ok: true };
+
+/** A fake Slack Web API: records every call and answers through `answer`. */
+const fakeSlack = (answer: (method: string, n: number) => Record<string, unknown> = socketAnswer) => {
+  const calls: Call[] = [];
+  const call: SlackCall = async (method, params, signal) => {
+    calls.push({ method, params, signal });
+    return answer(method, calls.length);
+  };
+  return { calls, call };
+};
+
+type Gateway = { sent: unknown[]; closed: boolean; at: number; msg: (m: unknown) => void; close: (code: number) => void };
+
+/** The whole run's world: `onTick` drives Slack after each hold, `onOpen` drives each new Discord connection. */
+function rig(opts: { onOpen?: (g: Gateway, i: number) => void; answer?: (method: string, n: number) => Record<string, unknown> } = {}) {
   const stop = new AbortController();
+  const t = fakeTimers();
+  const slack = fakeSlack(opts.answer);
   const r = {
     stop,
+    t,
     clock: 0,
     out: [] as string[],
     err: [] as string[],
     slept: [] as number[],
-    calls: [] as { method: string; token: string; params: Record<string, string>; cookie?: string }[],
-    intervals: [] as { cb: () => void; ms: number; live: boolean }[],
-    conns: [] as Conn[],
-    slackAnswer: (_method: string, _n: number): Record<string, unknown> => ({ ok: true }),
+    calls: slack.calls,
+    auths: [] as { token: string; cookie: string }[],
+    lines: [] as { url: string; headers: Record<string, string>; frames: unknown[]; open: boolean }[],
+    gateways: [] as Gateway[],
+    onSleep: (_ms: number) => {},
     deps: undefined as unknown as PresenceDeps,
   };
   r.deps = {
-    open: () => {
-      throw new Error("no socket in this test");
+    openSlack: (url, headers) => {
+      const l = { url, headers: { ...headers }, frames: [] as unknown[], open: true };
+      r.lines.push(l);
+      return { isOpen: () => l.open, send: (f) => void l.frames.push(JSON.parse(f)), close: () => void (l.open = false) };
     },
-    timers: {
-      setInterval: (cb, ms) => {
-        const h = { cb, ms, live: true };
-        r.intervals.push(h);
-        return h;
-      },
-      clearInterval: (h) => {
-        (h as { live: boolean }).live = false;
-      },
+    openDiscord: () => {
+      let onMessage: (d: string) => void = () => {};
+      let onClose: (code: number) => void = () => {};
+      const g: Gateway = {
+        sent: [],
+        closed: false,
+        at: r.clock,
+        msg: (m) => onMessage(JSON.stringify(m)),
+        close: (code) => onClose(code),
+      };
+      r.gateways.push(g);
+      const i = r.gateways.length - 1;
+      queueMicrotask(() => opts.onOpen?.(g, i));
+      return {
+        send: (d) => void g.sent.push(JSON.parse(d)),
+        close: () => void (g.closed = true),
+        onMessage: (cb) => void (onMessage = cb),
+        onClose: (cb) => void (onClose = cb),
+      };
     },
+    slackApi: (auth) => {
+      r.auths.push(auth);
+      return slack.call;
+    },
+    timers: t.timers,
     sleep: async (ms) => {
       r.slept.push(ms);
+      r.onSleep(ms);
     },
     now: () => r.clock,
     log: (l) => void r.out.push(l),
     error: (l) => void r.err.push(l),
-    slackCall: async (method, token, params, cookie) => {
-      r.calls.push({ method, token, params, ...(cookie ? { cookie } : {}) });
-      return r.slackAnswer(method, r.calls.length);
-    },
     env: {},
   };
   return r;
 }
 
+const hello = (g: Gateway, interval = 41_250) => g.msg({ op: 10, d: { heartbeat_interval: interval } });
+const ops = (g: Gateway) => g.sent.map((f) => (f as { op: number }).op);
 const reconnects = (out: string[]) => out.filter((l) => l.startsWith("PRESENCE_RECONNECT")).map((l) => Number(/retry_in=(\d+)s/.exec(l)![1]));
-const hello = (c: Conn, interval = 41_250) => c.on.onMessage(JSON.stringify({ op: 10, d: { heartbeat_interval: interval } }));
-const readyEvent = (c: Conn, s = 1) => c.on.onMessage(JSON.stringify({ op: 0, s, t: "READY", d: {} }));
-const resumableReady = (c: Conn, s = 1) =>
-  c.on.onMessage(JSON.stringify({ op: 0, s, t: "READY", d: { session_id: "sess-1", resume_gateway_url: "wss://resume.example" } }));
-const ops = (c: Conn) => c.sent.map((f) => (f as { op: number }).op);
 
-describe("seori presence discord", () => {
-  const root = () => home({ discord: { token: "dc-test-token" } });
+// Ported from upstream's messenger-presence tests.
 
-  test("identifies with status online and the configured token, heartbeats at the hello interval, and closes on stop", async () => {
-    const r = rig((c, _i, r) => {
-      hello(c, 30_000);
-      readyEvent(c, 7);
-      r.intervals[0]!.cb();
-      c.on.onMessage(JSON.stringify({ op: 11 }));
-      r.intervals[0]!.cb();
-      r.stop.abort();
-    });
-    expect(await runPresence(root(), "discord", {}, r.deps, r.stop.signal)).toBe(0);
-    const c = r.conns[0]!;
-    expect(c.url).toBe("wss://gateway.discord.gg/?v=10&encoding=json");
-    const identify = c.sent[0] as { op: number; d: { token: string; presence: { status: string } } };
-    expect(identify.op).toBe(2);
-    expect(identify.d.token).toBe("dc-test-token");
-    expect(identify.d.presence.status).toBe("online");
-    expect(r.intervals.map((i) => i.ms)).toEqual([30_000]);
-    expect(c.sent.slice(1)).toEqual([{ op: 1, d: 7 }, { op: 1, d: 7 }]);
-    expect(c.closed).toBe(1000);
-    expect(r.intervals[0]!.live).toBe(false);
-    expect(r.out).toEqual(["PRESENCE_READY discord"]);
-  });
+test("Slack presence opens one client-type socket with the cookie, then only tickles it; release closes it and sets away", async () => {
+  const { calls, call } = fakeSlack();
+  const frames: string[] = [];
+  let opened: { url: string; headers: Record<string, string> } | null = null;
+  let open = false;
+  const p = slackPresence(
+    call,
+    (url, headers) => {
+      opened = { url, headers: { ...headers } };
+      open = true;
+      return {
+        isOpen: () => open,
+        send: (f) => frames.push(f),
+        close: () => {
+          open = false;
+        },
+      };
+    },
+    { token: "xt", cookie: "dc" },
+  );
+  expect(await p.hold()).toBe("opened");
+  expect(await p.hold()).toBe("tickled");
+  expect(await p.hold()).toBe("tickled");
+  const url = new URL(opened!.url);
+  expect(url.searchParams.get("token")).toBe("xt");
+  expect(url.searchParams.get("slack_client")).toBe("desktop");
+  expect(url.searchParams.get("gateway_server")).toBe("gw-1");
+  expect(opened!.headers).toEqual({ Cookie: "d=dc", Origin: "https://app.slack.com" });
+  expect(frames.map((f) => JSON.parse(f).type)).toEqual(["tickle", "tickle"]);
+  await p.release();
+  expect(open).toBe(false);
+  expect(calls.filter((c) => c.method === "users.setPresence").map((c) => c.params["presence"])).toEqual(["auto", "away"]);
+});
 
-  test("a closed socket opens a new session: backoff 5, 10, 20 ... capped at 300 s; a 61 s session keeps it, a 10 min one resets it", async () => {
-    expect(STABLE_MS).toBe(10 * 60_000);
-    const r = rig((c, i, r) => {
-      hello(c);
-      readyEvent(c);
-      if (i === 10) r.clock += 61_000; // held just over a minute: not stable
-      if (i === 11) r.clock += 10 * 60_000; // held ten minutes: stable
-      if (i === 13) return r.stop.abort();
-      c.on.onClose(1006);
-    });
-    expect(await runPresence(root(), "discord", {}, r.deps, r.stop.signal)).toBe(0);
-    expect(r.conns).toHaveLength(14);
-    expect(reconnects(r.out)).toEqual([5, 10, 20, 40, 80, 160, 300, 300, 300, 300, 300, 5, 10]);
-    expect(r.slept).toEqual(reconnects(r.out).map((s) => s * 1000));
-    expect(r.out[1]).toBe("PRESENCE_RECONNECT discord code=1006 retry_in=5s");
-    expect(r.out.filter((l) => l === "PRESENCE_READY discord")).toHaveLength(1);
-  });
-
-  test("op 7 (reconnect) and op 9 (invalid session) end the session and open a new one", async () => {
-    const r = rig((c, i, r) => {
-      hello(c);
-      readyEvent(c);
-      if (i === 0) c.on.onMessage(JSON.stringify({ op: 7, d: null }));
-      else if (i === 1) c.on.onMessage(JSON.stringify({ op: 9, d: false }));
-      else r.stop.abort();
-    });
-    expect(await runPresence(root(), "discord", {}, r.deps, r.stop.signal)).toBe(0);
-    expect(r.conns).toHaveLength(3);
-    expect(r.conns[0]!.closed).toBe(1000);
-    expect(r.conns[1]!.closed).toBe(1000);
-    expect(r.out.filter((l) => l.startsWith("PRESENCE_RECONNECT"))).toEqual([
-      "PRESENCE_RECONNECT discord code=op7 retry_in=5s",
-      "PRESENCE_RECONNECT discord code=op9 retry_in=10s",
-    ]);
-  });
-
-  test("after READY a dropped connection resumes at resume_gateway_url with op 6 and the last seq, no op 2", async () => {
-    const r = rig((c, i, r) => {
-      hello(c);
-      if (i === 0) {
-        resumableReady(c, 1);
-        c.on.onMessage(JSON.stringify({ op: 0, s: 5, t: "GUILD_CREATE", d: {} }));
-        c.on.onClose(1006);
-      } else {
-        c.on.onMessage(JSON.stringify({ op: 0, s: 6, t: "RESUMED", d: null }));
-        r.stop.abort();
-      }
-    });
-    expect(await runPresence(root(), "discord", {}, r.deps, r.stop.signal)).toBe(0);
-    expect(r.conns).toHaveLength(2);
-    expect(r.conns[1]!.url).toBe("wss://resume.example/?v=10&encoding=json");
-    expect(r.conns[1]!.sent[0]).toEqual({ op: 6, d: { token: "dc-test-token", session_id: "sess-1", seq: 5 } });
-    expect(ops(r.conns[1]!)).not.toContain(2);
-    expect(r.out.filter((l) => l === "PRESENCE_READY discord")).toHaveLength(1);
-  });
-
-  test("op 9 d=false and close 4009 drop the session (fresh op 2 at the normal URL); op 9 d=true resumes", async () => {
-    const cases: [string, (c: Conn) => void, string, number][] = [
-      ["op9 false", (c) => c.on.onMessage(JSON.stringify({ op: 9, d: false })), "wss://gateway.discord.gg/?v=10&encoding=json", 2],
-      ["close 4009", (c) => c.on.onClose(4009), "wss://gateway.discord.gg/?v=10&encoding=json", 2],
-      ["op9 true", (c) => c.on.onMessage(JSON.stringify({ op: 9, d: true })), "wss://resume.example/?v=10&encoding=json", 6],
-    ];
-    for (const [name, end, url, op] of cases) {
-      const r = rig((c, i, r) => {
-        hello(c);
-        if (i === 0) {
-          resumableReady(c, 3);
-          c.on.onClose(1006);
-        } else if (i === 1) end(c); // the resume attempt is refused (or the resumed session dies)
-        else r.stop.abort();
-      });
-      expect(await runPresence(root(), "discord", {}, r.deps, r.stop.signal)).toBe(0);
-      expect(r.conns, name).toHaveLength(3);
-      expect(ops(r.conns[1]!)[0], name).toBe(6);
-      expect(r.conns[2]!.url, name).toBe(url);
-      expect(ops(r.conns[2]!)[0], name).toBe(op);
-    }
-  });
-
-  test("identify budget: when 200 identifies sit in the last 24 h it prints PRESENCE_WAIT and identifies only after the window; resumes are not counted", async () => {
-    expect(DISCORD_IDENTIFY_BUDGET).toBe(200);
-    const dir = root();
-    const start = 30 * IDENTIFY_WINDOW_MS;
-    const oldest = start - IDENTIFY_WINDOW_MS + 90_000; // leaves the window 90 s from now
-    mkdirSync(join(dir, "presence"), { recursive: true });
-    const state = join(dir, "presence", "discord-identify.json");
-    writeFileSync(state, JSON.stringify([oldest, ...Array.from({ length: 199 }, () => start - 1_000)]));
-    const r = rig((c, i, r) => {
-      hello(c);
-      if (i === 0) {
-        resumableReady(c, 2);
-        c.on.onClose(1006);
-      } else {
-        c.on.onMessage(JSON.stringify({ op: 0, s: 3, t: "RESUMED", d: null }));
-        r.stop.abort();
-      }
-    });
-    r.clock = start;
-    r.deps = { ...r.deps, sleep: async (ms) => void (r.slept.push(ms), (r.clock += ms)) };
-    expect(await runPresence(dir, "discord", {}, r.deps, r.stop.signal)).toBe(0);
-    expect(r.out[0]).toBe("PRESENCE_WAIT discord identify budget spent; next identify in 90s");
-    expect(r.slept[0]).toBe(90_000);
-    expect(r.conns[0]!.at).toBe(start + 90_000); // no socket (so no op 2) before the window passed
-    expect(ops(r.conns[0]!)[0]).toBe(2);
-    // the budget is full again (199 + this identify), yet the resume goes out without waiting and is not recorded
-    expect(r.conns).toHaveLength(2);
-    expect(ops(r.conns[1]!)[0]).toBe(6);
-    expect(r.out.filter((l) => l.startsWith("PRESENCE_WAIT"))).toHaveLength(1);
-    expect(JSON.parse(readFileSync(state, "utf8"))).toHaveLength(200);
-  });
-
-  test("close 4004 (authentication failed) exits 1 with a clear error and no retry; 4014 too", async () => {
-    for (const code of [4004, 4014]) {
-      const r = rig((c) => {
-        hello(c);
-        c.on.onClose(code);
-      });
-      expect(await runPresence(root(), "discord", {}, r.deps, r.stop.signal)).toBe(1);
-      expect(r.conns).toHaveLength(1);
-      expect(r.slept).toEqual([]);
-      expect(r.out.some((l) => l.startsWith("PRESENCE_RECONNECT"))).toBe(false);
-      expect(r.err).toHaveLength(1);
-      expect(r.err[0]).toContain(`PRESENCE_FAILED discord: Discord`);
-      expect(r.err[0]).toContain(`close ${code}`);
-    }
-  });
-
-  test("a missed heartbeat ack ends a zombie session and reconnects", async () => {
-    const r = rig((c, i, r) => {
-      hello(c);
-      if (i === 1) return r.stop.abort();
-      r.intervals[0]!.cb(); // beat, no ack follows
-      r.intervals[0]!.cb();
-    });
-    expect(await runPresence(root(), "discord", {}, r.deps, r.stop.signal)).toBe(0);
-    expect(r.out).toContain("PRESENCE_RECONNECT discord code=heartbeat-not-acked retry_in=5s");
-  });
-
-  test("no token in the config refuses with the secrets.json key named", async () => {
-    const r = rig();
-    await expect(runPresence(home(), "discord", {}, r.deps, r.stop.signal)).rejects.toThrow(`"discord": { "token": "..." }`);
-    expect(r.conns).toHaveLength(0);
-  });
+test("Discord presence identifies as online after hello, heartbeats with the last sequence, and stops beating on close", () => {
+  const sent: string[] = [];
+  let onMsg: (d: string) => void = () => {};
+  const t = fakeTimers();
+  let closed = false;
+  const p = discordPresence(
+    () => ({
+      send: (d) => sent.push(d),
+      close: () => {
+        closed = true;
+      },
+      onMessage: (cb) => {
+        onMsg = cb;
+      },
+      onClose: () => {},
+    }),
+    "BOT",
+    t.timers,
+    { identify: () => {}, end: () => {} },
+  );
+  onMsg(JSON.stringify({ op: 10, d: { heartbeat_interval: 41250 } }));
+  onMsg(JSON.stringify({ op: 0, s: 3, t: "READY", d: {} }));
+  t.fire();
+  const identify = JSON.parse(sent[0] ?? "{}");
+  expect(identify.op).toBe(2);
+  expect(identify.d.token).toBe("BOT");
+  expect(identify.d.presence.status).toBe("online");
+  expect(JSON.parse(sent[1] ?? "{}")).toEqual({ op: 1, d: 3 });
+  p.close();
+  expect(closed).toBe(true);
+  expect(t.live.size).toBe(0);
 });
 
 describe("seori presence slack", () => {
-  test("bot mode: users.setPresence auto with the configured bot token, re-asserted; a failed call backs off; stop sets away", async () => {
-    const r = base();
-    r.slackAnswer = (_m, n) => {
-      if (n === 2) throw new SlackCallError("users.setPresence", "service_unavailable");
-      if (n === 4) r.stop.abort();
-      return { ok: true };
+  const user = () => home({ slack: { botToken: "xoxb-test", userToken: "xoxc-test", cookie: "d-test" } });
+
+  test("with the user token and cookie from secrets.json: PRESENCE_READY, then opened / tickled each minute; a dropped socket reopens; a failed tick warns; stop sets away", async () => {
+    let tick = 0;
+    const r = rig({
+      answer: (method) => {
+        if (method === "users.setPresence" && tick === 3) throw new Error("slack users.setPresence: service_unavailable");
+        return socketAnswer(method);
+      },
+    });
+    r.onSleep = (ms) => {
+      if (ms !== SLACK_TICK_MS) return;
+      tick++;
+      if (tick === 2) r.lines[0]!.open = false; // the socket dropped
+      if (tick === 3) r.lines[1]!.open = false; // dropped again, and the reopen fails once
+      if (tick === 5) r.stop.abort();
     };
-    const root = home({ slack: { botToken: "xoxb-test", appToken: "xapp-test" } });
-    expect(await runPresence(root, "slack", {}, r.deps, r.stop.signal)).toBe(0);
-    expect(r.calls.map((c) => `${c.token} ${c.params["presence"]}`)).toEqual(["xoxb-test auto", "xoxb-test auto", "xoxb-test auto", "xoxb-test auto", "xoxb-test away"]);
-    expect(r.out[0]).toBe("PRESENCE_READY slack");
-    expect(r.out).toContain("PRESENCE_RECONNECT slack code=service_unavailable retry_in=5s");
-    expect(r.slept).toEqual([SLACK_REASSERT_MS, 5_000, SLACK_REASSERT_MS, RELEASE_TIMEOUT_MS]);
-    expect(r.out.at(-1)).toBe("PRESENCE slack away");
+    expect(await runPresence(user(), "slack", r.deps, r.stop.signal)).toBe(0);
+    expect(r.auths).toEqual([{ token: "xoxc-test", cookie: "d-test" }]);
+    expect(r.out).toEqual([
+      "PRESENCE_READY slack",
+      "PRESENCE slack opened",
+      "PRESENCE slack tickled",
+      "PRESENCE slack opened",
+      "WARN slack users.setPresence: service_unavailable",
+      "PRESENCE slack opened",
+    ]);
+    expect(r.lines).toHaveLength(3);
+    expect(r.lines[0]!.frames).toEqual([{ type: "tickle", id: 1 }]);
+    expect(r.lines[0]!.headers).toEqual({ Cookie: "d=d-test", Origin: "https://app.slack.com" });
+    expect(new URL(r.lines[0]!.url).searchParams.get("token")).toBe("xoxc-test");
+    expect(r.slept).toEqual([SLACK_TICK_MS, SLACK_TICK_MS, SLACK_TICK_MS, SLACK_TICK_MS, SLACK_TICK_MS, RELEASE_TIMEOUT_MS]);
+    // setPresence auto on every open, away on release; never in answer to anything else
+    expect(r.calls.filter((c) => c.method === "users.setPresence").map((c) => c.params["presence"])).toEqual(["auto", "auto", "auto", "auto", "away"]);
+    expect(r.lines[2]!.open).toBe(false);
   });
 
   test("stop during an outage: every Slack call gets the abort signal, so the run settles promptly", async () => {
-    const r = base();
+    const r = rig();
     const signals: (AbortSignal | undefined)[] = [];
     const called = Promise.withResolvers<void>();
     // A Slack API that never answers: a call ends only when its signal aborts.
     r.deps = {
       ...r.deps,
-      slackCall: (_method, _token, _params, _cookie, signal) => {
+      slackApi: () => (_method, _params, signal) => {
         signals.push(signal);
         called.resolve();
         return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
       },
     };
-    const run = runPresence(home({ slack: { botToken: "xoxb-test" } }), "slack", {}, r.deps, r.stop.signal);
+    const run = runPresence(user(), "slack", r.deps, r.stop.signal);
     await called.promise;
     expect(signals[0]).toBeInstanceOf(AbortSignal);
     expect(signals[0]!.aborted).toBe(false);
@@ -300,72 +249,148 @@ describe("seori presence slack", () => {
     // the release (set away) call is bounded by its own deadline
     expect(signals).toHaveLength(2);
     expect(signals[1]!.aborted).toBe(true);
-    expect(r.err).toEqual(["PRESENCE slack: could not set away on release: aborted"]);
+    expect(r.out).toEqual(["PRESENCE_READY slack", "WARN aborted"]);
   });
 
-  test("bot mode: a rejected token exits 1 without retrying", async () => {
-    const r = base();
-    r.slackAnswer = () => {
-      throw new SlackCallError("users.setPresence", "invalid_auth");
-    };
-    expect(await runPresence(home({ slack: { botToken: "xoxb-test" } }), "slack", {}, r.deps, r.stop.signal)).toBe(1);
-    expect(r.calls).toHaveLength(1);
-    expect(r.err[0]).toContain("invalid_auth");
-  });
-
-  const user = () => home({ slack: { botToken: "xoxb-test", userToken: "xoxc-test", cookie: "d-test" } });
-  const socketAnswer = (method: string) =>
-    method === "client.getWebSocketURL" ? { ok: true, primary_websocket_url: "wss://wss-primary.example/", routing_context: "gw-1" } : { ok: true };
-
-  test("user mode: a client socket with the configured token and cookie, tickled; a drop reconnects with backoff; manual_presence_change is left alone", async () => {
-    const r = rig((c, i, r) => {
-      c.on.onMessage(JSON.stringify({ type: "hello" }));
-      if (i === 0) {
-        r.intervals[0]!.cb();
-        c.on.onMessage(JSON.stringify({ type: "manual_presence_change", presence: "away" }));
-        c.on.onClose(1006);
-      } else r.stop.abort();
-    });
-    r.slackAnswer = socketAnswer;
-    expect(await runPresence(user(), "slack", { user: true }, r.deps, r.stop.signal)).toBe(0);
-    expect(r.conns).toHaveLength(2);
-    const url = new URL(r.conns[0]!.url);
-    expect(url.searchParams.get("token")).toBe("xoxc-test");
-    expect(url.searchParams.get("slack_client")).toBe("desktop");
-    expect(url.searchParams.get("gateway_server")).toBe("gw-1");
-    expect(r.conns[0]!.headers).toEqual({ Cookie: "d=d-test", Origin: "https://app.slack.com" });
-    expect(r.conns[0]!.sent).toEqual([{ type: "tickle", id: 1 }]);
-    expect(r.intervals[0]!.ms).toBe(SLACK_TICKLE_MS);
-    expect(r.out.filter((l) => l.startsWith("PRESENCE_RECONNECT"))).toEqual(["PRESENCE_RECONNECT slack code=1006 retry_in=5s"]);
-    // setPresence only at start (auto) and on release (away): never in answer to manual_presence_change
-    expect(r.calls.filter((c) => c.method === "users.setPresence").map((c) => c.params["presence"])).toEqual(["auto", "away"]);
-    expect(r.calls.every((c) => c.token === "xoxc-test" && c.cookie === "d-test")).toBe(true);
-    expect(r.calls.filter((c) => c.method === "client.getWebSocketURL")).toHaveLength(2);
-    expect(r.conns[1]!.closed).toBe(1000);
-  });
-
-  test("user mode: a socket error carrying the client URL prints PRESENCE_FAILED with the token redacted", async () => {
-    const r = base();
-    r.slackAnswer = socketAnswer;
+  test("an error carrying the client socket URL is printed with the token redacted", async () => {
+    const r = rig();
+    r.onSleep = () => r.stop.abort();
     r.deps = {
       ...r.deps,
-      open: (url) => {
+      openSlack: (url) => {
         throw new Error(`connect failed: ${url}`);
       },
     };
-    const root = home({ slack: { botToken: "xoxb-test", userToken: "xoxc-test-123", cookie: "d-test" } });
-    expect(await runPresence(root, "slack", { user: true }, r.deps, r.stop.signal)).toBe(1);
-    expect(r.err).toHaveLength(1);
-    expect(r.err[0]).toStartWith("PRESENCE_FAILED slack: cannot open the Slack client socket");
-    expect(r.err[0]).toContain("token=REDACTED");
-    expect(r.err[0]).not.toContain("xoxc-test-123");
+    const root = home({ slack: { userToken: "xoxc-test-123", cookie: "d-test" } });
+    expect(await runPresence(root, "slack", r.deps, r.stop.signal)).toBe(0);
+    const warned = r.out.filter((l) => l.startsWith("WARN"));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toStartWith("WARN connect failed: wss://wss-primary.example/");
+    expect(warned[0]).toContain("token=REDACTED");
+    expect(warned.join("\n")).not.toContain("xoxc-test-123");
   });
 
-  test("user mode needs userToken and cookie in secrets.json: the missing key is named", async () => {
-    const r = base();
-    await expect(runPresence(home({ slack: { botToken: "xoxb-test" } }), "slack", { user: true }, r.deps, r.stop.signal)).rejects.toThrow(`"slack": { "userToken": "..." }`);
-    await expect(runPresence(home(), "slack", {}, r.deps, r.stop.signal)).rejects.toThrow(`"slack": { "botToken": "..." }`);
+  test("the user token and cookie come from secrets.json: a missing key is named", async () => {
+    const r = rig();
+    await expect(runPresence(home({ slack: { botToken: "xoxb-test" } }), "slack", r.deps, r.stop.signal)).rejects.toThrow(`"slack": { "userToken": "..." }`);
+    await expect(runPresence(home({ slack: { userToken: "xoxc-test" } }), "slack", r.deps, r.stop.signal)).rejects.toThrow(`"slack": { "cookie": "..." }`);
     expect(r.calls).toHaveLength(0);
+  });
+});
+
+describe("seori presence discord", () => {
+  const root = () => home({ discord: { token: "dc-test-token" } });
+
+  test("identifies with status online and the configured token, heartbeats, and closes on stop", async () => {
+    const r = rig({
+      onOpen: (g) => {
+        hello(g, 30_000);
+        g.msg({ op: 0, s: 7, t: "READY", d: {} });
+        r.t.fire();
+        r.stop.abort();
+      },
+    });
+    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    const g = r.gateways[0]!;
+    const identify = g.sent[0] as { op: number; d: { token: string; presence: { status: string } } };
+    expect(identify.op).toBe(2);
+    expect(identify.d.token).toBe("dc-test-token");
+    expect(identify.d.presence.status).toBe("online");
+    expect(g.sent.slice(1)).toEqual([{ op: 1, d: 7 }]);
+    expect(g.closed).toBe(true);
+    expect(r.t.live.size).toBe(0);
+    expect(r.out).toEqual(["PRESENCE_READY discord"]);
+  });
+
+  test("a closed connection opens a new one that identifies again: backoff 5, 10 ... 300 s; a 61 s connection keeps it, a 10 min one resets it", async () => {
+    expect(STABLE_MS).toBe(10 * 60_000);
+    const r = rig({
+      onOpen: (g, i) => {
+        hello(g);
+        if (i === 10) r.clock += 61_000; // held just over a minute: not stable
+        if (i === 11) r.clock += 10 * 60_000; // held ten minutes: stable
+        if (i === 13) return r.stop.abort();
+        g.close(1006);
+      },
+    });
+    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(r.gateways).toHaveLength(14);
+    expect(r.gateways.every((g) => ops(g)[0] === 2)).toBe(true);
+    expect(reconnects(r.out)).toEqual([5, 10, 20, 40, 80, 160, 300, 300, 300, 300, 300, 5, 10]);
+    expect(r.slept).toEqual(reconnects(r.out).map((s) => s * 1000));
+    expect(r.out[1]).toBe("PRESENCE_RECONNECT discord code=1006 retry_in=5s");
+    expect(r.out.filter((l) => l === "PRESENCE_READY discord")).toHaveLength(1);
+  });
+
+  test("op 7 and op 9 end the connection and a new one identifies", async () => {
+    const r = rig({
+      onOpen: (g, i) => {
+        hello(g);
+        if (i === 0) g.msg({ op: 7, d: null });
+        else if (i === 1) g.msg({ op: 9, d: true });
+        else r.stop.abort();
+      },
+    });
+    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(r.gateways).toHaveLength(3);
+    expect(r.gateways[0]!.closed).toBe(true);
+    expect(r.gateways[1]!.closed).toBe(true);
+    expect(r.gateways.map((g) => ops(g)[0])).toEqual([2, 2, 2]);
+    expect(r.out.filter((l) => l.startsWith("PRESENCE_RECONNECT"))).toEqual([
+      "PRESENCE_RECONNECT discord code=op7 retry_in=5s",
+      "PRESENCE_RECONNECT discord code=op9 retry_in=10s",
+    ]);
+  });
+
+  test("close 4004 (authentication failed) exits 1 with a clear error and no new identify; 4014 too", async () => {
+    for (const code of [4004, 4014]) {
+      const r = rig({
+        onOpen: (g) => {
+          hello(g);
+          g.close(code);
+        },
+      });
+      expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(1);
+      expect(r.gateways).toHaveLength(1);
+      expect(r.slept).toEqual([]);
+      expect(r.out.some((l) => l.startsWith("PRESENCE_RECONNECT"))).toBe(false);
+      expect(r.err).toHaveLength(1);
+      expect(r.err[0]).toStartWith("PRESENCE_FAILED discord: Discord");
+      expect(r.err[0]).toContain(`close ${code}`);
+    }
+  });
+
+  test("identify budget: with 200 identifies in the last 24 h it prints PRESENCE_WAIT and opens no connection until the window passes", async () => {
+    expect(DISCORD_IDENTIFY_BUDGET).toBe(200);
+    const dir = root();
+    const start = 30 * IDENTIFY_WINDOW_MS;
+    const oldest = start - IDENTIFY_WINDOW_MS + 90_000; // leaves the window 90 s from now
+    mkdirSync(join(dir, "presence"), { recursive: true });
+    const state = join(dir, "presence", "discord-identify.json");
+    writeFileSync(state, JSON.stringify([oldest, ...Array.from({ length: 199 }, () => start - 1_000)]));
+    const r = rig({
+      onOpen: (g) => {
+        hello(g);
+        r.stop.abort();
+      },
+    });
+    r.clock = start;
+    r.onSleep = (ms) => void (r.clock += ms);
+    expect(await runPresence(dir, "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(r.out[0]).toBe("PRESENCE_WAIT discord identify budget spent; next identify in 90s");
+    expect(r.slept).toEqual([90_000]);
+    expect(r.gateways).toHaveLength(1);
+    expect(r.gateways[0]!.at).toBe(start + 90_000); // no connection (so no op 2) before the window passed
+    expect(ops(r.gateways[0]!)[0]).toBe(2);
+    const kept = JSON.parse(readFileSync(state, "utf8")) as number[];
+    expect(kept).toHaveLength(200); // the oldest left the window, this identify was added
+    expect(kept.at(-1)).toBe(start + 90_000);
+  });
+
+  test("no token in the config refuses with the secrets.json key named", async () => {
+    const r = rig();
+    await expect(runPresence(home(), "discord", r.deps, r.stop.signal)).rejects.toThrow(`"discord": { "token": "..." }`);
+    expect(r.gateways).toHaveLength(0);
   });
 });
 
@@ -381,6 +406,7 @@ test("seori presence: an unknown platform and a missing token are refusals (exit
     const missing = await refused(["presence", "discord"]);
     expect(missing).toStartWith("Refusal: no discord token");
     expect(missing).toContain(`"discord": { "token": "..." }`);
+    expect(await refused(["presence", "slack"])).toStartWith("Refusal: no slack userToken");
   } finally {
     console.error = err;
   }
