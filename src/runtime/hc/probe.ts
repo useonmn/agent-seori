@@ -1,12 +1,8 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import type { Exec } from "../exec.ts";
 import { interactiveShellInFront } from "../foreground.ts";
-import { omoScreenIdle } from "../herdr/client.ts";
 import type { AgentStatus, ForegroundProcess, Probe } from "../types.ts";
 import { hcCall, isKind } from "./exec.ts";
-
-/** Recent lines read to look for omo's idle input box (the same window the herdr runtime reads). */
-const SCREEN_LINES = 30;
 
 /** hc's OSC 7501 words seori has a status for; `error` and any other word read as `unknown` (nothing is typed). */
 const REPORTED: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done"]);
@@ -36,7 +32,7 @@ export function statusWord(value: unknown): AgentStatus | undefined {
 /**
  * One `hc get` record as a Probe. The status is the program's own OSC 7501 word; a program that never reported
  * (`status: null`, a plain shell is "silent") is a `shell` when an interactive shell leads the foreground, else
- * `unknown`, never idle. An unreadable foreground counts as a shell in front. The screen check is applied by `probe`.
+ * `unknown`, never idle. An unreadable foreground counts as a shell in front.
  */
 export function parseProbe(terminal: unknown): Probe {
   const t = rec(terminal) ?? {};
@@ -60,41 +56,12 @@ export function parseProbe(terminal: unknown): Probe {
   };
 }
 
-/** `hc get` as a Probe with no screen check; a terminal hc no longer knows is `gone`, any other failure throws. */
-export async function getProbe(exec: Exec, id: string): Promise<Probe> {
+/** `hc get` as a Probe; a terminal hc no longer knows is `gone`, any other failure throws. */
+export async function probe(exec: Exec, id: string): Promise<Probe> {
   try {
     return parseProbe(await hcCall(exec, ["get", id]));
   } catch (e) {
     if (isKind(e, "not_found")) return { status: "gone", shellInFront: false };
     throw e;
   }
-}
-
-/** Believe the screen only when it positively shows omo's idle input; a failed read is doubt and stays working. */
-async function screenShowsIdle(exec: Exec, id: string): Promise<boolean> {
-  try {
-    const result = await hcCall(exec, ["read", id, "--lines", String(SCREEN_LINES)]);
-    return typeof result["text"] === "string" && omoScreenIdle(result["text"]);
-  } catch {
-    return false;
-  }
-}
-
-/** A probe plus hc's own status word, which `deliver` needs for its compare-and-send gate. */
-export type HcProbe = { readonly probe: Probe; readonly word: AgentStatus };
-
-/**
- * `hc get`, then the screen check: omo reports `working` over OSC 7501 for as long as any monitor or background
- * session is live, even between turns, so a `working` word with no shell in front reads `idle` when the screen
- * positively shows the idle input (a lone `❯` between two rules).
- */
-export async function probeWithWord(exec: Exec, id: string): Promise<HcProbe> {
-  const parsed = await getProbe(exec, id);
-  const word = parsed.status;
-  if (word !== "working" || parsed.shellInFront || !(await screenShowsIdle(exec, id))) return { probe: parsed, word };
-  return { probe: { ...parsed, status: "idle" }, word };
-}
-
-export async function probe(exec: Exec, id: string): Promise<Probe> {
-  return (await probeWithWord(exec, id)).probe;
 }

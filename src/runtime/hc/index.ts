@@ -18,7 +18,7 @@ import type {
 } from "../types.ts";
 import { deliver, keys, read, typeIntoShell } from "./deliver.ts";
 import { type Env, envExec } from "./exec.ts";
-import { getProbe, probe } from "./probe.ts";
+import { probe } from "./probe.ts";
 import { close, create, groups, list, selfRef, start } from "./sessions.ts";
 
 export { HcError } from "./exec.ts";
@@ -26,7 +26,7 @@ export { HcError } from "./exec.ts";
 export type HcRuntimeOptions = {
   /** The env hc runs with (it names the core: HC_SESSION, XDG_RUNTIME_DIR, HC_TERMINAL_SOCKET) and SHELL/HC_TERMINAL_ID. */
   readonly env?: Env;
-  /** The agent command startAgent types (default `omo`, the agent hc reports a status for). */
+  /** The agent command startAgent types (default `omp`, the agent hc reports a status for). */
   readonly agentCommand?: string;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
@@ -51,7 +51,7 @@ export class HcRuntime implements SessionRuntime {
   constructor(exec?: Exec, options: HcRuntimeOptions = {}) {
     this.env = options.env ?? process.env;
     this.exec = exec ?? envExec(this.env);
-    this.agentCommand = options.agentCommand ?? "omo";
+    this.agentCommand = options.agentCommand ?? "omp";
     this.sleep = options.sleep ?? ((ms) => Bun.sleep(ms));
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((line) => void process.stderr.write(`${line}\n`));
@@ -112,9 +112,9 @@ export class HcRuntime implements SessionRuntime {
     return close(this.exec, ref.id, this.sleep, this.log);
   }
 
-  /** `hc get` alone: the reported word, no screen check (probe adds it). */
+  /** `hc get` alone: the reported word. */
   async status(ref: SessionRef): Promise<AgentStatus> {
-    return (await getProbe(this.exec, ref.id)).status;
+    return (await probe(this.exec, ref.id)).status;
   }
 
   groups(): Promise<readonly GroupInfo[]> {
@@ -138,7 +138,7 @@ export class HcRuntime implements SessionRuntime {
     }
   }
 
-  /** hc reports omo's status itself (OSC 7501); there is nothing to install. */
+  /** hc reports omp's status itself (OSC 7501); there is nothing to install. */
   async agentIntegration(): Promise<boolean> {
     return true;
   }

@@ -35,7 +35,7 @@ export type FakeKnobs = {
   getError?: string;
   /** `read` answers this error kind for every terminal. */
   readError?: string;
-  /** A send into a silent terminal makes omo report idle in front (an agent start). */
+  /** A send into a silent terminal makes omp report idle in front (an agent start). */
   agentReports?: boolean;
 };
 
@@ -164,8 +164,8 @@ export function answer(s: FakeState, args: string[]): Out {
       s.sent.push({ id, text });
       const before = { started: t.status === null ? null : true, status: t.status?.state ?? null, turn: t.turn };
       if (k.agentReports && t.status === null) {
-        t.status = { app: "omo", state: "idle" };
-        t.foreground = { name: "omo", argv: ["/opt/omo/bin/omo"], pid: 7777 };
+        t.status = { app: "omp", state: "idle" };
+        t.foreground = { name: "omp", argv: ["/opt/omp/bin/omp"], pid: 7777 };
       }
       return ok(k.started === undefined ? before : { ...before, started: k.started });
     }

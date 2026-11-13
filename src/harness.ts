@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { cpus, freemem, loadavg, totalmem } from "node:os";
+import { join, resolve } from "node:path";
+import { agentCommand, selectAgent, type AgentProfile } from "./agent/profile.ts";
+import { HcRuntime } from "./runtime/hc/index.ts";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Outbox } from "./outbox.ts";
 import {
@@ -43,7 +45,9 @@ export type Deps = {
   readonly host: () => HostLoad;
   /** Waits between the reads that confirm a lane's kickoff took (tests advance a fake clock instead). */
   readonly sleep: (ms: number) => Promise<void>;
-  /** SEORI_MODEL: passed as `--model` to every omp seori starts (lead, duty, lanes) and the reviewer's default. */
+  /** The agent seori starts in every pane and runs as the reviewer (src/agent/profile.ts: omp, the only agent). */
+  readonly agent: AgentProfile;
+  /** SEORI_MODEL: passed as `--model` to every agent seori starts (lead, duty, lanes) and the reviewer's default. */
   readonly model?: string;
   /** Sends one duty alert to the human through a configured messenger. Throws like MessengerAdapter.send. */
   readonly notify: (config: MessengerConfig, target: SendTarget, text: string) => Promise<void>;
@@ -51,12 +55,22 @@ export type Deps = {
 
 export const defaultDeps = (): Deps => {
   const store = new Store();
+  // Selected on first use, like the runtime, so a bad SEORI_AGENT or config.json fails the command that needs an agent
+  // with its own message, not every command.
+  let agent: AgentProfile | undefined;
+  const profile = (): AgentProfile => (agent ??= selectAgent(store.root).profile);
+  const agentCmd = (): string => agentCommand(profile());
   return {
     store,
-    runtimes: defaultRuntimes(undefined, undefined, choiceFor(store.root)),
+    runtimes: defaultRuntimes(undefined, () => new HcRuntime(undefined, { agentCommand: agentCmd() }), choiceFor(store.root)),
     exec: spawnExec,
     now: Date.now,
-    agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
+    get agent() {
+      return profile();
+    },
+    get agentCmd() {
+      return agentCmd();
+    },
     seoriCmd: process.env["SEORI_CMD"] ?? defaultSeoriCmd(store.root, process.env),
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
     sleep: (ms) => Bun.sleep(ms),
@@ -77,44 +91,8 @@ export function paneEnv(home: string, env: Record<string, string | undefined> = 
   return Object.fromEntries(seoriVars(home, env));
 }
 
-/**
- * omp settings for every agent seori starts in a pane (lead, duty, lanes): the setup wizard off. omp opens its onboarding
- * wizard whenever its stored setup version is older than the installed omp's, even with a provider logged in, and an
- * agent pane has nobody to click through it: the agent never starts and text seori delivers lands in the wizard.
- */
-export const AGENT_OMP_CONFIG = "startup:\n  setupWizard: false\n";
-
-/** The home seori uses when SEORI_HOME is unset: the first instance on a PC. */
-export const DEFAULT_HOME = join(homedir(), ".seori");
-
-const sameDir = (a: string, b: string): boolean => resolve(a) === resolve(b);
-
-/** Where the agents of a home other than DEFAULT_HOME keep their omp memory (mnemopi's SQLite DB and its banks). */
-export const ompMemoryDb = (root: string): string => join(root, "omp", "memories", "mnemopi.db");
-
-/**
- * agent-omp.yml for a home. omp's mnemopi memory is one DB for every omp on the PC (its banks sit next to that DB), so
- * two seori instances would recall each other's memories. Every home but DEFAULT_HOME points `mnemopi.dbPath` into
- * itself; DEFAULT_HOME keeps omp's own DB, so the first instance keeps the memory it has. JSON quoting is valid YAML.
- */
-export function agentOmpConfig(root: string, defaultHome: string = DEFAULT_HOME): string {
-  if (sameDir(root, defaultHome)) return AGENT_OMP_CONFIG;
-  return `${AGENT_OMP_CONFIG}mnemopi:\n  dbPath: ${JSON.stringify(ompMemoryDb(root))}\n`;
-}
-
-/**
- * Writes `$SEORI_HOME/prompts/agent-omp.yml` (agentOmpConfig) and returns the PI_CONFIG_FILES value that loads it after
- * the files already in `inherited`, then `extra` (the lead's own file). seori's own files in `inherited` are dropped: a
- * lane started from the lead's shell inherits the lead's value and must not load the lead's settings.
- */
-export function agentOmpConfigFiles(root: string, extra: readonly string[] = [], inherited = process.env["PI_CONFIG_FILES"]): string {
-  const dir = join(root, "prompts");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, "agent-omp.yml");
-  writeFileSync(path, agentOmpConfig(root));
-  const kept = (inherited ?? "").split(delimiter).filter((file) => file && dirname(file) !== dir);
-  return [...kept, path, ...extra].join(delimiter);
-}
+// The omp profile's settings files (agent-omp.yml, its mnemopi DB per home) live in src/agent/profile.ts.
+export { AGENT_OMP_CONFIG, agentOmpConfig, agentOmpConfigFiles, DEFAULT_HOME, ompMemoryDb } from "./agent/profile.ts";
 
 /**
  * How agents and loop panes call seori. The command carries seoriVars as an env prefix, so it also works in a shell
@@ -134,7 +112,7 @@ export async function requireOmpIntegration(d: Deps): Promise<void> {
   if (!(await d.runtimes.default.agentIntegration())) throw new Refusal(INTEGRATION_MISSING);
 }
 
-/** Starts omp in a pane via `herdr agent start`, named after the label and pane so names stay unique across live agents. */
+/** Starts the agent in a pane (on herdr via `herdr agent start`, named after the label and pane so names stay unique across live agents). */
 export async function startAgent(d: Deps, label: string, ref: SessionRef, args: readonly string[] = []): Promise<void> {
   await d.runtimes.for(ref).startAgent(ref, agentName(label, ref.id), [...args, ...(d.model ? ["--model", d.model] : [])]);
 }
@@ -181,8 +159,8 @@ const prompt = (name: string, vars: Record<string, string>): string =>
 const READY_TO_READ: readonly AgentStatus[] = ["idle", "done"];
 
 /**
- * A lane in omp goal mode stays `working` until its goal ends (omp continues the goal right after every turn), so it
- * also reads while working: omp takes a prompt into a working agent as a steer and loses nothing. Never while
+ * A lane in goal mode stays `working` until its goal ends (the agent continues the goal right after every turn), so it
+ * also reads while working: the agent takes a prompt into a working session as a steer and loses nothing. Never while
  * `blocked` (a dialog is open). Lead and duty panes wait for idle, so their messages arrive batched.
  */
 function readyToRead(d: Deps, to: SessionRef, status: AgentStatus): boolean {
@@ -395,7 +373,7 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
 // ---------- lanes ----------
 
 /**
- * Opens a lane: a herdr tab running omp in goal mode on the brief. `done` is the lane's Done line (src/signals.ts),
+ * Opens a lane: a session running the agent in goal mode on the brief. `done` is the lane's Done line (src/signals.ts),
  * checked before anything opens; with it, seori closes the lane on its own after READY (src/done-flow.ts). `thread`
  * is the lead channel id progress posts thread under; `ceilings` override the configured supervision defaults.
  */
@@ -427,22 +405,19 @@ export async function startLane(
   await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
   const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
-  const env = { SEORI_LANE: key, ...paneEnv(d.store.root), PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) };
+  const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
   const rt = d.runtimes.default;
   const group = workspace ? workspace : await rt.createGroup(loadConfig(d.store.root).name, cwd);
   const ref = await rt.create({ name: key, cwd, env, role: "lane", container: "tab", group });
   try {
     await startAgent(d, key, ref);
     await agentSessionReported(d, ref);
-    const kickoff =
-      `/goal Read your brief at ${briefPath} and execute it. Your lane key is ${key}. ` +
-      `The work is finished only when the brief's exit condition holds and you have sent seori ready.`;
-    if (!(await deliverOrThrow(rt, ref, kickoff))) throw new Error("omp was not in front of the pane to take the kickoff");
+    if (!(await deliverOrThrow(rt, ref, d.agent.kickoff(briefPath, key)))) throw new Error(`${d.agent.kind} was not in front of the pane to take the kickoff`);
     if (!(await kickoffTook(d, ref))) {
-      // The kickoff can sit typed in omp's input with its Enter lost (omp still loading under load): press only Enter.
+      // The kickoff can sit typed in the agent's input with its Enter lost (still loading under load): press only Enter.
       await rt.submitTyped(ref);
       if (!(await kickoffTook(d, ref))) {
-        process.stderr.write(`seori: lane ${key}: omp in ${refText(ref)} has not started on the kickoff; check that pane\n`);
+        process.stderr.write(`seori: lane ${key}: ${d.agent.kind} in ${refText(ref)} has not started on the kickoff; check that pane\n`);
       }
     }
   } catch (e) {
@@ -989,11 +964,7 @@ export async function review(d: Deps, prId: string, model: string | undefined = 
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
   const text = prompt("review.md", { pr: pr.id, repo: pr.repo, number: String(pr.number), sha });
-  const argv = [
-    "-p", "--no-session", "--mode", "json", "--no-extensions", "--no-skills", "--no-rules", "--no-context-files",
-    "--approval-mode", "yolo", ...(model ? ["--model", model] : []), text,
-  ];
-  const res = await d.exec(d.agentCmd, argv);
+  const res = await d.exec(d.agentCmd, d.agent.reviewArgs(text, model));
   if (res.code === 3) throw new Error(`reviewer hit the cost cap: ${res.stderr.trim()}`);
   const answer = reviewerAnswer(res.stdout);
   if (answer?.stopReason === "aborted") throw new Error("reviewer stopped before finishing (deadline)");

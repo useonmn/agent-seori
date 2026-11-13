@@ -6,7 +6,7 @@ import { rig, T1, terminal } from "./helpers/hc-rig.ts";
 describe("typed text, shells, keys, read", () => {
   test("submitTyped is always changed and touches nothing (hc sends paste+Enter atomically)", async () => {
     const r = rig({ t1: terminal() });
-    expect(await r.rt.submitTyped(T1, { agent: "omo", pgid: 4242 })).toBe("changed");
+    expect(await r.rt.submitTyped(T1, { agent: "omp", pgid: 4242 })).toBe("changed");
     expect(r.calls()).toEqual([]);
   });
 
@@ -73,19 +73,19 @@ describe("close, list, groups, self", () => {
     const r = rig({
       t1: terminal({ labels: { "seori.group": "g1" }, argv: ["env", "bash"] }),
       t2: terminal({ labels: { "seori.group": "g2" } }),
-      t3: terminal({ labels: { "seori.group": "g1" }, argv: ["omo"] }),
+      t3: terminal({ labels: { "seori.group": "g1" }, argv: ["omp"] }),
       t4: terminal({ labels: { "seori.group": "g1" }, state: "finished" }),
     });
     expect(await r.rt.list({ group: "g1" })).toEqual([
       { ref: { runtime: "hc", id: "t1", group: "g1" }, cwd: "/w", agent: "env" },
-      { ref: { runtime: "hc", id: "t3", group: "g1" }, cwd: "/w", agent: "omo" },
+      { ref: { runtime: "hc", id: "t3", group: "g1" }, cwd: "/w", agent: "omp" },
     ]);
     expect(r.calls()).toEqual([["ls", "--label", "seori.group=g1"]]);
   });
 
   test("list without a group lists every live terminal", async () => {
     const r = rig({ t1: terminal({ name: "lead" }), t2: terminal({ state: "finished" }) });
-    expect(await r.rt.list()).toEqual([{ ref: { runtime: "hc", id: "t1" }, name: "lead", cwd: "/w", agent: "omo" }]);
+    expect(await r.rt.list()).toEqual([{ ref: { runtime: "hc", id: "t1" }, name: "lead", cwd: "/w", agent: "omp" }]);
     expect(r.calls()).toEqual([["ls"]]);
   });
 
@@ -124,7 +124,7 @@ describe("startAgent", () => {
     const r = rig({ t1: terminal({ status: null, foreground: { name: "bash", argv: ["bash"], pid: 3 } }) }, {}, { agentReports: true });
     await r.rt.startAgent(T1, "lane-k", ["--append-system-prompt", "it's me"]);
     expect(r.calls()).toEqual([
-      ["send", "t1", "--", `'omo' '--append-system-prompt' 'it'\\''s me'`],
+      ["send", "t1", "--", `'omp' '--append-system-prompt' 'it'\\''s me'`],
       ["get", "t1"],
     ]);
   });

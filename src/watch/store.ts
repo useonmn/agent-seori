@@ -63,10 +63,10 @@ export type Watch = {
 /** A non-persistent watch lives 2 hours unless --timeout says otherwise (at most 24 hours). */
 export const DEFAULT_TIMEOUT_MS = 2 * 3_600_000;
 export const MAX_TIMEOUT_MS = 24 * 3_600_000;
-/** Like omo's standing watches: persistent ones live 7 days and at most 5 run per owner. */
+/** Persistent watches live 7 days, at most 5 per owner. */
 export const PERSISTENT_TTL_MS = 7 * 24 * 3_600_000;
 export const MAX_PERSISTENT_PER_OWNER = 5;
-/** Wake budget, like omo's: this many deliveries in this window, then the watch is muted until rearmed. */
+/** Wake budget: this many deliveries in this window, then the watch is muted until rearmed. */
 export const WAKE_BUDGET = 6;
 export const WAKE_WINDOW_MS = 3_600_000;
 /** A crashing command is restarted this many times (with backoff) before the watch is stopped. */

@@ -74,15 +74,15 @@ describe("create / start / createGroup", () => {
 
   test("start sends the command into the shell with no status gate", async () => {
     const r = rig({ t1: terminal({ status: null }) });
-    await r.rt.start(T1, "omo --x 'a b'");
-    expect(r.calls()).toEqual([["send", "t1", "--", "omo --x 'a b'"]]);
+    await r.rt.start(T1, "omp --x 'a b'");
+    expect(r.calls()).toEqual([["send", "t1", "--", "omp --x 'a b'"]]);
   });
 
   test("openSession is create then start", async () => {
     const r = rig({}, SH);
-    expect(await openSession(r.rt, lane, "omo")).toEqual({ runtime: "hc", id: "t1", group: "g1" });
+    expect(await openSession(r.rt, lane, "omp")).toEqual({ runtime: "hc", id: "t1", group: "g1" });
     expect(r.calls().map((c) => c[0])).toEqual(["ls", "run", "send"]);
-    expect(r.calls()[2]).toEqual(["send", "t1", "--", "omo"]);
+    expect(r.calls()[2]).toEqual(["send", "t1", "--", "omp"]);
   });
 
   test("createGroup returns the label and makes no call", async () => {
@@ -143,12 +143,12 @@ describe("probe", () => {
     [
       "idle",
       terminal(),
-      { status: "idle", agent: "omo", pgid: 4242, rootPid: 900, turn: 3, title: "omo lane", cwd: "/w", shellInFront: false },
+      { status: "idle", agent: "omp", pgid: 4242, rootPid: 900, turn: 3, title: "omp lane", cwd: "/w", shellInFront: false },
     ],
-    ["working", terminal({ status: { state: "working", app: "omo" } }), { status: "working", agent: "omo" }],
-    ["blocked", terminal({ status: { state: "blocked", app: "omo" } }), { status: "blocked" }],
-    ["done", terminal({ status: { state: "done", app: "omo" } }), { status: "done" }],
-    ["error (no seori word for it)", terminal({ status: { state: "error", app: "omo" } }), { status: "unknown" }],
+    ["working", terminal({ status: { state: "working", app: "omp" } }), { status: "working", agent: "omp" }],
+    ["blocked", terminal({ status: { state: "blocked", app: "omp" } }), { status: "blocked" }],
+    ["done", terminal({ status: { state: "done", app: "omp" } }), { status: "done" }],
+    ["error (no seori word for it)", terminal({ status: { state: "error", app: "omp" } }), { status: "unknown" }],
     [
       "silent shell",
       terminal({ status: null, foreground: { name: "bash", argv: ["bash"], pid: 7 } }),
@@ -161,7 +161,7 @@ describe("probe", () => {
     ],
     ["no foreground reported", terminal({ status: null, foreground: null }), { status: "shell", shellInFront: true }],
     ["finished", terminal({ state: "finished" }), { status: "gone" }],
-    ["unknown word", terminal({ status: { state: "thinking" } }), { status: "unknown", agent: "omo" }],
+    ["unknown word", terminal({ status: { state: "thinking" } }), { status: "unknown", agent: "omp" }],
   ] as const)("%s", async (_, t, want) => {
     const r = rig({ t1: t });
     expect(await r.rt.probe(T1)).toMatchObject(want);
@@ -181,7 +181,7 @@ describe("probe", () => {
   });
 
   test("status is one get, no screen read", async () => {
-    const r = rig({ t1: terminal({ status: { state: "working", app: "omo" }, screen: "x" }) });
+    const r = rig({ t1: terminal({ status: { state: "working", app: "omp" }, screen: "x" }) });
     expect(await r.rt.status(T1)).toBe("working");
     expect(r.calls()).toEqual([["get", "t1"]]);
   });
@@ -213,13 +213,13 @@ describe("probe", () => {
     });
   });
 
-  test("parseProbe reads omo's status object {app,state}", () => {
-    const omo = {
+  test("parseProbe reads omp's status object {app,state}", () => {
+    const omp = {
       state: "live",
-      status: { app: "omo", state: "idle" },
-      foreground: { argv: ["/opt/omo/bin/omo"], name: "omo", pid: 9 },
+      status: { app: "omp", state: "idle" },
+      foreground: { argv: ["/opt/omp/bin/omp"], name: "omp", pid: 9 },
       turn: 1,
     };
-    expect(parseProbe(omo)).toMatchObject({ status: "idle", agent: "omo", turn: 1, shellInFront: false });
+    expect(parseProbe(omp)).toMatchObject({ status: "idle", agent: "omp", turn: 1, shellInFront: false });
   });
 });

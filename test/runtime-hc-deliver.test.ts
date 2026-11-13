@@ -1,17 +1,11 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { HcRuntime } from "../src/runtime/hc/index.ts";
 import type { DeliverOutcome } from "../src/runtime/types.ts";
 import type { FakeKnobs } from "./helpers/fake-hc.ts";
 import { rig, T1, terminal } from "./helpers/hc-rig.ts";
 
 const sends = (calls: readonly string[][]) => calls.filter((c) => c[0] === "send");
-const reads = (calls: readonly string[][]) => calls.filter((c) => c[0] === "read");
-const screen = (name: string): string => readFileSync(join(import.meta.dir, "fixtures", "screens", `${name}.txt`), "utf8");
-const omoWorking = (name?: string) =>
-  terminal({ status: { state: "working", app: "omo" }, ...(name === undefined ? {} : { screen: screen(name) }) });
 
 describe("deliver", () => {
   test("idle: send --if idle once, delivered with hc's turn and started", async () => {
@@ -22,7 +16,7 @@ describe("deliver", () => {
   });
 
   test("done: a plain send (the agent finished its turn and waits)", async () => {
-    const r = rig({ t1: terminal({ status: { state: "done", app: "omo" } }) });
+    const r = rig({ t1: terminal({ status: { state: "done", app: "omp" } }) });
     expect((await r.rt.deliver(T1, "next")).kind).toBe("delivered");
     expect(sends(r.calls())).toEqual([["send", "t1", "--", "next"]]);
   });
@@ -51,7 +45,7 @@ describe("deliver", () => {
   });
 
   test("working under the default when=idle: hc refuses with status_mismatch (rc 10), nothing typed, not-ready", async () => {
-    const r = rig({ t1: terminal({ status: { state: "working", app: "omo" } }) });
+    const r = rig({ t1: terminal({ status: { state: "working", app: "omp" } }) });
     expect(await r.rt.deliver(T1, "x")).toEqual({ kind: "not-ready", status: "working" });
     expect(sends(r.calls())).toEqual([["send", "t1", "--if", "idle", "--", "x"]]);
     expect(r.sent()).toEqual([]);
@@ -64,19 +58,19 @@ describe("deliver", () => {
   });
 
   test("when=working sends --if working", async () => {
-    const r = rig({ t1: terminal({ status: { state: "working", app: "omo" }, screen: screen("omo-turn") }) });
+    const r = rig({ t1: terminal({ status: { state: "working", app: "omp" } }) });
     expect((await r.rt.deliver(T1, "/goal pause", { when: "working" })).kind).toBe("delivered");
     expect(sends(r.calls())).toEqual([["send", "t1", "--if", "working", "--", "/goal pause"]]);
   });
 
   test("when=any sends with no status gate", async () => {
-    const r = rig({ t1: terminal({ status: { state: "working", app: "omo" } }) });
+    const r = rig({ t1: terminal({ status: { state: "working", app: "omp" } }) });
     expect((await r.rt.deliver(T1, "x", { when: "any" })).kind).toBe("delivered");
     expect(sends(r.calls())).toEqual([["send", "t1", "--", "x"]]);
   });
 
   test("force types into a blocked agent with --force", async () => {
-    const r = rig({ t1: terminal({ status: { state: "blocked", app: "omo" } }) });
+    const r = rig({ t1: terminal({ status: { state: "blocked", app: "omp" } }) });
     expect((await r.rt.deliver(T1, "y", { when: "any", force: true })).kind).toBe("delivered");
     expect(sends(r.calls())).toEqual([["send", "t1", "--force", "--", "y"]]);
   });
@@ -111,7 +105,7 @@ describe("deliver", () => {
   });
 
   test("a runner that throws mid-send is ambiguous and never carries the text", async () => {
-    const get = { state: "live", status: { app: "omo", state: "idle" }, foreground: { name: "omo", argv: ["omo"], pid: 1 } };
+    const get = { state: "live", status: { app: "omp", state: "idle" }, foreground: { name: "omp", argv: ["omp"], pid: 1 } };
     const rt = new HcRuntime(async (_cmd, argv) => {
       if (argv[1] === "send") throw new Error("broken pipe while sending secret text");
       return { code: 0, stdout: JSON.stringify(get), stderr: "" };
@@ -119,71 +113,5 @@ describe("deliver", () => {
     const out = await rt.deliver(T1, "secret text");
     expect(out.kind).toBe("ambiguous");
     expect(JSON.stringify(out)).not.toContain("secret text");
-  });
-});
-
-describe("probe: the screen check when omo says working", () => {
-  test("working with omo's idle input on screen (live monitors between turns) probes idle", async () => {
-    const r = rig({ t1: omoWorking("omo-idle-live-monitors") });
-    expect((await r.rt.probe(T1)).status).toBe("idle");
-    expect(reads(r.calls())).toEqual([["read", "t1", "--lines", "30"]]);
-  });
-
-  test.each(["omo-turn", "omo-dialog", "omo-draft"])("working with %s on screen stays working", async (name) => {
-    const r = rig({ t1: omoWorking(name) });
-    expect((await r.rt.probe(T1)).status).toBe("working");
-  });
-
-  test("a failed screen read stays working (doubt never reads as idle)", async () => {
-    const r = rig({ t1: omoWorking("omo-idle-live-monitors") }, {}, { readError: "unavailable" });
-    expect((await r.rt.probe(T1)).status).toBe("working");
-  });
-
-  test("an empty screen stays working", async () => {
-    const r = rig({ t1: omoWorking() });
-    expect((await r.rt.probe(T1)).status).toBe("working");
-  });
-
-  test("any word other than working is taken as reported, with no screen read", async () => {
-    for (const state of ["idle", "done", "blocked"] as const) {
-      const r = rig({ t1: terminal({ status: { state, app: "omo" }, screen: screen("omo-turn") }) });
-      expect((await r.rt.probe(T1)).status).toBe(state);
-      expect(reads(r.calls())).toEqual([]);
-    }
-  });
-
-  test("a shell in front is never read as idle, whatever the screen shows", async () => {
-    const r = rig({
-      t1: terminal({
-        status: { state: "working", app: "omo" },
-        foreground: { name: "zsh", argv: ["-zsh"], pid: 1 },
-        screen: screen("omo-idle-live-monitors"),
-      }),
-    });
-    const p = await r.rt.probe(T1);
-    expect(p.status).toBe("working");
-    expect(p.shellInFront).toBe(true);
-    expect(reads(r.calls())).toEqual([]);
-  });
-});
-
-describe("deliver: idle read off the screen while hc still says working", () => {
-  test("sends with --if working, so the compare-and-send matches hc's own word, and lands", async () => {
-    const r = rig({ t1: omoWorking("omo-idle-live-monitors") });
-    expect((await r.rt.deliver(T1, "[READY] lane")).kind).toBe("delivered");
-    expect(sends(r.calls())).toEqual([["send", "t1", "--if", "working", "--", "[READY] lane"]]);
-  });
-
-  test("hc refusing the send (omo moved between probe and send) stays not-ready and types nothing", async () => {
-    const r = rig({ t1: omoWorking("omo-idle-live-monitors") }, {}, { sendError: "status_mismatch" });
-    expect((await r.rt.deliver(T1, "secret text")).kind).toBe("not-ready");
-    expect(r.sent()).toEqual([]);
-  });
-
-  test("a turn on screen keeps the --if idle gate, which hc refuses while working", async () => {
-    const r = rig({ t1: omoWorking("omo-turn") });
-    expect(await r.rt.deliver(T1, "x")).toEqual({ kind: "not-ready", status: "working" });
-    expect(sends(r.calls())).toEqual([["send", "t1", "--if", "idle", "--", "x"]]);
-    expect(r.sent()).toEqual([]);
   });
 });

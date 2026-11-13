@@ -15,7 +15,7 @@ import type {
 } from "../types.ts";
 import { Herdr, paneStatus, type PaneRef } from "./client.ts";
 
-export { fallbackLine, Herdr, HerdrError, omoScreenIdle } from "./client.ts";
+export { fallbackLine, Herdr, HerdrError } from "./client.ts";
 
 export type Env = Readonly<Record<string, string | undefined>>;
 

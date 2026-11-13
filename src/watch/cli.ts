@@ -5,7 +5,7 @@ import { Store } from "../store.ts";
 import { sameOwner, type Watch, type WatchOwner, type WatchSource, WAKE_BUDGET, WAKE_WINDOW_MS, WatchStore } from "./store.ts";
 
 // `seori watch ...`: arms, lists, stops and rearms the watches the daemon's engine runs. Any agent may arm one (the lead
-// or a lane, like omo's monitor); the store enforces the limits, so this file only turns arguments into store calls.
+// or a lane); the store enforces the limits, so this file only turns arguments into store calls.
 
 export const WATCH_USAGE = `  seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                    | --pane PANE --status idle|working|blocked|gone)

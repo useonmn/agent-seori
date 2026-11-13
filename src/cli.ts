@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  agentOmpConfigFiles, defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
+  defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, requireOmpIntegration, review, send, sendToShell,
   startAgent, startLane, ROLES, type Deps, type SendResult,
 } from "./harness.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
@@ -102,7 +102,8 @@ QUEUED (exit 0) means it waits in the pane's inbox.
 msg send exits 3 with HELD when the messenger may or may not have the reply: check the chat, then pass --again.
 msg flush prints SENT, HELD or FAILED per draft; it exits 1 if a draft failed (it stays open), else 3 if one is HELD.
 A second reply to an id is refused (exit 2) unless --again is given.
-SEORI_MODEL=M passes --model M to every omp seori starts (lead, duty, lanes) and is the reviewer's default model.
+SEORI_MODEL=M passes --model M to every agent seori starts (lead, duty, lanes) and is the reviewer's default model.
+seori runs omp only: SEORI_AGENT or "agent" in $SEORI_HOME/config.json naming anything else is refused (exit 2); SEORI_AGENT_CMD overrides the omp command and must name omp (its basename is omp).
 watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), else for the lead; refusals exit 2.
 watch stop, rearm and log take a name of that same owner's live watches (--for picks another owner) or any watch's id.
 up and start need herdr's omp integration (herdr integration install omp).`;
@@ -212,19 +213,6 @@ async function runDaemonLoop(root: string): Promise<number> {
 }
 
 /**
- * Writes `$SEORI_HOME/prompts/lead-omp.yml` (omp settings for the lead only) and returns the PI_CONFIG_FILES value
- * that loads it after every agent's settings (agentOmpConfigFiles), all after a PI_CONFIG_FILES already in the
- * environment, joined with the path delimiter (omp splits on it), so it overlays those too.
- */
-function leadOmpConfig(root: string): string {
-  const dir = join(root, "prompts");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, "lead-omp.yml");
-  writeFileSync(path, "advisor:\n  syncBacklog: strict\n");
-  return agentOmpConfigFiles(root, [path]);
-}
-
-/**
  * What `seori up` finds before it opens anything, so an autostart script can call it every logon. This home is up when
  * one of its loops or its daemon is alive, or its lead pane is: then the ALREADY UP line is returned and nothing opens.
  * Otherwise a workspace that already has this home's name belongs to someone else (another home with the same name, or
@@ -265,8 +253,8 @@ async function up(d: Deps, cwd: string): Promise<void> {
   // The extension reads its home and how to run seori from the environment of the shell omp starts in. The lead's omp
   // also gets PI_CONFIG_FILES with advisor.syncBacklog: strict, so the advisor's agent-end review finishes before
   // agent_end and its reply drafts are released only after the review (src/release.ts). Only the lead gets that file;
-  // the lead, duty and lanes all get agent-omp.yml (no setup wizard in an agent pane).
-  const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, PI_CONFIG_FILES: leadOmpConfig(d.store.root) };
+  // the lead, duty and lanes all get agent-omp.yml (no setup wizard in an agent pane). See src/agent/profile.ts.
+  const leadEnv = { SEORI_HOME: d.store.root, SEORI_CMD: d.seoriCmd, ...env, ...d.agent.leadEnv(d.store.root) };
   const rt = d.runtimes.default;
   const below = (near: SessionRef, role: "duty-loop" | "hourly-loop" | "daemon", paneEnv: Record<string, string>) =>
     rt.create({ name: role, cwd, env: paneEnv, role, container: "split-below", near });
@@ -275,7 +263,7 @@ async function up(d: Deps, cwd: string): Promise<void> {
   await startAgent(d, "lead", leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", leadRef);
   const dutyRef = await rt.create({
-    name: "duty", cwd, env: { ...env, PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) }, role: "duty", container: "tab", group: lead.workspaceId,
+    name: "duty", cwd, env: { ...env, ...d.agent.agentEnv(d.store.root) }, role: "duty", container: "tab", group: lead.workspaceId,
   });
   const duty = { paneId: refText(dutyRef) };
   await startAgent(d, "duty", dutyRef, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
@@ -581,6 +569,10 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     console.log(USAGE);
     return 0;
   }
+  // seori runs omp only: a SEORI_AGENT or config.json "agent" naming anything else, or a SEORI_AGENT_CMD that is not
+  // omp, refuses every command (exit 2).
+  void d.agent;
+  void d.agentCmd;
   const [cmd, x] = a.pos;
   switch (cmd) {
     case "up":

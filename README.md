@@ -530,7 +530,7 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 | variable | meaning |
 |---|---|
 | `SEORI_HOME` | state directory, default `~/.seori`; one per instance ([Several instances on one PC](#several-instances-on-one-pc)) |
-| `SEORI_AGENT_CMD` | the reviewer's omp command, default `omp` (lead, duty and lanes always start through `herdr agent start --kind omp`) |
+| `SEORI_AGENT_CMD` | the reviewer's omp command, default `omp` (lead, duty and lanes always start through `herdr agent start --kind omp`); its basename must be `omp`, anything else refuses every command (exit 2) |
 | `SEORI_MODEL` | model for every omp seori starts (`--model`), and the reviewer's default model; unset = omp's default |
 | `SEORI_CMD` | how the agents and loop panes call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <path>/src/cli.ts` |
 | `SEORI_SH` | the sh that runs watch commands, default `sh` on PATH |
