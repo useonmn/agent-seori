@@ -295,13 +295,14 @@ async function flushLocked(d: Deps, to: SessionRef): Promise<"delivered" | "queu
 /** Re-reads the inbox and drops the batch (delivered) or marks it with the failed attempt; messages queued meanwhile stay. */
 function settleInbox(d: Deps, to: SessionRef, batch: readonly QueuedMessage[], attempt?: DeliveryAttempt): void {
   const left = [...batch];
-  const rest = d.store.queued(to).flatMap((m) => {
-    const i = left.findIndex((b) => b.at === m.at && b.from === m.from && b.text === m.text);
-    if (i < 0) return [m];
-    left.splice(i, 1);
-    return attempt ? [{ ...m, attempt }] : [];
-  });
-  d.store.saveInbox(to, rest);
+  d.store.rewriteInbox(to, (msgs) =>
+    msgs.flatMap((m) => {
+      const i = left.findIndex((b) => b.at === m.at && b.from === m.from && b.text === m.text);
+      if (i < 0) return [m];
+      left.splice(i, 1);
+      return attempt ? [{ ...m, attempt }] : [];
+    }),
+  );
 }
 
 const NOTICE_FROM = "seori-delivery";
@@ -365,12 +366,13 @@ export function releaseHeld(d: Deps, target: string, index: number, how: "ack" |
   const release = d.store.lockInbox(to, d.now());
   if (!release) throw new Refusal(`the inbox of ${refText(to)} is being flushed right now; try again`);
   try {
-    const msgs = d.store.queued(to);
-    const m = Number.isInteger(index) ? msgs[index - 1] : undefined;
-    if (!m) throw new Refusal(`no entry ${index} in the inbox of ${refText(to)} (${msgs.length} entries; see seori inbox list ${target})`);
-    if (m.attempt?.state !== "ambiguous") throw new Refusal(`entry ${index} of ${refText(to)} is not held; only held entries can be acked or resent`);
-    const { attempt: _, ...fresh } = m;
-    d.store.saveInbox(to, how === "ack" ? msgs.filter((_, i) => i !== index - 1) : msgs.map((x, i) => (i === index - 1 ? fresh : x)));
+    d.store.rewriteInbox(to, (msgs) => {
+      const m = Number.isInteger(index) ? msgs[index - 1] : undefined;
+      if (!m) throw new Refusal(`no entry ${index} in the inbox of ${refText(to)} (${msgs.length} entries; see seori inbox list ${target})`);
+      if (m.attempt?.state !== "ambiguous") throw new Refusal(`entry ${index} of ${refText(to)} is not held; only held entries can be acked or resent`);
+      const { attempt: _, ...fresh } = m;
+      return how === "ack" ? msgs.filter((_, i) => i !== index - 1) : msgs.map((x, i) => (i === index - 1 ? fresh : x));
+    });
     return refText(to);
   } finally {
     release();
