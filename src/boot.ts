@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { driftCheck } from "./boot-checks.ts";
 import { Channel } from "./channel.ts";
 import { ConfigError, configPath, loadConfig } from "./config.ts";
 import { heartbeatPath, healthPath } from "./daemon.ts";
@@ -83,21 +84,25 @@ function readJson(path: string): unknown {
  * `UNREGISTERED` (agent panes no role and no open lane owns); per open lane `READY`, `PAUSED`, then `REPORT`/`NO-REPORT`
  * (its last report); `WORKLOG`/`OPEN` items; `CHANNEL`/`MSG` open lead channel messages; `WATCHES`/`ORPHAN-WATCH` live
  * watches whose owner lane is closed; `DAEMON` heartbeat age and `MESSENGER` health; then `BOOT checked` or
- * `BOOT incomplete` (an input could not be read; each such input has its own line). Findings such as a vanished lane or
- * a stale heartbeat are reported, not failures: `complete` says only whether every input was read.
+ * `BOOT incomplete` (an input could not be read; each such input has its own line) or `BOOT failed` (registry drift).
+ * `DRIFT` lines (an open lane whose session is gone; an agent session in the home's seori.group without a lane or role
+ * record) fail the boot, one line per problem. Other findings such as a stale heartbeat are reported, not failures:
+ * `complete` is false when an input could not be read or the registry drifted.
  */
 export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: boolean }> {
   const root = d.store.root;
   const now = d.now();
   const lines: string[] = [];
   let complete = true;
+  let drift = 0;
   const failed = (line: string): void => {
     complete = false;
     lines.push(line);
   };
 
+  let group: string | undefined;
   try {
-    loadConfig(root);
+    group = loadConfig(root).name;
     lines.push(existsSync(configPath(root)) ? `CONFIG ok ${configPath(root)}` : "CONFIG defaults (no config.json)");
   } catch (e) {
     if (!(e instanceof ConfigError)) throw e;
@@ -138,6 +143,9 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
     lines.push(`PANES live=${panes.length} lanesOpen=${open.length} vanished=${vanished.length} unregistered=${unregistered.length}`);
     for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${refText(lane.sessionRef)} status=${lane.status}; lane record kept, nothing relaunched`);
     for (const p of unregistered) lines.push(`UNREGISTERED ${p.paneId} agent=${p.agent} status=${p.status}`);
+    const found = await driftCheck({ runtimes: d.runtimes, open, lanes, roles: Object.values(roles), liveIds: new Set(byId.keys()), group });
+    lines.push(...found.lines);
+    drift = found.problems;
   }
 
   for (const lane of open) {
@@ -215,6 +223,7 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
     }
   }
 
-  lines.push(`BOOT ${complete ? "checked" : "incomplete"} read-only; nothing restarted, written or stopped`);
-  return { lines, complete };
+  const verdict = !complete ? "incomplete" : drift > 0 ? "failed" : "checked";
+  lines.push(`BOOT ${verdict}${drift > 0 ? ` (${drift} drift)` : ""} read-only; nothing restarted, written or stopped`);
+  return { lines, complete: complete && drift === 0 };
 }

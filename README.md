@@ -117,7 +117,7 @@ seori checkpoint <key> --step ID --result T --evidence P [--remote-effect R ...]
 seori lesson add <key|--cwd DIR> --rule T --evidence P | lesson list [--cwd DIR] | lesson mark <id> --outcome O
                                             O = helped|no-effect|harmful|encoded; new lanes get a repo's pending/helped lessons
 seori worklog add <title> --source REF | next <id> <text> | note <id> <text> | close <id> --result T | list [--open]
-seori boot                                   read-only check after a restart or compaction (exit 1 if something was unreadable)
+seori boot                                   read-only check after a restart or compaction (exit 1 if something was unreadable or the registry drifted)
 seori can-launch | guard                     room for a lane? (exit 4 HOLD) | host reading and guard state
 seori heavy <label> -- <cmd...>              run a heavy command when load is low and a heavy slot is free
 seori status
@@ -306,7 +306,7 @@ The lead's rules: `add` the moment a request arrives, `next` and `note` as it mo
 - `DAEMON` heartbeat age (fresh or stale) and a `MESSENGER` health line per source;
 - `BOOT checked` or `BOOT incomplete`.
 
-A finding such as a vanished lane or a stale heartbeat is not a failure. `boot` exits 1 only when an input could not be read, and each such input has its own line.
+A stale heartbeat is not a failure. `boot` exits 1 when an input could not be read (each such input has its own line) or when the registry drifted from the runtime: one `DRIFT` line per problem, either `DRIFT lane <key> has no session <ref>` (an open lane whose session the runtime reports gone) or `DRIFT session <ref> is in group <name> but has no lane or role record` (an agent session in this home's `seori.group` with no lane or role record; shells such as the loop panes are not flagged). It works on hc (the `seori.group` label) and herdr (the workspace of that name); nothing is relaunched or closed.
 
 ## Host guard, can-launch and heavy slots
 

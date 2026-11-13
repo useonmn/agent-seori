@@ -90,7 +90,8 @@ describe("bootReport", () => {
     const before = snapshot(root);
     const r = await bootReport(d);
     expect(snapshot(root)).toEqual(before);
-    expect(r.complete).toBe(true);
+    // The vanished open lane is registry drift: the boot fails, with the lane record untouched.
+    expect(r.complete).toBe(false);
     const iso = (at: number) => new Date(at).toISOString();
     expect(r.lines).toEqual([
       `CONFIG ok ${join(root, "config.json")}`,
@@ -100,6 +101,7 @@ describe("bootReport", () => {
       "PANES live=7 lanesOpen=4 vanished=1 unregistered=1",
       "VANISHED gone-lane pane=w1:p4 status=waiting; lane record kept, nothing relaunched",
       "UNREGISTERED w1:p8 agent=omp status=working",
+      "DRIFT lane gone-lane has no session w1:p4 (status=waiting); lane record kept, nothing relaunched",
       `REPORT api status=working at=${iso(now - 60_000)} "tests green, opening PR"`,
       `NO-REPORT gone-lane status=waiting started=${iso(1_000)}`,
       `READY review since=${iso(now - 120_000)} waiting=2min done=signals "PR merged"`,
@@ -115,7 +117,7 @@ describe("bootReport", () => {
       "DAEMON heartbeat age=5s fresh",
       `MESSENGER slack failing since=${iso(now - 300_000)} failures=4 error="invalid_auth"`,
       "MESSENGER telegram receiving (no failure recorded)",
-      "BOOT checked read-only; nothing restarted, written or stopped",
+      "BOOT failed (1 drift) read-only; nothing restarted, written or stopped",
     ]);
   });
 
