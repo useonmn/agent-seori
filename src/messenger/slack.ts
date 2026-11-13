@@ -157,6 +157,9 @@ export class SlackAdapter implements MessengerAdapter {
       throw new Error(`slack ${this.source}: Slack user-token mode was removed; create a Slack bot app (see skills/seori-mode/references/messengers.md) and use its bot and app tokens`);
     }
     if (mode !== undefined && mode !== "bot") throw new Error(`slack ${this.source}: options "mode" must be "bot" or left out, got ${JSON.stringify(mode)}`);
+    // The agent-app working status was removed; the bot works without it, so leftover options only warn.
+    const agentOptions = ["agent", "agentStatus", "statusRefreshMs", "statusLimitMs"].filter((k) => config.options?.[k] !== undefined);
+    if (agentOptions.length) console.error(`slack ${this.source}: Slack agent mode was removed; options ${agentOptions.join(", ")} are ignored (DM replies are no longer forced into threads and no working status is shown)`);
   }
 
   /** Whether `key` is set for this source (`envName`, or secrets.json). */
