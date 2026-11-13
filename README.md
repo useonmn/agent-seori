@@ -358,7 +358,7 @@ The lead's rules: `add` the moment a request arrives, `next` and `note` as it mo
 
 ## Boot
 
-`seori boot` is the read-only check the lead runs after a restart, a `/new` or a compaction, before acting on what it remembers. It changes nothing: no lane or role is written, nothing is relaunched, no watch is stopped, no message is closed and no file is created. Its lines, in order:
+`seori boot` is the read-only check the lead runs after a restart, a `/new` or a compaction, before acting on what it remembers. It changes nothing: no lane or role is written, nothing is relaunched, no watch is stopped, no message is closed, and no lane, role, watch or message record is written (an unused home only gets its empty state directories). Its lines, in order:
 
 - `CONFIG` (ok, defaults or invalid) and `MESSENGERS`;
 - `LEAD` and `DUTY` with their pane and status;
@@ -368,7 +368,7 @@ The lead's rules: `add` the moment a request arrives, `next` and `note` as it mo
 - `CHANNEL open=N` and a `MSG` line per open lead channel message;
 - `WATCHES` and `ORPHAN-WATCH` for a live watch whose owner lane is closed (with the command that stops it);
 - `DAEMON` heartbeat age (fresh or stale) and a `MESSENGER` health line per source;
-- `BOOT checked` or `BOOT incomplete`.
+- `BOOT checked`, `BOOT incomplete`, or `BOOT failed (N drift)`.
 
 A stale heartbeat is not a failure. `boot` exits 1 when an input could not be read (each such input has its own line) or when the registry drifted from the runtime: one `DRIFT` line per problem, either `DRIFT lane <key> has no session <ref>` (an open lane whose session the runtime reports gone) or `DRIFT session <ref> is in group <name> but has no lane or role record` (an agent session in this home's `seori.group` with no lane or role record; shells such as the loop panes are not flagged). It works on hc (the `seori.group` label) and herdr (the workspace of that name); nothing is relaunched or closed.
 
@@ -541,7 +541,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
   "startupWaitSeconds": 180,
-  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
+  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [], "ulwPlan": { "tokens": 300000, "wallMinutes": 60 } },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
 }
@@ -567,6 +567,8 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 | `supervision.defaults.costUsd` | `null` | cost ceiling per lane, in US dollars; `null` is off |
 | `supervision.hungAfterMin` | `20` | minutes with no report and no file change before a working lane is reported stalled |
 | `supervision.activityPaths` | `[]` | files or directories (relative to each lane's cwd) whose change counts as every lane's progress (a directory: an entry added, removed or renamed) |
+| `supervision.ulwPlan.tokens` | `300000` | token ceiling for a ulw-plan lane started without ceiling flags, unless `supervision.defaults.tokens` is set; `null` is off |
+| `supervision.ulwPlan.wallMinutes` | `60` | wall-clock ceiling in minutes for a ulw-plan lane started without ceiling flags, unless `supervision.defaults.wallMinutes` is set; `null` is off |
 | `guard.loadAlertPct` | `150` | 1-minute load per core (%) above which the guard alerts |
 | `guard.loadOkPct` | `80` | load per core (%) it must fall under to clear |
 | `guard.memFreeMinPct` | `10` | free memory (%) under which new lanes are held and the guard alerts |
@@ -658,7 +660,7 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 | `SEORI_CMD` | how the agents and loops call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=...] [SEORI_MODEL=...] bun <path>/src/cli.ts` |
 | `SEORI_SH` | the sh that runs watch commands, default `sh` on PATH |
 | `SEORI_HERDR_SESSION` | a named herdr session to talk to |
-| `HC_SESSION`, `XDG_RUNTIME_DIR` | which hc core seori talks to (hc's own variables); `seori up` passes them on to its systemd units |
+| `HC_SESSION`, `HC_SOCKET`, `XDG_RUNTIME_DIR` | which hc core seori talks to (hc's own variables); `seori up` passes them on to its systemd units |
 | `SEORI_SYSTEMD_DIR`, `SEORI_SYSTEMCTL` | where `seori up` writes its unit files (default `${XDG_CONFIG_HOME:-~/.config}/systemd/user`) and the systemctl it runs (default `systemctl`); the tests point both at fakes |
 | `SEORI_MAX_LANES` | default for `seori loop --max-lanes` (3) |
 | `SEORI_MAX_STARTS` | default for `seori loop --max-starts` (2) |
@@ -699,7 +701,7 @@ None. seori sends nothing anywhere.
 - A host figure that cannot be read (disk, sessions) holds no lane and raises no alert.
 - The owner is paired with `seori msg pair`, from the sender of the next direct message to the bot.
 - Slack runs as a bot app in Socket Mode, or with a member's user token and `d` cookie (polled once a minute).
-- Voice: Telegram voice notes are transcribed only when you set `hooks.transcribe`; there is no presence and no reactions.
+- Voice: Telegram voice notes are transcribed only when you set `hooks.transcribe`.
 - The seori mode skill (`skills/seori-mode`) takes the place of Dori mode.
 
 ## License
