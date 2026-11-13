@@ -25,6 +25,8 @@ export type MessengerRow = {
   readonly text: string;
   /** The message this one replies to (src/messenger/adapter.ts InboundMessage.replyTo). */
   readonly replyTo?: ReplyRef;
+  /** The platform marks the author as a bot or app, whatever `sender.kind` says (a trusted bot is still a bot). */
+  readonly agent?: true;
   /**
    * Set on the one row that stands for an agent message past config.json agentTurnLimit (the limit then in force): its
    * text says the agent loop in that conversation was stopped; the agent's own text was not delivered.

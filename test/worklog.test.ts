@@ -165,5 +165,8 @@ describe("worklog", () => {
     expect(() => worklogAdd(root, "trusted thing", "fake:c:3", T0)).toThrow(WorklogError);
     writeFileSync(join(root, "config.json"), JSON.stringify({ trusted: [{ source: "fake", id: "u3" }] }));
     expect(worklogAdd(root, "trusted thing", "fake:c:3", T0).source).toBe("fake:c:3");
+    // seori's own agent-loop notice is never a request, whoever it is about.
+    channel.appendInbound({ id: "fake:c:4", kind: "messenger", source: "fake", chat: "c", from: "u3", sender: { kind: "trusted", id: "u3" }, at: T0, text: "agent loop stopped", loopStopped: 2 });
+    expect(() => worklogAdd(root, "a notice", "fake:c:4", T0)).toThrow(WorklogError);
   });
 });

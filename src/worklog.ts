@@ -184,7 +184,7 @@ export function worklogAdd(root: string, title: string, source: string, now: num
       if (!(e instanceof ConfigError)) throw e;
     }
     const authority = (r: MessengerRow): boolean =>
-      r.sender === undefined || r.sender.kind === "owner" || (r.sender.kind === "trusted" && trusted.some((t) => t.source === r.source && t.id === r.from));
+      r.sender === undefined || r.sender.kind === "owner" || (r.sender.kind === "trusted" && r.loopStopped === undefined && trusted.some((t) => t.source === r.source && t.id === r.from));
     const row = new Channel(root).inbound().findLast((r) => namesId(source, r.id) && r.kind === "messenger" && !authority(r));
     if (row?.kind === "messenger" && row.sender !== undefined) {
       throw new WorklogError(`${row.id} is from ${row.sender.kind} ${row.sender.id}, neither the owner nor (now) trusted; the worklog holds their requests only`);
