@@ -10,6 +10,7 @@ import { Runtimes, shq } from "../src/runtime/index.ts";
 import {
   homeTag, legacyUnitName, removeUnits, UNIT_KINDS, UnitError, unitFile, unitHome, unitInstance, unitName, unitPath, writeUnits,
 } from "../src/systemd.ts";
+import { MESSENGER_TOKEN_ENV } from "../src/runtime/hc/sessions.ts";
 import { World } from "./fake.ts";
 import { rig, terminal } from "./helpers/hc-rig.ts";
 
@@ -43,6 +44,7 @@ afterEach(() => {
   }
 });
 
+const UNSET = MESSENGER_TOKEN_ENV.flatMap((k) => ["-u", k]);
 const ctlCalls = (): string[] => readFileSync(ctlLog, "utf8").split("\n").filter(Boolean);
 
 /** Points SEORI_SYSTEMCTL at a fake that records its argv and fails as systemctl does when no user manager is reachable. */
@@ -250,14 +252,14 @@ describe("seori up on hc", () => {
     expect(opened).toEqual([
       [
         "run", "--bg", "--no-parent", "--no-notify",
-        "--label", "seori.group=seori-two", "--label", "seori.role=lead", "--label", "seori.name=seori-two",
-        "--cwd", root, "--name", "seori-two", "--", "env", `SEORI_HOME=${root}`, "SEORI_CMD=seori", leadConfig, "sh",
+        "--label", "seori.group=seori-two", "--label", "seori.role=lead", "--label", "seori.name=seori-two", "--label", `seori.home=${homeTag(root)}`,
+        "--cwd", root, "--name", "seori-two", "--", "env", ...UNSET, `SEORI_HOME=${root}`, "SEORI_CMD=seori", leadConfig, "sh",
       ],
       ["send", "t1", "--", ["omp", "-e", LEAD_EXTENSION, "--append-system-prompt", join(root, "prompts", "lead.md")].map(shq).join(" ")],
       [
         "run", "--bg", "--no-parent", "--no-notify",
-        "--label", "seori.group=seori-two", "--label", "seori.role=duty", "--label", "seori.name=seori-two-duty",
-        "--cwd", root, "--name", "seori-two-duty", "--", "env", `SEORI_HOME=${root}`, `PI_CONFIG_FILES=${agentOmp}`, "sh",
+        "--label", "seori.group=seori-two", "--label", "seori.role=duty", "--label", "seori.name=seori-two-duty", "--label", `seori.home=${homeTag(root)}`,
+        "--cwd", root, "--name", "seori-two-duty", "--", "env", ...UNSET, `SEORI_HOME=${root}`, `PI_CONFIG_FILES=${agentOmp}`, "sh",
       ],
       ["send", "t2", "--", ["omp", "--append-system-prompt", join(root, "prompts", "duty.md")].map(shq).join(" ")],
     ]);
@@ -405,5 +407,74 @@ describe("seori up on hc", () => {
     await expect(main(["up"], d)).rejects.toThrow(/seori\.group="seori-two" \(seori-two\) are open, but this home .* has no live lead/);
     expect(r.calls().filter((c) => c[0] === "run")).toEqual([]);
     expect(ctlCalls()).toEqual([]);
+  });
+});
+
+describe("down and uninstall on hc close only this home's terminals", () => {
+  const group = (home?: string) => ({ "seori.group": "seori-two", ...(home === undefined ? {} : { "seori.home": homeTag(home) }) });
+
+  test("up labels the lead and duty terminals with this home", async () => {
+    const { r, d } = setup();
+    await captureLog(() => main(["up"], d));
+    for (const id of ["t1", "t2"]) expect(r.terminals()[id]?.labels["seori.home"]).toBe(homeTag(d.store.root));
+  });
+
+  test("down closes this home's terminals and unlabelled ones it records, never another home's under the same name", async () => {
+    const other = mkdtempSync(join(tmpdir(), "seori-otherhome-"));
+    const { r, d } = setup({
+      t1: terminal({ labels: group() }),
+      t2: terminal({ labels: group(other) }),
+      t3: terminal({ labels: group() }),
+      t4: terminal({ labels: group() }),
+    });
+    // t1 is this home's: the rig is set up before the home path is known, so its seori.home label is added here.
+    const state = JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8"));
+    state.terminals.t1.labels["seori.home"] = homeTag(d.store.root);
+    writeFileSync(join(r.dir, "state.json"), JSON.stringify(state));
+    d.store.setRole("lead", { runtime: "hc", id: "t3" });
+    const out = await captureLog(() => main(["down"], d));
+    expect(out.split("\n").filter((l) => l.startsWith("CLOSED"))).toEqual(["CLOSED hc:t1 (seori.group=seori-two)", "CLOSED hc:t3 (seori.group=seori-two)"]);
+    expect(Object.keys(r.terminals()).sort()).toEqual(["t2", "t4"]);
+  });
+
+  test("an unlabelled terminal of a lane recorded as done is closed too", async () => {
+    const { r, d } = setup({ t1: terminal({ labels: group() }) });
+    const ref = { runtime: "hc" as const, id: "t1" };
+    d.store.saveLane({
+      key: "api", sessionRef: ref, paneId: "t1", tabId: "", brief: "/b/api.md", cwd: "/repo", status: "done", createdAt: 1, lastActivityAt: 1, nudges: 0, log: [],
+    });
+    const out = await captureLog(() => main(["down"], d));
+    expect(out.split("\n").filter((l) => l.startsWith("CLOSED"))).toEqual(["CLOSED hc:t1 (seori.group=seori-two)"]);
+  });
+
+  test("a stale record naming a terminal another home labelled does not close it", async () => {
+    const other = mkdtempSync(join(tmpdir(), "seori-otherhome-"));
+    const { r, d } = setup({ t1: terminal({ labels: group(other) }) });
+    d.store.setRole("lead", { runtime: "hc", id: "t1" });
+    const out = await captureLog(() => main(["down"], d));
+    expect(out.split("\n").filter((l) => l.startsWith("CLOSED"))).toEqual([]);
+    expect(Object.keys(r.terminals())).toEqual(["t1"]);
+  });
+
+  test("uninstall run from this home's own terminal leaves that terminal open and still uninstalls", async () => {
+    const { r, d } = setup();
+    await captureLog(() => main(["up"], d));
+    process.env["HC_TERMINAL_ID"] = "t1";
+    // A fake bun first on PATH, so the uninstall's `bun unlink` touches no real global link.
+    const bin = mkdtempSync(join(tmpdir(), "seori-fakebun-"));
+    writeFileSync(join(bin, "bun"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(bin, "bun"), 0o755);
+    const path = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${path}`;
+    let out = "";
+    try {
+      out = await captureLog(() => main(["uninstall", "--skills-dir", mkdtempSync(join(tmpdir(), "seori-skills-"))], d));
+    } finally {
+      process.env["PATH"] = path;
+    }
+    expect(Object.keys(r.terminals())).toEqual(["t1"]);
+    expect(r.calls().filter((c) => c[0] === "kill").map((c) => c[1])).toEqual(["t2"]);
+    expect(out).toContain("unlinked the seori command");
+    expect(out).not.toMatch(/herdr/);
   });
 });

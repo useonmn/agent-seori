@@ -481,7 +481,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
   const rt = d.runtimes.default;
   const group = workspace ? workspace : await rt.createGroup(loadConfig(d.store.root).name, cwd);
-  const ref = await rt.create({ name: key, cwd, env, role: "lane", container: "tab", group });
+  const ref = await rt.create({ name: key, cwd, env, role: "lane", container: "tab", group, home: d.store.root });
   let kickedAt = 0;
   let took = false;
   try {

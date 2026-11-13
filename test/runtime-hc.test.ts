@@ -2,9 +2,15 @@
 import { describe, expect, test } from "bun:test";
 import { HcError } from "../src/runtime/hc/exec.ts";
 import { parseProbe } from "../src/runtime/hc/probe.ts";
-import { slugName } from "../src/runtime/hc/sessions.ts";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createArgv, MESSENGER_TOKEN_ENV, slugName } from "../src/runtime/hc/sessions.ts";
+import type { SessionRole } from "../src/runtime/types.ts";
+import { homeTag } from "../src/systemd.ts";
 import { openSession } from "../src/runtime/types.ts";
 import { lane, rig, SH, T1, terminal } from "./helpers/hc-rig.ts";
+
+const UNSET = MESSENGER_TOKEN_ENV.flatMap((k) => ["-u", k]);
 
 describe("create / start / createGroup", () => {
   test("create argv is exact: --json, background, no parent, no notes, seori labels, cwd, slug name, env then the shell", async () => {
@@ -33,6 +39,7 @@ describe("create / start / createGroup", () => {
         "lane-k",
         "--",
         "env",
+        ...UNSET,
         "A=1",
         "B=it's a b",
         "/bin/zsh",
@@ -67,9 +74,50 @@ describe("create / start / createGroup", () => {
       "lead",
       "--",
       "env",
+      ...UNSET,
       "sh",
     ]);
     expect(r.calls().flat().some((a) => a.startsWith("dori."))).toBe(false);
+  });
+
+  test("an agent terminal unsets the messenger tokens before its shell; the daemon and duty loop terminals keep them", () => {
+    const TOKENS = [
+      "SEORI_TELEGRAM_TOKEN", "SEORI_DISCORD_TOKEN", "SEORI_SLACK_BOT_TOKEN", "SEORI_SLACK_APP_TOKEN", "SEORI_SLACK_USER_TOKEN", "SEORI_SLACK_COOKIE",
+    ];
+    const argv = (role: SessionRole) => createArgv({ name: "x", cwd: "/w", env: { SEORI_LANE: "x" }, role, container: "tab" }, "sh", undefined);
+    const unset = (a: string[]) => a.flatMap((v, i) => (v === "-u" ? [a[i + 1] ?? ""] : []));
+    for (const role of ["lane", "lead", "duty", "hourly-loop"] as const) {
+      const a = argv(role);
+      expect(unset(a).sort()).toEqual([...TOKENS].sort());
+      const env = a.indexOf("env");
+      expect(a.slice(env + 1 + 2 * TOKENS.length)).toEqual(["SEORI_LANE=x", "sh"]);
+    }
+    for (const role of ["daemon", "duty-loop"] as const) expect(unset(argv(role))).toEqual([]);
+  });
+
+  test("the unset list is every token variable the messenger adapters read", () => {
+    const dir = join(import.meta.dir, "..", "src", "messenger");
+    const read = new Set(readdirSync(dir).flatMap((f) => readFileSync(join(dir, f), "utf8").match(/SEORI_[A-Z_]*(TOKEN|COOKIE)\b/g) ?? []));
+    const unset: string[] = [...MESSENGER_TOKEN_ENV];
+    expect(unset.sort()).toEqual([...read].sort());
+  });
+
+  test("a spec with a home labels the terminal seori.home=<homeTag>", async () => {
+    const r = rig();
+    await r.rt.create({ ...lane, home: "/h/a" });
+    expect(r.terminals()["t1"]?.labels["seori.home"]).toBe(homeTag("/h/a"));
+  });
+
+  test("list with homes reads each terminal's seori.home label; without it no hc get is made", async () => {
+    const r = rig({
+      t1: terminal({ labels: { "seori.group": "g", "seori.home": homeTag("/h/a") } }),
+      t2: terminal({ labels: { "seori.group": "g" } }),
+    });
+    const listed = await r.rt.list({ group: "g", homes: true });
+    expect(listed.map((s) => [s.ref.id, s.home])).toEqual([["t1", homeTag("/h/a")], ["t2", undefined]]);
+    const before = r.calls().length;
+    expect((await r.rt.list({ group: "g" })).map((s) => s.home)).toEqual([undefined, undefined]);
+    expect(r.calls().slice(before).filter((c) => c[0] === "get")).toEqual([]);
   });
 
   test("start sends the command into the shell with no status gate", async () => {

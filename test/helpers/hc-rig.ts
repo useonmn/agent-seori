@@ -56,6 +56,8 @@ export function rig(initial: Record<string, FakeTerminal> = {}, env: Record<stri
   const read = (): FakeState => JSON.parse(readFileSync(statePath, "utf8")) as FakeState;
   return {
     rt,
+    /** The fake's directory: state.json holds its terminals. */
+    dir,
     sleeps,
     logs,
     /** Each recorded argv without the leading --json. */

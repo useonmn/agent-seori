@@ -380,7 +380,7 @@ seori worklog list --open
 
 에이전트 앱으로 표시한 Slack 앱(앱 설정의 Agents, 권한 `assistant:write`)에는 `"options": { "agent": true }`를 줍니다. 그러면 주인의 DM마다 그 스레드에서 답합니다(`thread_ts`가 있으면 그 스레드, 최상위 메시지면 그 메시지 아래). 리드가 메시지를 받으면 스레드에 작업 중 상태를 띄웁니다(`assistant.threads.setStatus`, 문구는 `options.agentStatus`, 기본값 `is working on it...`). Slack은 2분이 지나면 상태를 지우기 때문에, daemon이 1분마다 다시 띄웁니다. seori가 그 스레드에 답하거나(최상위 답도 지웁니다) 30분이 지나면 멈춥니다. `agent`가 없으면 DM은 예전과 같습니다.
 
-토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다). 환경 변수가 있으면 그쪽이 먼저입니다:
+토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다). 환경 변수가 있으면 그쪽이 먼저입니다. hc에서는 리드, 듀티, 레인, 시간 단위 루프 터미널에서 이 변수들을 지우므로 데몬과 듀티 루프에만 닿습니다. 리드의 `seori msg`가 보낼 수 있도록 토큰은 `secrets.json`에 두세요:
 
 ```json
 { "telegram": { "token": "123:abc" }, "slack": { "botToken": "xoxb-...", "appToken": "xapp-..." }, "discord": { "token": "..." } }
@@ -616,7 +616,7 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
 | `SEORI_MAX_LOAD` | `seori loop --max-load` 기본값 |
 | `SEORI_LANE` | seori가 레인 터미널에 넣어 주는 값. `seori send`의 기본 보낸 쪽이자 `seori watch add`의 기본 주인 |
 | `PI_CONFIG_FILES` | omp 전용: omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 더 붙입니다. `~/.seori`가 아닌 홈에서는 `agent-omp.yml`이 `mnemopi.dbPath`도 `$SEORI_HOME/omp/memories/mnemopi.db`로 정합니다 |
-| `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | 메신저 토큰. `secrets.json`보다 먼저 |
+| `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | 메신저 토큰. `secrets.json`보다 먼저(hc에서는 리드, 듀티, 레인, 시간 단위 루프 터미널에는 없음) |
 
 ## 테스트
 

@@ -262,6 +262,8 @@ export function lockFile(path: string, now: number): (() => void) | undefined {
 
 export class Store {
   constructor(readonly root: string = process.env["SEORI_HOME"] ?? join(homedir(), ".seori")) {
+    // The home holds secrets and the owner's messages: one seori creates is the owner's alone. An existing one keeps its mode.
+    if (!existsSync(root)) mkdirSync(root, { recursive: true, mode: 0o700 });
     for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "duty"]) mkdirSync(join(root, d), { recursive: true });
   }
 
