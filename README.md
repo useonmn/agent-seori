@@ -106,7 +106,7 @@ seori up [--cwd DIR]                         start this home's lead, duty, duty 
 seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
 seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
-            [--activity-path PATH ...]
+            [--activity-path PATH ...] [--model M]
                                             Done line read back live before close; ID = lead channel id for progress posts;
                                             ceilings block (report to lead); exits 4 with HOLD when the host is full
 seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
@@ -618,7 +618,7 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 | `SEORI_RUNTIME` | `hc` or `herdr`; overrides `"runtime"` in `config.json` and detection ([docs/runtime.md](docs/runtime.md)) |
 | `SEORI_AGENT` | may only be `omp` (the default); any other value, here or as `"agent"` in `config.json`, refuses every command with exit 2 |
 | `SEORI_AGENT_CMD` | the command seori runs for omp (lead, duty, lanes on hc, and the reviewer); default `omp`. Its basename must be `omp` (a path to omp or a wrapper named omp); anything else refuses every command with exit 2. On herdr, lead, duty and lanes always start through `herdr agent start --kind omp` |
-| `SEORI_MODEL` | model for every agent seori starts (`--model`), and the reviewer's default model; unset = the agent's default |
+| `SEORI_MODEL` | model for every agent seori starts (`--model`) except a lane started with `seori start --model M`, and the reviewer's default model; unset = the agent's default |
 | `SEORI_CMD` | how the agents and loops call seori, default `SEORI_HOME=<home> [SEORI_HERDR_SESSION=...] [SEORI_MODEL=...] bun <path>/src/cli.ts` |
 | `SEORI_SH` | the sh that runs watch commands, default `sh` on PATH |
 | `SEORI_HERDR_SESSION` | a named herdr session to talk to |

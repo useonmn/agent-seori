@@ -321,6 +321,16 @@ describe("seori migrate: roles, --all and --resume", () => {
     expect(d.store.queued(NEW).map((m) => m.text)).toEqual(["[REPORT k] hi"]);
   });
 
+  test("a lane started with its own --model is reopened with that model, not SEORI_MODEL", async () => {
+    const { r, d, opts } = migrateWorld();
+    d.store.saveLane({ ...d.store.lane("k")!, model: "m-hard" });
+    expect(await migrate({ ...d, model: "m1" }, { lane: "k" }, opts())).toBe(0);
+    const start = r.sent().find((s) => s.id === "t1" && s.text.startsWith("'omp'"))!.text;
+    expect(start).toContain("'--model' 'm-hard'");
+    expect(start).not.toContain("'m1'");
+    expect(d.store.lane("k")!.model).toBe("m-hard");
+  });
+
   test("--role duty: duty's replacement, roles.json switched", async () => {
     const { w, r, d, lines, opts } = migrateWorld();
     w.addPane("w1:p2", "idle");

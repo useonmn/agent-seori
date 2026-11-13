@@ -117,9 +117,12 @@ export async function requireOmpIntegration(d: Deps): Promise<void> {
   if (!(await d.runtimes.default.agentIntegration())) throw new Refusal(INTEGRATION_MISSING);
 }
 
-/** Starts the agent in a pane (on herdr via `herdr agent start`, named after the label and pane so names stay unique across live agents). */
-export async function startAgent(d: Deps, label: string, ref: SessionRef, args: readonly string[] = []): Promise<void> {
-  await d.runtimes.for(ref).startAgent(ref, agentName(label, ref.id), [...args, ...(d.model ? ["--model", d.model] : [])]);
+/**
+ * Starts the agent in a pane (on herdr via `herdr agent start`, named after the label and pane so names stay unique
+ * across live agents), with `--model model` (a lane's own `seori start --model`, else SEORI_MODEL) when one is set.
+ */
+export async function startAgent(d: Deps, label: string, ref: SessionRef, args: readonly string[] = [], model = d.model): Promise<void> {
+  await d.runtimes.for(ref).startAgent(ref, agentName(label, ref.id), [...args, ...(model ? ["--model", model] : [])]);
 }
 
 /**
@@ -389,7 +392,8 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
  * Opens a lane: a session running the agent in goal mode on the brief. `done` is the lane's Done line (src/signals.ts),
  * checked before anything opens; with it, seori closes the lane on its own after READY (src/done-flow.ts). `thread`
  * is the lead channel id progress posts thread under; `ceilings` override the configured supervision defaults;
- * `activityPaths` are files or directories whose change counts as the lane's progress besides git status.
+ * `activityPaths` are files or directories whose change counts as the lane's progress besides git status; `model`
+ * is the model this lane's omp runs with instead of SEORI_MODEL.
  */
 export async function startLane(d: Deps, key: string, briefFile: string, opts: StartOptions = {}): Promise<Lane> {
   const started = await openLaneSession(d, key, briefFile, opts);
@@ -399,7 +403,7 @@ export async function startLane(d: Deps, key: string, briefFile: string, opts: S
   return started.lane;
 }
 
-export type StartOptions = { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[] };
+export type StartOptions = { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[]; model?: string };
 
 /**
  * What startLane does, without the warning for a kickoff omp has not started on: the saved lane, when the kickoff
@@ -417,6 +421,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   if (opts.done !== undefined) parseDone(opts.done);
   if (opts.thread !== undefined && !opts.thread.trim()) throw new Refusal("--thread needs a lead channel id");
   if (opts.activityPaths?.some((p) => !p.trim())) throw new Refusal("--activity-path needs a path");
+  if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
   await requireOmpIntegration(d);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
@@ -437,7 +442,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   let kickedAt = 0;
   let took = false;
   try {
-    await startAgent(d, key, ref);
+    await startAgent(d, key, ref, [], opts.model?.trim() ?? d.model);
     await agentSessionReported(d, ref);
     if (!(await deliverOrThrow(rt, ref, d.agent.kickoff(briefPath, key)))) throw new Error(`${d.agent.kind} was not in front of the pane to take the kickoff`);
     kickedAt = d.now();
@@ -460,6 +465,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     ...(opts.thread !== undefined ? { thread: opts.thread.trim() } : {}),
     ...(opts.ceilings ? { ceilings: opts.ceilings } : {}),
     ...(opts.activityPaths?.length ? { activityPaths: [...opts.activityPaths] } : {}),
+    ...(opts.model !== undefined ? { model: opts.model.trim() } : {}),
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
