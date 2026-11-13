@@ -147,17 +147,13 @@ seori down [duty|loop|daemon|all]            듀티 루프, 시간 단위 루프
                                             seori.group 터미널을 닫습니다. 30초 뒤에도 남은 프로세스가 있으면 종료 코드 1
 seori install-skill [--skills-dir DIR]       seori-mode 스킬을 에이전트의 스킬 폴더에 링크합니다. install.sh가 실행합니다
 seori uninstall [--skills-dir DIR] [--purge] 스킬 링크와 seori 명령을 지웁니다. --purge는 $SEORI_HOME도 지웁니다
-seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
                                             메신저 메시지에 답합니다 (id 하나에 답 하나). --to는 알림을 보냅니다.
-                                            리드 확장이 돌고 있으면 초안으로 두었다가 리드의 차례가 끝나면 보냅니다
-                                            (--now: 바로 보냄). 같은 id로 다시 보내면 초안을 바꿉니다
-seori msg send --replace DRAFT --text T      열린 초안(답이나 알림)의 내용을 바꿉니다
+                                            쓴 즉시 바로 나가므로, 다 쓴 답을 곧바로 보냅니다. --again은 이미 답한
+                                            id에 또 답합니다 (정정)
 seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                             seori가 보낸 메시지를 고칩니다. --reply-of는 그 리드 채널 메시지에 seori가
-                                            처음 보낸 답을 고칩니다(초안이었어도 됩니다). MID는 msg send가 출력한 message= 값
-seori msg drafts                             열린 초안: 초안  지난 시간  reply ID들|notice SOURCE:CHAT  내용
-seori msg drop <draft> --why T               열린 초안을 버립니다. 그 id는 다시 열립니다
-seori msg flush                              열린 초안을 지금 모두, 오래된 것부터 보냅니다
+                                            처음 보낸 답을 고칩니다. MID는 msg send가 출력한 message= 값
 seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다
 seori msg list [--all]                       아직 열린 리드 채널 메시지: 메신저 메시지와 감시 알림 (--all: 전부, 상태 포함)
                                             칸: id  상태  지난 시간  종류  보낸 사람 또는 감시 이름  내용
@@ -176,7 +172,7 @@ seori watch rearm <id|name>                  깨우기 한도를 다 써서 음�
 seori watch log <id|name> [-n N]             감시가 최근에 본 일
 ```
 
-`--text`를 빼면 메시지를 표준 입력(stdin)에서 읽습니다. `send`, `report`, `ready`는 메시지가 전해졌는지 확실하지 않으면 `HELD <대상>`을 출력하고 종료 코드 3으로 끝납니다. 보류된 메시지는 다시 보내지 않습니다. 창을 직접 보고 `seori inbox ack`나 `seori inbox resend`로 처리하세요. `QUEUED`(종료 코드 0)는 상대 창의 받은 편지함에서 기다린다는 뜻입니다. `object`는 `OBJECTED <key>`를 출력하고, 레인에 보내는 메시지도 같은 방식으로 알려 줍니다. `msg send`는 보냈으면 `SENT`(종료 코드 0), 리드 확장이 돌고 있어 초안으로 두었으면 `DRAFTED`나 `REPLACED`(종료 코드 0, [답 초안](#답-초안) 참고), 메신저에 갔는지 확실하지 않으면 `HELD`(종료 코드 3), 거절하면 종료 코드 2로 끝납니다. 이미 답한 id에 또 답하려 하면 거절합니다. `HELD`일 때는 채팅을 직접 확인하고, 그래도 보내야 하면 `--again`을 붙입니다. 알림(`msg send --to`)도 갔을 수 있으면 똑같이 `HELD`(종료 코드 3)입니다. 다만 알림은 따로 기록(ledger)이 없어서, 다시 보내면 한 통이 더 갑니다. `--again`은 답장에만 씁니다. `start`와 `can-launch`는 컴퓨터에 레인을 열 자리가 없으면 `HOLD <이유>`와 함께 종료 코드 4로 끝납니다. `pause`와 `resume`은 창에서 확인하지 못하면 종료 코드 3, `verify-pr`은 FAIL이면 종료 코드 2, `boot`는 읽지 못한 것이 있으면 종료 코드 1입니다. 거절은 종료 코드 2이고, 설정을 읽는 명령에서 `config.json`이 잘못된 경우도 그렇습니다.
+`--text`를 빼면 메시지를 표준 입력(stdin)에서 읽습니다. `send`, `report`, `ready`는 메시지가 전해졌는지 확실하지 않으면 `HELD <대상>`을 출력하고 종료 코드 3으로 끝납니다. 보류된 메시지는 다시 보내지 않습니다. 창을 직접 보고 `seori inbox ack`나 `seori inbox resend`로 처리하세요. `QUEUED`(종료 코드 0)는 상대 창의 받은 편지함에서 기다린다는 뜻입니다. `object`는 `OBJECTED <key>`를 출력하고, 레인에 보내는 메시지도 같은 방식으로 알려 줍니다. `msg send`는 보냈으면 `SENT`(종료 코드 0), 메신저에 갔는지 확실하지 않으면 `HELD`(종료 코드 3), 거절하면 종료 코드 2로 끝납니다. 이미 답한 id에 또 답하려 하면 `--again` 없이는 거절합니다. `HELD`일 때는 채팅을 직접 확인하고, 그래도 보내야 하면 `--again`을 붙입니다. 알림(`msg send --to`)도 갔을 수 있으면 똑같이 `HELD`(종료 코드 3)입니다. 다만 알림은 따로 기록(ledger)이 없어서, 다시 보내면 한 통이 더 갑니다. `--again`은 답장에만 씁니다. `start`와 `can-launch`는 컴퓨터에 레인을 열 자리가 없으면 `HOLD <이유>`와 함께 종료 코드 4로 끝납니다. `pause`와 `resume`은 창에서 확인하지 못하면 종료 코드 3, `verify-pr`은 FAIL이면 종료 코드 2, `boot`는 읽지 못한 것이 있으면 종료 코드 1입니다. 거절은 종료 코드 2이고, 설정을 읽는 명령에서 `config.json`이 잘못된 경우도 그렇습니다.
 
 ## 레인이 시작되는 방법
 
@@ -430,20 +426,15 @@ seori msg pair telegram --write
 
 1. 데몬(Linux에서는 systemd 유닛, macOS에서는 `seori up`이 연 hc 터미널)이 메시지를 받습니다. 주인이 보낸 것이면 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. `seori daemon-loop`가 다시 켜 주므로, 데몬이 죽어도 1초쯤 뒤에 다시 뜹니다(Linux에서는 systemd가 루프 자체도 다시 켜 줍니다). `messengers.json`이 바뀌면(새로 만들기, 고치기, 지우기) 데몬이 스스로 끝나고 루프가 새 설정으로 다시 켭니다. 그래서 `seori up` 뒤에 메신저를 설정해도 됩니다. `messengers.json`을 읽을 수 없으면 그 창에 오류를 남기고, 파일이 바뀔 때까지 메신저 없이 돕니다(heartbeat와 감시는 계속 돕니다). 그 창에서 Ctrl-C를 누르거나(종료 코드 130) 데몬 프로세스를 `kill`하면(143) 데몬과 루프가 함께 멈춥니다. SIGHUP(129, 창을 닫을 때도 이 신호가 갑니다)을 받으면 데몬은 감시 명령까지 깔끔하게 멈추고, 루프가 아직 돌고 있으면 루프가 다시 켭니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
 2. 리드의 omp는 `extensions/lead-channel.ts`를 불러옵니다. 리드만 불러오고, 듀티, 레인, 리뷰어는 불러오지 않습니다. 이 확장이 저장된 메시지를 id와 함께 리드의 대화에 넣고, 넣을 때마다 기록(ledger)을 남깁니다. 에이전트를 다시 켜거나 `/new`, `/resume`, `/fork`를 해도 답하지 않은 메시지는 남아 있습니다.
-3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 답은 리드의 차례가 끝날 때까지 초안으로 남습니다(아래 답 초안 참고). 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
-4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다. 열린 초안이 있는 id는 `seori msg list`에서 `drafted`로 보이고, 답한 것으로 치므로 다시 전하지 않습니다.
+3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 답은 리드가 쓴 즉시 바로 나갑니다. 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 `--again` 없이는 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
+4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다. 메신저가 받아 준 답이나 닫기만 id를 답한 것으로 치므로, 그 id는 다시 전하지 않습니다.
+5. 리드의 omp는 omp의 어드바이저(advisor)를 켜고 돕니다. 어드바이저는 선택 기능이라 기본값은 꺼져 있고, seori가 자기 리드에 한해 켭니다(`$SEORI_HOME/prompts/lead-omp.yml`의 `advisor.enabled: true`; `advisor.syncBacklog: strict`라 검토가 agent_end 전에 끝납니다). 리드는 어드바이저를 기다리지 않습니다. 답이 이미 나간 뒤에 어드바이저가 그 차례를 검토하고, 문제를 짚으면 리드가 정정을 곧바로 별도 메시지로 `--again`과 함께 보냅니다.
 
-### 답 초안
+### 정정
 
-리드는 omp의 어드바이저(advisor)를 켜고 돌며, 어드바이저는 차례가 끝날 때 그 차례를 검토합니다. 차례 중간에 보낸 답은 이 검토보다 먼저 사람에게 가 버리고, 어드바이저가 문제를 짚으면 리드가 정정 메시지를 또 보내게 됩니다. 그래서 리드 확장이 돌고 있는 동안(`lead/consumer.lock`을 쥐고 있는 동안) `seori msg send`는 답이나 알림을 예전과 똑같이 검사한 뒤(모르는 id, `ALREADY_REPLIED`, `UNCERTAIN`, 메신저 설정) 보내지 않고 `$SEORI_HOME/lead/outbox.jsonl`에 넣어 두며, `DRAFTED <draft> <id들 또는 source:chat>: goes out when your turn ends`를 출력합니다. 확장은 리드의 차례가 끝나면(이어지는 차례가 없거나, 비동기 작업이나 하위 에이전트 같은 백그라운드 작업만 기다릴 때) 3초 뒤에 열린 초안을 오래된 것부터 보냅니다. 이때 그 차례가 끝나기 전에 마지막으로 쓴 초안만 보냅니다. 다음 차례(다음 주인 메시지, 레인 보고, 감시 알림이 곧바로 시작함)가 쓰거나 고친 초안은 그 차례가 끝나고 검토를 받을 때까지 기다립니다. 그 3초 안에 어드바이저가 이어지는 차례를 시키면 초안은 그 차례가 끝날 때까지 기다리므로, 리드가 먼저 고칠 수 있습니다. 초안은 consumer 잠금을 쥔 에이전트만, 그 omp가 시작한 뒤에 만든 것만 보냅니다. 앞선 리드가 남긴 초안(도중에 죽은 차례)은 리드가 정하도록 남겨 둡니다(아래 `[DRAFTS]` 참고). omp를 쓸 때, `seori up`은 리드를 `PI_CONFIG_FILES`가 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`, 이미 설정된 `PI_CONFIG_FILES`가 있으면 그 뒤에 붙임)을 가리키게 해서 띄우므로, 검토가 끝나야 차례가 끝난 것으로 칩니다. 이 설정은 리드만 받습니다.
+정정은 같은 id에 보내는 평범한 두 번째 답입니다: `seori msg send --reply-to <id> --again --text '...'`. 리드는 정정을 쓴 즉시 보내므로, 주인은 답을 먼저 받고 고친 내용을 별도 메시지로 받습니다. 답을 붙잡아 두었다가 늦게 보내지 않습니다.
 
-- 초안을 고치려면 정확히 같은 id들로 다시 보내거나(`REPLACED <draft>`), 어떤 초안이든(알림 포함) `seori msg send --replace <draft> --text '...'`를 씁니다. 초안의 id 중 일부에만 보내면 거절합니다.
-- `--now`는 예전처럼 바로 보냅니다(`SENT`나 `HELD`). 레인을 여는 메시지나 1분 넘게 걸릴 메시지에 보내는 첫 한 줄 확인 답은 늘 `--now`로 보내고, 초안으로 두지 않습니다. 열린 초안이 있는 id에 `--now`로 보내면, 초안이 두 번째 답이 되므로 거절합니다.
-- 리드 확장이 돌고 있지 않으면(사람이 셸에서 실행, 리드가 꺼짐) 바로 보냅니다.
-- `seori msg drafts`는 열린 초안을 보여 주고, `seori msg drop <draft> --why '...'`는 초안을 버리며, `seori msg flush`는 지금 모두 보냅니다. flush는 초안마다 `SENT <draft> <대상> message=<id>`, `HELD <draft> <대상>: ...`(갔을 수도 있음: 끝난 것으로 치고, 답이면 uncertain으로 기록하며, 다시 보내지 않음), `FAILED <draft> <대상>: <오류>; ...`(열린 채로 남음)를 출력하고, 실패한 것이 있으면 1, 아니고 보류된 것이 있으면 3으로 끝납니다. flush는 한 번에 하나만 돕니다.
-- 듀티 루프는 5분 넘게 열려 있는 초안을 초안마다 한 번 리드에게 알립니다: `[DRAFTS] <n> reply draft(s) not sent: <초안들>; send them with seori msg flush or drop them with seori msg drop <draft> --why '...'`. 이런 초안은 도중에 죽은 차례나 실패한 flush가 남긴 것이라 저절로 보내지 않습니다.
-
-메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. `messengers.json`을 읽을 수 없으면(그동안 데몬은 메신저를 받지 않습니다) 리드에게 한 번 알리고, 데몬의 heartbeat가 90초보다 오래되어도 리드에게 한 번 알립니다. 어떤 메신저가 3분 동안 받지 못하고 있으면(토큰이 거절됨, 같은 텔레그램 봇을 다른 프로그램이 읽음, 디스코드 인텐트가 꺼짐, 메신저 서버가 2분 동안 답하지 않음 등) 오류 내용과 함께 리드에게 한 번 알립니다. 데몬은 받기가 계속 실패하는 동안 `messenger/<source>/health.json`을 남기고, 실패한 메신저를 점점 드물게 다시 켭니다(5초에서 두 배씩 늘려 최대 10분. 설정 오류로 디스코드의 하루 접속 한도를 다 쓰지 않도록). 메시지가 하나라도 들어오거나 3분 넘게 잘 돌면 파일을 지우고, `messengers.json`을 고치면 처음부터 다시 셉니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 에이전트가 없음) 2분 넘게 막혀 있으면(런타임이 blocked라고 보고함: 터미널에서 질문을 기다리거나, 모델 오류로 차례가 끝난 경우), 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다. 답이 이미 갔을 수도 있는 메시지(send-uncertain)나 포기한 메시지는 다시 전하지 않으므로, 꺼져 있다거나 막혀 있다는 알림도 보내지 않습니다. 리드가 돌고 있으면 초안이 있는 메시지도 답이 곧 가므로 막혀 있다는 알림을 보내지 않습니다. 메시지를 받아 가는 리드가 없으면 초안을 보낼 쪽도 없으므로, 초안이 있어도 꺼져 있다는 알림은 보냅니다.
+메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. `messengers.json`을 읽을 수 없으면(그동안 데몬은 메신저를 받지 않습니다) 리드에게 한 번 알리고, 데몬의 heartbeat가 90초보다 오래되어도 리드에게 한 번 알립니다. 어떤 메신저가 3분 동안 받지 못하고 있으면(토큰이 거절됨, 같은 텔레그램 봇을 다른 프로그램이 읽음, 디스코드 인텐트가 꺼짐, 메신저 서버가 2분 동안 답하지 않음 등) 오류 내용과 함께 리드에게 한 번 알립니다. 데몬은 받기가 계속 실패하는 동안 `messenger/<source>/health.json`을 남기고, 실패한 메신저를 점점 드물게 다시 켭니다(5초에서 두 배씩 늘려 최대 10분. 설정 오류로 디스코드의 하루 접속 한도를 다 쓰지 않도록). 메시지가 하나라도 들어오거나 3분 넘게 잘 돌면 파일을 지우고, `messengers.json`을 고치면 처음부터 다시 셉니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 에이전트가 없음) 2분 넘게 막혀 있으면(런타임이 blocked라고 보고함: 터미널에서 질문을 기다리거나, 모델 오류로 차례가 끝난 경우), 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다. 답이 이미 갔을 수도 있는 메시지(send-uncertain)나 포기한 메시지는 다시 전하지 않으므로, 꺼져 있다거나 막혀 있다는 알림도 보내지 않습니다.
 
 ## 감시
 
@@ -586,7 +577,7 @@ hc, omp, gh를 설치하지는 않고, hc의 설정을 고치지도 않습니다
 
 ## 상태 저장 위치
 
-모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON과 JSONL 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일과 자원 감시 상태(`duty/guard.json`), 멈춤 판단용 변경 기록(`duty/supervision.json`)이 있는 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록, 답 초안의 outbox), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, 레인마다의 체크포인트 기록(`<key>.jsonl`)용 `checkpoints/`, 무거운 작업 자리 잠금(`<n>.lock`)용 `heavy/`, `lessons.jsonl`, `worklog.jsonl`과 거기서 만든 `worklog.md`, `config.json`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
+모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON과 JSONL 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일과 자원 감시 상태(`duty/guard.json`), 멈춤 판단용 변경 기록(`duty/supervision.json`)이 있는 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록, 그 기록), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, 레인마다의 체크포인트 기록(`<key>.jsonl`)용 `checkpoints/`, 무거운 작업 자리 잠금(`<n>.lock`)용 `heavy/`, `lessons.jsonl`, `worklog.jsonl`과 거기서 만든 `worklog.md`, `config.json`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
 
 ## 한 PC에서 여러 인스턴스 돌리기
 
@@ -627,7 +618,7 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
 | `SEORI_MAX_STARTS` | `seori loop --max-starts` 기본값 (2) |
 | `SEORI_MAX_LOAD` | `seori loop --max-load` 기본값 |
 | `SEORI_LANE` | seori가 레인 터미널에 넣어 주는 값. `seori send`의 기본 보낸 쪽이자 `seori watch add`의 기본 주인 |
-| `PI_CONFIG_FILES` | omp 전용: omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 더 붙입니다. `~/.seori`가 아닌 홈에서는 `agent-omp.yml`이 `mnemopi.dbPath`도 `$SEORI_HOME/omp/memories/mnemopi.db`로 정합니다 |
+| `PI_CONFIG_FILES` | omp 전용: omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.enabled: true`와 `advisor.syncBacklog: strict`; omp의 어드바이저는 선택 기능이라 기본값이 꺼져 있고, 리드가 자기 몫으로 켭니다)을 더 붙입니다. `~/.seori`가 아닌 홈에서는 `agent-omp.yml`이 `mnemopi.dbPath`도 `$SEORI_HOME/omp/memories/mnemopi.db`로 정합니다 |
 | `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | 메신저 토큰. `secrets.json`보다 먼저(리드, 듀티, 레인, 시간 단위 루프 터미널에는 없음) |
 
 ## 테스트

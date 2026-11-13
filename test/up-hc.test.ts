@@ -247,6 +247,8 @@ describe("seori up on hc", () => {
     // omp's settings: agent-omp.yml for every agent, lead-omp.yml after it for the lead only
     const agentOmp = join(root, "prompts", "agent-omp.yml");
     const leadConfig = `PI_CONFIG_FILES=${agentOmp}:${join(root, "prompts", "lead-omp.yml")}`;
+    // The lead's file must turn omp's advisor on (opt-in, off by default), not merely be named in PI_CONFIG_FILES.
+    expect(readFileSync(join(root, "prompts", "lead-omp.yml"), "utf8")).toBe("advisor:\n  enabled: true\n  syncBacklog: strict\n");
     const opened = r.calls().filter((c) => c[0] === "run" || c[0] === "send");
     expect(opened).toEqual([
       [

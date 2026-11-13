@@ -94,9 +94,9 @@ describe("states", () => {
     c.appendLedger({ id: "fake:c1:2", ev: "gave-up", at: T0 + 7, attempts: 3 });
     c.appendLedger({ id: "fake:c1:2", ev: "closed", at: T0 + 8, why: "x" });
     expect(c.states().map(({ row: r, ...s }) => [r.id, s])).toEqual([
-      ["fake:c1:1", { deliveries: 2, lastDeliveredAt: T0 + 3, entered: true, replied: false, closed: false, uncertain: false, gaveUp: false, drafted: false, alerted: ["lead-blocked", "gave-up"] }],
-      ["fake:c1:2", { deliveries: 1, lastDeliveredAt: T0 + 2, entered: false, replied: false, closed: true, uncertain: false, gaveUp: true, drafted: false, alerted: [] }],
-      ["fake:c1:3", { deliveries: 0, entered: false, replied: false, closed: false, uncertain: false, gaveUp: false, drafted: false, alerted: [] }],
+      ["fake:c1:1", { deliveries: 2, lastDeliveredAt: T0 + 3, entered: true, replied: false, closed: false, uncertain: false, gaveUp: false, alerted: ["lead-blocked", "gave-up"] }],
+      ["fake:c1:2", { deliveries: 1, lastDeliveredAt: T0 + 2, entered: false, replied: false, closed: true, uncertain: false, gaveUp: true, alerted: [] }],
+      ["fake:c1:3", { deliveries: 0, entered: false, replied: false, closed: false, uncertain: false, gaveUp: false, alerted: [] }],
     ]);
     expect(c.open().map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:3"]);
   });

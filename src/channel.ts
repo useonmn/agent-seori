@@ -1,7 +1,6 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { Outbox } from "./outbox.ts";
 import { lockFile, pidAlive } from "./store.ts";
 
 // The lead channel: what the lead is told without a pane message. Messenger messages: `seori daemon` stores one here
@@ -79,8 +78,6 @@ export type IdState = {
   /** A send-uncertain, or a `sending` not settled by a later replied/send-failed: the reply may be in the chat. */
   readonly uncertain: boolean;
   readonly gaveUp: boolean;
-  /** An open draft in the outbox (src/outbox.ts) replies to it: answered as far as delivery and duty alerts go. */
-  readonly drafted: boolean;
   readonly alerted: readonly string[];
 };
 
@@ -192,7 +189,6 @@ export class Channel {
   /** One pass over the ledger grouped by id: the lead extension and duty call this every tick, for all history. */
   states(): IdState[] {
     type Acc = { deliveries: number; lastDeliveredAt?: number; entered: boolean; replied: boolean; closed: boolean; sendUncertain: boolean; inFlight: boolean; gaveUp: boolean; alerted: string[] };
-    const drafted = new Outbox(this.root).draftedIds();
     const byId = new Map<string, Acc>();
     for (const e of this.ledger()) {
       let a = byId.get(e.id);
@@ -234,7 +230,7 @@ export class Channel {
     }
     return this.inbound().map((row) => {
       const a = byId.get(row.id);
-      if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: fromOther(row), uncertain: false, gaveUp: false, drafted: drafted.has(row.id), alerted: [] };
+      if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: fromOther(row), uncertain: false, gaveUp: false, alerted: [] };
       return {
         row,
         deliveries: a.deliveries,
@@ -244,7 +240,6 @@ export class Channel {
         closed: a.closed || fromOther(row),
         uncertain: a.sendUncertain || a.inFlight,
         gaveUp: a.gaveUp,
-        drafted: drafted.has(row.id),
         alerted: a.alerted,
       };
     });

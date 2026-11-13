@@ -2,8 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
-import { ALERT_TEXT, DRAFTS_ALERT_MS, dutyTick } from "../src/harness.ts";
-import { Outbox } from "../src/outbox.ts";
+import { ALERT_TEXT, dutyTick } from "../src/harness.ts";
 import { SendUncertain } from "../src/messenger/adapter.ts";
 import { World, paneRef } from "./fake.ts";
 
@@ -226,55 +225,5 @@ describe("duty channel alerts", () => {
     expect((await dutyTick(d)).map((e) => e.action)).toEqual(["config-broken"]);
     expect(lead.received.at(-1)).toContain('"messengers" must be an array');
   });
-
-  test("a live lead's drafted id is answered: no lead-blocked or gave-up alert for it", async () => {
-    const { w, d, root, lead, channel, advance, alerted } = setup();
-    channel.appendLedger({ id: "fake:c1:m1", ev: "delivered", at: w.clock, attempt: 3, mode: "followUp" });
-    channel.appendLedger({ id: "fake:c1:m1", ev: "gave-up", at: w.clock, attempts: 3 });
-    new Outbox(root).append({ ev: "drafted", draft: "d1", at: w.clock, target: { kind: "reply", ids: ["fake:c1:m1"] }, text: "on it" });
-    lead.status = "blocked";
-    advance(3 * MIN);
-    expect(await dutyTick(d)).toEqual([]);
-    expect(w.notified).toEqual([]);
-    expect(alerted()).toEqual([]);
-  });
-
-  test("a drafted id with no live consumer still gets the lead-offline alert: nobody is left to send the draft", async () => {
-    const { w, d, root, channel, advance, alerted } = setup();
-    new Outbox(root).append({ ev: "drafted", draft: "d1", at: w.clock, target: { kind: "reply", ids: ["fake:c1:m1"] }, text: "on it" });
-    expect(channel.states()[0]!.drafted).toBe(true);
-    w.consumerLock(root, "dead");
-    advance(3 * MIN);
-    expect(await dutyTick(d)).toEqual([{ action: "alerted", detail: "fake:c1:m1 lead-offline" }]);
-    expect(w.notified.map((n) => n.text)).toEqual([ALERT_TEXT["lead-offline"]]);
-    expect(alerted()).toEqual(["lead-offline"]);
-  });
 });
 
-describe("duty reply drafts", () => {
-  test("open drafts older than 5 min are told to the lead once per draft; released and dropped ones never", async () => {
-    const { w, d, root, lead, advance } = setup();
-    const outbox = new Outbox(root);
-    outbox.append({ ev: "drafted", draft: "aaaa1111", at: w.clock, target: { kind: "reply", ids: ["fake:c1:m1"] }, text: "one" });
-    outbox.append({ ev: "drafted", draft: "bbbb2222", at: w.clock, target: { kind: "notice", source: "fake", chat: "c1" }, text: "two" });
-    outbox.append({ ev: "drafted", draft: "cccc3333", at: w.clock, target: { kind: "notice", source: "fake", chat: "c1" }, text: "sent" });
-    outbox.append({ ev: "released", draft: "cccc3333", at: w.clock });
-    advance(DRAFTS_ALERT_MS);
-    expect(await dutyTick(d)).toEqual([]); // not older than 5 min yet
-    advance(1000);
-    expect(await dutyTick(d)).toEqual([{ action: "drafts-alerted", detail: "aaaa1111, bbbb2222" }]);
-    expect(lead.received).toEqual([
-      "[DRAFTS] 2 reply draft(s) not sent: aaaa1111, bbbb2222; send them with seori msg flush or drop them with seori msg drop <draft> --why '...'",
-    ]);
-    advance(MIN);
-    expect(await dutyTick(d)).toEqual([]);
-
-    outbox.append({ ev: "dropped", draft: "aaaa1111", at: w.clock, why: "x" });
-    outbox.append({ ev: "drafted", draft: "dddd4444", at: w.clock, target: { kind: "reply", ids: ["fake:c1:m1"] }, text: "three" });
-    advance(DRAFTS_ALERT_MS + 1000);
-    expect(await dutyTick(d)).toEqual([{ action: "drafts-alerted", detail: "dddd4444" }]);
-    expect(lead.received.at(-1)).toStartWith("[DRAFTS] 1 reply draft(s) not sent: dddd4444;");
-    expect(await dutyTick(d)).toEqual([]);
-    expect(lead.received).toHaveLength(2);
-  });
-});

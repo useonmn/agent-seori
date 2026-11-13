@@ -71,15 +71,19 @@ export function agentOmpConfigFiles(root: string, extra: readonly string[] = [],
 }
 
 /**
- * Writes `$SEORI_HOME/prompts/lead-omp.yml` (omp settings for the lead only: advisor.syncBacklog strict, so the
- * advisor's agent-end review finishes before agent_end and reply drafts are released only after it, src/release.ts)
- * and returns the PI_CONFIG_FILES value that loads it after every agent's settings (agentOmpConfigFiles).
+ * Writes `$SEORI_HOME/prompts/lead-omp.yml` (omp settings for the lead only: omp's advisor subsystem on, and
+ * advisor.syncBacklog strict so its review finishes before agent_end) and returns the PI_CONFIG_FILES value that loads it
+ * after every agent's settings (agentOmpConfigFiles).
+ *
+ * omp's advisor is opt-in and off by default; seori turns it on for its own lead only. The lead never waits for it: it
+ * sends each messenger reply as soon as it is written, and when the advisor raises a concern afterwards it sends the
+ * correction as its own message (seori msg send --again).
  */
 export function leadOmpConfig(root: string): string {
   const dir = join(root, "prompts");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "lead-omp.yml");
-  writeFileSync(path, "advisor:\n  syncBacklog: strict\n");
+  writeFileSync(path, "advisor:\n  enabled: true\n  syncBacklog: strict\n");
   return agentOmpConfigFiles(root, [path]);
 }
 
