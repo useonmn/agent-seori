@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { ready, type Deps } from "../src/harness.ts";
+import { FIRST_CHECK_MS } from "../src/startup-verdict.ts";
 import { World } from "./fake.ts";
 
 // `seori start` classifies the new lane before it returns, the way upstream's launch does: the first check 20 s after
@@ -152,6 +153,58 @@ describe("seori start: startup verdict", () => {
     const ok = await start(busy.d, busy.brief);
     expect(ok.out[1]).toBe(`STARTUP_OK fix-login ${busy.id}`);
     expect(ok.code).toBe(0);
+  });
+
+  test("STARTED is printed as soon as the lane is open, before the first startup check", async () => {
+    const { w, d, brief, id } = setup();
+    let kickedAt: number | undefined;
+    w.getHook.set(id, () => void (w.panes.get(id)!.kicked && (kickedAt ??= w.clock)));
+    const at: { line: string; clock: number }[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => void at.push({ line: args.join(" "), clock: w.clock });
+    try {
+      await main(["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force"], d);
+    } finally {
+      console.log = log;
+    }
+    const started = at.find((l) => l.line.startsWith("STARTED fix-login"))!;
+    const verdict = at.find((l) => l.line.startsWith("STARTUP_"))!;
+    expect(started.clock - kickedAt!).toBeLessThan(FIRST_CHECK_MS);
+    expect(verdict.clock).toBeGreaterThan(started.clock);
+  });
+
+  test("a verdict that throws is STARTUP_UNCONFIRMED, exit 3, after STARTED", async () => {
+    const { w, d, brief, id } = setup();
+    // the verdict's own wait fails: once the kickoff is in, the next sleep throws
+    const sleep = d.sleep;
+    const deps: Deps = {
+      ...d,
+      sleep: async (ms) => {
+        if (w.panes.get(id)?.kicked) throw new Error("clock broke");
+        await sleep(ms);
+      },
+    };
+    const { code, out } = await start(deps, brief);
+    expect(out[0]).toStartWith("STARTED fix-login");
+    expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login ${id}: verdict failed: clock broke`);
+    expect(code).toBe(3);
+  });
+
+  test("a pane already working at the first check ignores failure text on its screen: STARTUP_OK", async () => {
+    const { w, d, brief, id } = setup();
+    statusAfterKickoff(w, id, 30_000, "unknown", "idle");
+    const hook = w.getHook.get(id)!;
+    w.getHook.set(id, (n) => {
+      hook(n);
+      const pane = w.panes.get(id)!;
+      if (pane.kicked) {
+        pane.screen = ["$ bun test", "error: Cannot find module './login' from 'test/login.test.ts'", "> "];
+        if (pane.status !== "idle") pane.status = "working";
+      }
+    });
+    const { code, out } = await start(d, brief);
+    expect(out[1]).toBe(`STARTUP_OK fix-login ${id}`);
+    expect(code).toBe(0);
   });
 
   test("an agent behind a dialog (blocked) is STARTUP_UNCONFIRMED at once", async () => {

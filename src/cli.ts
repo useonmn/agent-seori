@@ -899,7 +899,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       };
       const defaults = config.supervision.defaults;
       const anyCeiling = ["wall-minutes", "token-limit", "cost-limit"].some((f) => one(a, f) !== undefined);
-      const { lane, startup } = await launchLane(d, key, need(one(a, "brief"), "--brief"), {
+      const { startup } = await launchLane(d, key, need(one(a, "brief"), "--brief"), {
         cwd: one(a, "cwd"), workspace: one(a, "workspace"),
         ...(one(a, "done") !== undefined ? { done: one(a, "done")! } : {}),
         ...(one(a, "thread") !== undefined ? { thread: one(a, "thread")! } : {}),
@@ -913,8 +913,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
             costUsd: ceilingFlag("cost-limit", defaults.costUsd),
           },
         } : {}),
-      });
-      console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);
+      }, config.startupWaitSeconds, (lane) => console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`));
       console.log(startup);
       return startupExit(startup);
     }

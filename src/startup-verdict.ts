@@ -1,7 +1,6 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 // `seori start`'s startup verdict: after the kickoff, the new lane's screen and status are read until the start can be
 // classified, so a lane whose omp hit "No API key", a 429 or a spent quota is not reported as started.
-import { loadConfig } from "./config.ts";
 import { openLaneSession, type Deps, type StartOptions } from "./harness.ts";
 import { refText } from "./refs.ts";
 import { statusOf, type AgentStatus } from "./runtime/index.ts";
@@ -54,7 +53,7 @@ async function look(d: Deps, lane: Lane): Promise<Look | "finished"> {
  * - `STARTUP_OK <key> <ref>`: omp started on the kickoff and is idle, working or done, with no failure shown.
  * `kickedAt` is when the kickoff went in; `took` whether omp was already seen starting on it.
  */
-export async function startupVerdict(d: Deps, lane: Lane, kickedAt: number, took: boolean): Promise<string> {
+export async function startupVerdict(d: Deps, lane: Lane, kickedAt: number, took: boolean, startupWaitSeconds: number): Promise<string> {
   const { key } = lane;
   const pane = refText(lane.sessionRef);
   const unconfirmed = (why: string, screen: string): string => `STARTUP_UNCONFIRMED ${key} ${pane}: ${why}; last lines: ${lastLines(screen)}`;
@@ -62,13 +61,14 @@ export async function startupVerdict(d: Deps, lane: Lane, kickedAt: number, took
   if (d.now() < firstAt) await d.sleep(firstAt - d.now());
   const first = await look(d, lane);
   if (first === "finished") return `STARTUP_DONE ${key}`;
-  const bad = startupFailure(first.screen);
+  // A working agent's own output may quote these phrases (a file or log it reads): same rule as the rechecks below.
+  const bad = first.status !== "working" ? startupFailure(first.screen) : null;
   if (bad) return `STARTUP_ERROR ${key} ${pane}: ${bad}`;
   if (first.error) return unconfirmed(first.error, first.screen);
   // No status yet is an agent still starting (a slow host can take minutes): it is waited for below. A `shell`, a
   // dialog (`blocked`) or a gone pane ends the start at once.
   if (!(ready(first.status) || unreported(first.status))) return unconfirmed(`no ready agent status (${first.status ?? "none"})`, first.screen);
-  const waitMs = loadConfig(d.store.root).startupWaitSeconds * 1000;
+  const waitMs = startupWaitSeconds * 1000;
   const rechecks = Math.max(0, Math.ceil((waitMs - (d.now() - kickedAt)) / RECHECK_MS));
   let shown = first.screen;
   let current = first.status;
@@ -98,10 +98,25 @@ export async function startupVerdict(d: Deps, lane: Lane, kickedAt: number, took
   return `STARTUP_OK ${key} ${pane}`;
 }
 
-/** Opens a lane (src/harness.ts openLaneSession) and classifies its start. */
-export async function launchLane(d: Deps, key: string, briefFile: string, opts: StartOptions = {}): Promise<{ lane: Lane; startup: string }> {
+/**
+ * Opens a lane (src/harness.ts openLaneSession) and classifies its start. `onOpened` runs as soon as the lane is open,
+ * before the verdict's wait; a verdict that throws is STARTUP_UNCONFIRMED, since the lane is already running.
+ */
+export async function launchLane(
+  d: Deps,
+  key: string,
+  briefFile: string,
+  opts: StartOptions,
+  startupWaitSeconds: number,
+  onOpened: (lane: Lane) => void = () => {},
+): Promise<{ lane: Lane; startup: string }> {
   const started = await openLaneSession(d, key, briefFile, opts);
-  return { lane: started.lane, startup: await startupVerdict(d, started.lane, started.kickedAt, started.took) };
+  onOpened(started.lane);
+  try {
+    return { lane: started.lane, startup: await startupVerdict(d, started.lane, started.kickedAt, started.took, startupWaitSeconds) };
+  } catch (e) {
+    return { lane: started.lane, startup: `STARTUP_UNCONFIRMED ${key} ${refText(started.lane.sessionRef)}: verdict failed: ${message(e)}` };
+  }
 }
 
 /** A verdict that keeps the lane is exit 3; OK and DONE are 0. */
