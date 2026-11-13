@@ -115,6 +115,14 @@ describe("sampleHost", () => {
     ]);
     expect(hostLine(s)).toContain("disk free unknown, panes unknown");
   });
+
+  test("a session-list failure that is not a tool result keeps its own cause", async () => {
+    const { d } = setup();
+    Object.assign(d.runtimes.default, { list: async () => Promise.reject(new Error("spawn herdr ENOENT")) });
+    const s = await sampleHost(d);
+    expect(s.panes).toBeUndefined();
+    expect(s.unreadable.join("\n")).toContain("spawn herdr ENOENT");
+  });
 });
 
 describe("canLaunch", () => {

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ConfigError } from "../config.ts";
 import { readableByOthers } from "../platform.ts";
 import { SendUncertain } from "./adapter.ts";
 
@@ -28,7 +29,12 @@ export function secret(
   if (existsSync(path)) {
     const exposed = othersCanRead(path);
     if (exposed) throw new Error(exposed);
-    const all = JSON.parse(readFileSync(path, "utf8")) as Secrets;
+    let all: Secrets;
+    try {
+      all = JSON.parse(readFileSync(path, "utf8")) as Secrets;
+    } catch (e) {
+      throw new ConfigError(`${path}: not valid JSON (${e instanceof Error ? e.message : String(e)})`);
+    }
     const value = all[source]?.[key];
     if (value) return value;
   }

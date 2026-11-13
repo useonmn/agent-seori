@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ConfigError } from "../config.ts";
 
 // One messenger (fake, telegram, slack, discord) behind one interface. `seori daemon` runs `receive` for each configured
 // messenger; `seori msg send` calls `send`. Real platform adapters arrive in a later stage; `fake` is for tests.
@@ -105,11 +106,16 @@ export type MessengerConfig = {
 export function loadMessengers(root: string): MessengerConfig[] {
   const path = join(root, "messengers.json");
   if (!existsSync(path)) return [];
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as { messengers?: unknown };
-  if (!Array.isArray(parsed.messengers)) throw new Error(`${path}: "messengers" must be an array`);
+  let parsed: { messengers?: unknown };
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8")) as { messengers?: unknown };
+  } catch (e) {
+    throw new ConfigError(`${path}: not valid JSON (${e instanceof Error ? e.message : String(e)})`);
+  }
+  if (!Array.isArray(parsed.messengers)) throw new ConfigError(`${path}: "messengers" must be an array`);
   return parsed.messengers.map((m, i) => {
     const c = m as Partial<MessengerConfig>;
-    if (typeof c.source !== "string" || typeof c.owner !== "string") throw new Error(`${path}: messengers[${i}] needs string "source" and "owner"`);
+    if (typeof c.source !== "string" || typeof c.owner !== "string") throw new ConfigError(`${path}: messengers[${i}] needs string "source" and "owner"`);
     return { source: c.source, owner: c.owner, ...(c.options ? { options: c.options } : {}) };
   });
 }

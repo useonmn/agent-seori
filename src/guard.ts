@@ -84,7 +84,7 @@ export async function sampleHost(d: Deps): Promise<HostSample> {
   try {
     panes = (await rt.list()).length;
   } catch (e) {
-    unreadable.push(`panes unreadable (${rt.kind} pane list: ${e instanceof ToolError ? why(e.result.stderr, e.result.stdout) : "unexpected output"})`);
+    unreadable.push(`panes unreadable (${rt.kind} pane list: ${e instanceof ToolError ? why(e.result.stderr, e.result.stdout) : e instanceof Error ? why(e.message, "") : String(e)})`);
   }
 
   return {
