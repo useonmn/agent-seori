@@ -2,7 +2,7 @@
 import type { Deps } from "./harness.ts";
 import { POLL_MS, type MigrateOpts, type Subject } from "./migrate-capture.ts";
 import { drainForward, moveBack, moveInbox } from "./migrate-inbox.ts";
-import { journalPath, type MigrateJournal, removeJournal, writeJournal } from "./migrate-journal.ts";
+import { journalPath, type MigrateJournal, readJournal, removeJournal, writeJournal } from "./migrate-journal.ts";
 import { refText } from "./refs.ts";
 import { formatRef, type SessionRef } from "./runtime/types.ts";
 
@@ -52,12 +52,33 @@ async function rollback(d: Deps, s: Subject, j: MigrateJournal, newRef: SessionR
  * close the old one, drain what late senders appended to the old inbox.
  */
 export async function swapAgent(d: Deps, s: Subject, j: MigrateJournal, opts: MigrateOpts): Promise<number> {
+  if (j.phase === "creating") {
+    // A run cut short while omp started in its replacement: that session's state is unknown, so close it and open anew.
+    const half = j.newRef as SessionRef;
+    try {
+      await closeQuietly(d, half);
+    } catch (e) {
+      throw new Error(
+        `${s.name}: could not close ${formatRef(half)}, the replacement a cut-short run was starting: ${why(e)}; ` +
+          `the journal ${journalPath(d.store.root, s.name)} keeps it: re-run seori migrate --to ${j.to}`,
+      );
+    }
+    const { newRef: _, ...rest } = j;
+    j = { ...rest, phase: "hold" };
+    writeJournal(d.store.root, j);
+  }
   if (j.phase === "hold") {
     let opened: SessionRef;
     try {
       opened = await s.open(d.runtimes.for({ runtime: j.to, id: "" }), j.briefPath ?? "", j.resume);
     } catch (e) {
-      return rollback(d, s, j, undefined, `did not open: ${why(e)}`, opts);
+      // open journals the replacement once it exists and closes it on failure, quietly: a close that failed is reported.
+      const half = readJournal(d.store.root, s.name)?.newRef;
+      let leftOpen = "";
+      if (half !== undefined) {
+        await closeQuietly(d, half).catch((c: unknown) => void (leftOpen = `; replacement ${formatRef(half)} NOT closed: ${why(c)}`));
+      }
+      return rollback(d, s, j, undefined, `did not open: ${why(e)}${leftOpen}`, opts);
     }
     j = { ...j, phase: "opened", newRef: opened };
     writeJournal(d.store.root, j);

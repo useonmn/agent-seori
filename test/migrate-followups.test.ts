@@ -239,6 +239,39 @@ describe("seori migrate follow-ups", () => {
     await expect(migrate(d, { lane: "k" }, opts({ to: "hc" }))).rejects.toBeInstanceOf(Refusal);
   });
 
+  test("a run cut short while the replacement was being started closes that replacement before opening another", async () => {
+    const { r, d, lines, opts } = migrateWorld("idle", {}, { t1: terminal({ labels: { "seori.lane": "k" } }) });
+    d.store.saveLane({ ...d.store.lane("k")!, migration: true });
+    const briefPath = join(d.store.root, "briefs", "k.migrate-1.md");
+    writeFileSync(briefPath, "handoff");
+    writeJournal(d.store.root, { name: "k", kind: "lane", phase: "creating", from: OLD, to: "hc", at: 1, briefPath, newRef: NEW });
+    expect(await migrate(d, { lane: "k" }, opts({ to: "hc" }))).toBe(0);
+    expect(lines).toEqual(["MIGRATED k w1:p3 -> hc:t2"]);
+    expect(r.terminals()["t1"]).toBeUndefined();
+    const live = Object.entries(r.terminals()).filter(([, t]) => t.state === "live" && t.labels["seori.lane"] === "k");
+    expect(live.map(([id]) => id)).toEqual(["t2"]);
+    expect(readJournal(d.store.root, "k")).toBeUndefined();
+  });
+
+  test("the journal names the replacement before omp is started in it, so a failed start leaves nothing unreported", async () => {
+    const { r, d, lines, opts } = migrateWorld("idle", { sendError: "unavailable" });
+    const phases: (string | undefined)[] = [];
+    const realStart = r.rt.startAgent.bind(r.rt);
+    r.rt.startAgent = (...a: Parameters<typeof realStart>) => {
+      const j = readJournal(d.store.root, "k");
+      phases.push(`${j?.phase} ${j?.newRef?.id}`);
+      return realStart(...a);
+    };
+    r.rt.close = async () => {
+      throw new Error("hc core unavailable");
+    };
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(3);
+    expect(phases[0]).toBe("creating t1");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("MIGRATE_ROLLBACK k hc:- did not open: ");
+    expect(lines[0]).toContain("replacement hc:t1 NOT closed: hc core unavailable");
+  });
+
   test("done refuses a lane being migrated", async () => {
     const { d, lines } = migrateWorld("idle");
     d.store.saveLane({ ...d.store.lane("k")!, status: "ready", migration: true });
