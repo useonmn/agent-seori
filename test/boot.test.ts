@@ -184,4 +184,12 @@ describe("bootReport", () => {
     expect(r.lines).toContain("DAEMON heartbeat age=120s stale");
     expect(r.lines).toContain(`ORPHAN-WATCH ${watch.id} name=file owner=lane:vanished-key lane=missing status=active; stop it with: seori watch stop ${watch.id}`);
   });
+
+  test("a malformed hooks block makes the config invalid", async () => {
+    const { d } = setup();
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ hooks: "x" }));
+    const r = await bootReport(d);
+    expect(r.lines.some((l) => l.startsWith("CONFIG invalid: config.json: hooks must be an object"))).toBe(true);
+    expect(r.complete).toBe(false);
+  });
 });
