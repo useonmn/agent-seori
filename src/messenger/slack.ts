@@ -1,6 +1,7 @@
+import { loadConfig } from "../config.ts";
 import {
-  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
-  type ThreadChange, type ThreadResult, type ThreadStatus, type ThreadTarget,
+  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type Sender, type SendTarget,
+  SendUncertain, type ThreadChange, type ThreadResult, type ThreadStatus, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, secretsPath, splitText } from "./common.ts";
 
@@ -14,6 +15,11 @@ import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, rep
 // workspace member with that member's token and `d` cookie, ported from upstream dori's slack-inbound. There is no
 // socket: every pollIntervalMs it asks which conversations have news (client.counts and subscriptions.thread.getView),
 // then reads them like the catch-up above, from its own cursor file (user-cursor.json, so a bot cursor never mixes in).
+//
+// Who gets through: the owner's messages as always. In bot mode with config.json talkWithOthers (the default), also other
+// people's and agents' (a bot_id or a bot_message): every direct message to the bot, a top-level channel message that
+// mentions the bot, and every message in a thread the bot is in (it was mentioned there, or posted there). The bot's own
+// messages never pass. User mode stays owner-only: it is a member account that colleagues message as that person.
 
 /** Slack's documented text limit is 4000; a margin keeps a split chunk clear of it. */
 const TEXT_LIMIT = 3900;
@@ -60,6 +66,8 @@ const DEFAULT_STATUS_LIMIT_MS = 30 * 60_000;
 type Cursor = {
   channels: Record<string, string>;
   threads: Record<string, Record<string, string>>;
+  /** talkWithOthers: `joined[channel]` = the tracked threads the bot is in (mentioned, or posted), whose every message passes. */
+  joined?: Record<string, string[]>;
   /** User mode: the ts of the first start; nothing older is ever delivered. */
   since?: string;
 };
@@ -71,6 +79,9 @@ type SlackMessage = {
   channel_type?: string;
   user?: string;
   bot_id?: string;
+  /** A bot_message's display name, and an app bot's profile. */
+  username?: string;
+  bot_profile?: { name?: string };
   text?: string;
   ts?: string;
   thread_ts?: string;
@@ -93,6 +104,10 @@ type Receiving = {
   readonly token: string;
   /** The bot's user id, or in user mode this account's own. */
   readonly botUser: string;
+  /** Bot mode: the bot's own bot_id, so its bot_message posts are known as its own. */
+  readonly botId?: string;
+  /** Other people's and agents' messages pass too (config.json talkWithOthers, bot mode only, never while pairing). */
+  readonly others?: boolean;
   readonly onMessage: (m: InboundMessage) => Promise<void>;
   readonly signal: AbortSignal;
   /** Agent mode: `<channel>:<thread ts>` of DM threads showing the working status, until when it is kept up. */
@@ -352,9 +367,11 @@ export class SlackAdapter implements MessengerAdapter {
     const appToken = this.appToken();
     const file = CursorFile.for<Cursor>(this.cursorRoot, this.source);
     const saved = file.load();
-    const cursor: Cursor = { channels: { ...(saved?.channels ?? {}) }, threads: { ...(saved?.threads ?? {}) } };
+    const cursor: Cursor = { channels: { ...(saved?.channels ?? {}) }, threads: { ...(saved?.threads ?? {}) }, ...(saved?.joined ? { joined: { ...saved.joined } } : {}) };
     const delivered = new Set<string>();
+    const others = !this.pairing && this.talkWithOthers();
     let botUser: string | undefined;
+    let botId = "";
     let failures = 0;
     /** When receive last stopped being healthy (hello seen and catch-up done); undefined while healthy. */
     let failingSince: number | undefined;
@@ -364,12 +381,16 @@ export class SlackAdapter implements MessengerAdapter {
       let healthy = false;
       let usingAppToken = false;
       try {
-        if (botUser === undefined) botUser = String((await this.api("auth.test", botToken, undefined, "GET", signal)).user_id ?? "");
+        if (botUser === undefined) {
+          const me = await this.api("auth.test", botToken, undefined, "GET", signal);
+          botId = typeof me.bot_id === "string" ? me.bot_id : "";
+          botUser = String(me.user_id ?? "");
+        }
         usingAppToken = true;
         const url = (await this.api("apps.connections.open", appToken, undefined, "POST", signal)).url;
         usingAppToken = false;
         if (typeof url !== "string") throw new Error("apps.connections.open returned no url");
-        const ctx: Receiving = { cursor, file, delivered, token: botToken, botUser, onMessage, signal, working };
+        const ctx: Receiving = { cursor, file, delivered, token: botToken, botUser, botId, others, onMessage, signal, working };
         const end = await this.session(url, ctx, () => {
           healthy = true;
           failures = 0;
@@ -394,6 +415,15 @@ export class SlackAdapter implements MessengerAdapter {
       }
       failures++;
       await this.pause(Math.min(BACKOFF_CAP_MS, 500 * 2 ** (failures - 1)), signal);
+    }
+  }
+
+  /** config.json talkWithOthers; a config.json that does not load means owner-only, as the daemon reads it then. */
+  private talkWithOthers(): boolean {
+    try {
+      return loadConfig(this.root).talkWithOthers;
+    } catch {
+      return false;
     }
   }
 
@@ -682,6 +712,7 @@ export class SlackAdapter implements MessengerAdapter {
         if (!GONE_ERRORS.has(e.error)) throw e;
         delete ctx.cursor.channels[channel];
         delete ctx.cursor.threads[channel];
+        delete ctx.cursor.joined?.[channel];
         ctx.file.save(ctx.cursor);
         continue;
       }
@@ -741,6 +772,8 @@ export class SlackAdapter implements MessengerAdapter {
       .sort(([, a], [, b]) => compareTs(b, a))
       .slice(0, THREAD_LIMIT);
     ctx.cursor.threads[channel] = Object.fromEntries(keep);
+    const joined = ctx.cursor.joined?.[channel];
+    if (joined) ctx.cursor.joined![channel] = joined.filter((r) => ctx.cursor.threads[channel]![r] !== undefined);
     ctx.file.save(ctx.cursor);
   }
 
@@ -761,8 +794,10 @@ export class SlackAdapter implements MessengerAdapter {
     if (ev.subtype === "message_changed") return this.handleEdit(ev, channel, dm, ctx);
     const ts = ev.ts;
     if (!ts) return;
-    // A thread_broadcast is a thread reply also sent to the channel: the owner's words like any other message.
-    if (ev.subtype !== undefined && ev.subtype !== "file_share" && ev.subtype !== "thread_broadcast") {
+    const own = this.own(ev, ctx);
+    // A thread_broadcast is a thread reply also sent to the channel: the owner's words like any other message. Another
+    // bot's bot_message is an agent's words when others may talk.
+    if (ev.subtype !== undefined && ev.subtype !== "file_share" && ev.subtype !== "thread_broadcast" && !(ctx.others && ev.subtype === "bot_message" && !own)) {
       if (ev.subtype === "bot_message") this.advance(channel, ts, ctx);
       return;
     }
@@ -776,11 +811,22 @@ export class SlackAdapter implements MessengerAdapter {
     // A reply in a thread this account follows (it posted there, or the threads view lists it) is addressed like a live
     // thread event: the owner answers seori's thread without mentioning it again.
     const followed = ev.thread_ts !== undefined && ev.thread_ts !== ts && ctx.cursor.threads[channel]?.[ev.thread_ts] !== undefined;
-    const addressed = dm || !fromHistory || followed || (ctx.botUser !== "" && (ev.text ?? "").includes(`<@${ctx.botUser}>`));
-    const text = owner && addressed ? bodyText(ev) : "";
+    const mentioned = this.mentions(ev, ctx);
+    const addressed = dm || !fromHistory || followed || mentioned;
+    const root = ev.thread_ts ?? ts;
+    const fromOwner = owner && addressed;
+    // Others' messages follow the same rules live and in catch-up: a DM, a mention, or a thread the bot is in.
+    const fromOther = !fromOwner && ctx.others === true && !own && !this.isOwner(ev) && this.reaches(ev, ts, channel, dm, mentioned, ctx);
+    const text = fromOwner || fromOther ? bodyText(ev) : "";
     if (!text) {
-      if (ctx.botUser !== "" && ev.user === ctx.botUser) {
-        this.track(channel, ev.thread_ts ?? ts, ts, ctx); // the owner may answer in seori's thread
+      if (own) {
+        // A channel seori posts in first becomes known, so replies under its message are read like any other thread.
+        if (ctx.others && ctx.cursor.channels[channel] === undefined) {
+          ctx.cursor.channels[channel] = ts;
+          ctx.file.save(ctx.cursor);
+        }
+        this.track(channel, root, ts, ctx); // the owner may answer in seori's thread
+        if (ctx.others) this.join(channel, root, ctx);
         if (dm) this.stopWorking(channel, ev.thread_ts, ctx);
       }
       return this.advance(channel, ts, ctx);
@@ -790,15 +836,80 @@ export class SlackAdapter implements MessengerAdapter {
       ctx.cursor.channels[channel] = tsBefore(ts);
       ctx.file.save(ctx.cursor);
     }
-    this.track(channel, ev.thread_ts ?? ts, ts, ctx); // seori replies under this message: catch-up reads that thread
+    this.track(channel, root, ts, ctx); // seori replies under this message: catch-up reads that thread
+    if (ctx.others && mentioned) this.join(channel, root, ctx);
     const agentThread = dm && this.agent && !this.pairing;
-    const thread = dm && !agentThread ? ev.thread_ts : (ev.thread_ts ?? ts);
-    const from = this.pairing ? (ev.user as string) : this.config.owner;
+    const thread = dm && !agentThread ? ev.thread_ts : root;
+    const from = !fromOwner ? (ev.user ?? ev.bot_id)! : this.pairing ? (ev.user as string) : this.config.owner;
+    const sender = fromOwner ? { kind: "owner" as const, id: from } : await this.other(ev, from, ctx);
     // A thread reply answers the thread's first message; its text is not in the event (seori msg show reads it).
     const replyTo = ev.thread_ts && ev.thread_ts !== ts ? { replyTo: { id: messageId(this.source, channel, ev.thread_ts) } } : {};
-    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, sender: { kind: "owner", id: from }, at: tsMs(ts), text, ...replyTo }, key, ctx);
-    if (agentThread && thread) this.showWorking(channel, thread, ctx.working);
+    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, sender, at: tsMs(ts), text, ...replyTo }, key, ctx);
+    // The working status answers the owner's requests only.
+    if (fromOwner && agentThread && thread) this.showWorking(channel, thread, ctx.working);
     this.advance(channel, ts, ctx);
+  }
+
+  /** The configured owner, not a bot. */
+  private isOwner(m: SlackMessage): boolean {
+    return m.user === this.config.owner && !m.bot_id;
+  }
+
+  /** The bot's (or in user mode this account's) own message: never delivered. */
+  private own(m: SlackMessage, ctx: Receiving): boolean {
+    return (ctx.botUser !== "" && m.user === ctx.botUser) || (!!ctx.botId && m.bot_id === ctx.botId);
+  }
+
+  private mentions(m: SlackMessage, ctx: Receiving): boolean {
+    return ctx.botUser !== "" && (m.text ?? "").includes(`<@${ctx.botUser}>`);
+  }
+
+  /** Another person's or agent's message reaches the lead: a DM to the bot, a mention, or a thread the bot is in. */
+  private reaches(m: SlackMessage, ts: string, channel: string, dm: boolean, mentioned: boolean, ctx: Receiving): boolean {
+    if (!(m.user ?? m.bot_id)) return false;
+    if (dm || mentioned) return true;
+    return m.thread_ts !== undefined && m.thread_ts !== ts && this.joined(channel, m.thread_ts, ctx);
+  }
+
+  private joined(channel: string, root: string, ctx: Receiving): boolean {
+    return ctx.cursor.threads[channel]?.[root] !== undefined && (ctx.cursor.joined?.[channel]?.includes(root) ?? false);
+  }
+
+  /** The bot is in tracked thread `root` (mentioned there, or posted there): every message in it passes. */
+  private join(channel: string, root: string, ctx: Receiving): void {
+    if (ctx.cursor.threads[channel]?.[root] === undefined) return;
+    const list = ((ctx.cursor.joined ??= {})[channel] ??= []);
+    if (list.includes(root)) return;
+    list.push(root);
+    ctx.file.save(ctx.cursor);
+  }
+
+  /** Who another sender is: an agent (a bot_id or a bot_message) named by its bot profile, else a person. */
+  private async other(m: SlackMessage, id: string, ctx: Receiving): Promise<Sender> {
+    if (m.bot_id !== undefined || m.subtype === "bot_message") {
+      const name = m.bot_profile?.name || m.username;
+      return { kind: "agent", id, ...(name ? { name } : {}) };
+    }
+    const name = await this.personName(id, ctx);
+    return { kind: "person", id, ...(name ? { name } : {}) };
+  }
+
+  /** users.info names, asked once per person; a refusal (e.g. no users:read scope) is remembered as no name. */
+  private readonly names = new Map<string, string | undefined>();
+
+  private async personName(id: string, ctx: Receiving): Promise<string | undefined> {
+    if (this.names.has(id)) return this.names.get(id);
+    type User = { name?: string; real_name?: string; profile?: { display_name?: string; real_name?: string } };
+    try {
+      const user = (await this.api("users.info", ctx.token, { user: id }, "GET", ctx.signal)).user as User | undefined;
+      const name = [user?.profile?.display_name, user?.profile?.real_name, user?.real_name, user?.name].find((n): n is string => typeof n === "string" && n.trim() !== "");
+      this.names.set(id, name);
+      return name;
+    } catch (e) {
+      if (ctx.signal.aborted) throw e;
+      if (e instanceof SlackApiError) this.names.set(id, undefined);
+      return undefined; // a name is a courtesy: the message goes on without one
+    }
   }
 
   /** Agent mode: the lead has the owner's message, so the thread shows the working status until seori replies there. */
@@ -854,14 +965,18 @@ export class SlackAdapter implements MessengerAdapter {
   private async handleEdit(ev: SlackMessage, channel: string, dm: boolean, ctx: Receiving): Promise<void> {
     const m = ev.message;
     const stamp = m?.edited?.ts;
-    if (this.pairing || !m?.ts || !stamp || m.bot_id || m.user !== this.config.owner) return; // unfurls also arrive as message_changed, without `edited`
+    if (this.pairing || !m?.ts || !stamp) return; // unfurls also arrive as message_changed, without `edited`
+    const fromOwner = this.isOwner(m);
+    if (!fromOwner && !(ctx.others && !this.own(m, ctx) && this.reaches(m, m.ts, channel, dm, this.mentions(m, ctx), ctx))) return;
     const key = `${channel}:${m.ts}:edit:${stamp}`;
     if (ctx.delivered.has(key)) return;
     const text = bodyText(m);
     if (!text) return;
     const thread = dm && !this.agent ? m.thread_ts : (m.thread_ts ?? m.ts);
+    const from = fromOwner ? this.config.owner : (m.user ?? m.bot_id)!;
+    const sender = fromOwner ? { kind: "owner" as const, id: from } : await this.other(m, from, ctx);
     await this.deliver(
-      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from: this.config.owner, sender: { kind: "owner", id: this.config.owner }, at: tsMs(stamp), text: `(edited) ${text}` },
+      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, sender, at: tsMs(stamp), text: `(edited) ${text}` },
       key,
       ctx,
     );
