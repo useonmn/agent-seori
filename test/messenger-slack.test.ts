@@ -518,14 +518,17 @@ describe("SlackAdapter send", () => {
 });
 
 describe("SlackAdapter removed user-token mode", () => {
-  test("options.mode user, or secrets.json with userToken or cookie and no botToken, is refused naming the bot app", () => {
+  test("options.mode user, or a user token or cookie (secrets.json or env) and no botToken, is refused naming the bot app", () => {
     const removed = /Slack user-token mode was removed; create a Slack bot app/;
     expect(() => new SlackAdapter({ source: "slack", owner: OWNER, options: { mode: "user" } }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } })).toThrow(removed);
     const root = home();
     writeFileSync(join(root, "secrets.json"), JSON.stringify({ slack: { userToken: "xoxc-1", cookie: "xoxd-1" } }), { mode: 0o600 });
     expect(() => new SlackAdapter({ source: "slack", owner: OWNER }, root, { env: {} })).toThrow(removed);
-    // A bot token alongside leftover user-mode keys runs as the bot.
+    expect(() => new SlackAdapter({ source: "slack", owner: OWNER }, home(), { env: { SEORI_SLACK_USER_TOKEN: "xoxc-1", SEORI_SLACK_COOKIE: "xoxd-1" } })).toThrow(removed);
+    // A bot token alongside leftover user-mode keys runs as the bot; "bot" is the only mode left, and a typo is refused.
     expect(() => new SlackAdapter({ source: "slack", owner: OWNER }, root, { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } })).not.toThrow();
+    expect(() => new SlackAdapter({ source: "slack", owner: OWNER, options: { mode: "bot" } }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } })).not.toThrow();
+    expect(() => new SlackAdapter({ source: "slack", owner: OWNER, options: { mode: "usr" } }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } })).toThrow(/"mode" must be "bot" or left out, got "usr"/);
   });
 });
 

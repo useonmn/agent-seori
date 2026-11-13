@@ -22,7 +22,7 @@ export const MESSENGER_TOKEN_ENV = [
   "SEORI_DISCORD_TOKEN",
   "SEORI_SLACK_BOT_TOKEN",
   "SEORI_SLACK_APP_TOKEN",
-  // Still cleared on hosts upgraded from the removed Slack user-token mode, so a leftover credential never reaches an agent.
+  // Read only to refuse the removed Slack user-token mode, and cleared so a leftover credential never reaches an agent.
   "SEORI_SLACK_USER_TOKEN",
   "SEORI_SLACK_COOKIE",
 ] as const;
