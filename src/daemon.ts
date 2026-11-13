@@ -276,9 +276,8 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
         const conversation = `${m.chat}:${m.thread ?? ""}`;
         let loopStopped: number | undefined;
         const run = (agentRun.get(conversation) ?? 0) + 1;
-        if (!agent) agentRun.delete(conversation);
-        else if (run > talk.agentTurnLimit + 1) return emit({ ev: "dropped", id: m.id, from: m.from });
-        else if (run > talk.agentTurnLimit) loopStopped = talk.agentTurnLimit;
+        if (agent && run > talk.agentTurnLimit + 1) return emit({ ev: "dropped", id: m.id, from: m.from });
+        if (agent && run > talk.agentTurnLimit) loopStopped = talk.agentTurnLimit;
         const row: MessengerRow = {
           id: m.id,
           kind: "messenger",
@@ -295,6 +294,8 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           ...(loopStopped !== undefined ? { loopStopped } : {}),
         };
         const stored = channel.appendInbound(row);
+        // A human message resets the count only when it is new: a replayed one must not restart a stopped loop.
+        if (stored && !agent) agentRun.delete(conversation);
         if (stored && agent) {
           agentRun.delete(conversation); // re-inserted last: the map keeps the most recently active conversations
           agentRun.set(conversation, run);

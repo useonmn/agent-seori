@@ -488,15 +488,23 @@ function parseTrustSpec(spec: string): { source: string; id: string } {
 
 /**
  * The owner's say-so for a trust change: `because` must be a lead-channel messenger message from the owner (a row
- * stored before senders were recorded came from the owner), so the lead can change trust only when the owner asked.
+ * stored before senders were recorded came from the owner) whose text names the sender's id, so the lead can change
+ * trust only when the owner asked for that sender, not on any owner message it can find.
  */
-function ownerAsked(root: string, because: string | undefined): void {
+function ownerAsked(root: string, because: string | undefined, id: string): void {
   if (because === undefined) throw new Refusal("give --because <id of the owner's message that asked for this>");
   const row = new Channel(root).inbound().findLast((r) => r.id === because);
   if (row?.kind !== "messenger") throw new Refusal(`--because ${because} is not a messenger message in the lead channel`);
   if (row.sender !== undefined && row.sender.kind !== "owner") {
     throw new Refusal(`--because ${because} is from ${row.sender.kind} ${row.sender.id}, not the owner: only the owner can change who is trusted`);
   }
+  if (!mentionsWord(row.text, id)) throw new Refusal(`--because ${because} does not name ${id}: cite the owner's message that asks to change trust for that sender`);
+}
+
+/** `word` appears in `text` with no letter, digit or underscore right before or after it (u3 is not in u30). */
+function mentionsWord(text: string, word: string): boolean {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "u").test(text);
 }
 
 export const trustLine = (t: TrustedSender): string => `TRUSTED ${t.source}:${t.id}${t.name !== undefined ? ` name=${JSON.stringify(t.name)}` : ""}`;
@@ -515,7 +523,7 @@ function trustedNow(root: string): readonly TrustedSender[] {
 export function msgTrustAdd(root: string, spec: string, o: { readonly name?: string; readonly because?: string }): TrustedSender {
   const { source, id } = parseTrustSpec(spec);
   if (o.name !== undefined && !o.name.trim()) throw new Refusal("--name must not be empty");
-  ownerAsked(root, o.because);
+  ownerAsked(root, o.because, id);
   const entry: TrustedSender = { source, id, ...(o.name !== undefined ? { name: o.name.trim() } : {}) };
   const list = trustedNow(root);
   const at = list.findIndex((t) => t.source === source && t.id === id);
@@ -526,7 +534,7 @@ export function msgTrustAdd(root: string, spec: string, o: { readonly name?: str
 /** `seori msg trust remove <source>:<id> --because <owner message id>`. */
 export function msgTrustRemove(root: string, spec: string, because: string | undefined): void {
   const { source, id } = parseTrustSpec(spec);
-  ownerAsked(root, because);
+  ownerAsked(root, because, id);
   const list = trustedNow(root);
   if (!list.some((t) => t.source === source && t.id === id)) throw new Refusal(`${source}:${id} is not trusted`);
   writeTrusted(root, list.filter((t) => !(t.source === source && t.id === id)));
