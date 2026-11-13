@@ -57,6 +57,8 @@ describe("seori pause", () => {
     const prompt = w.calls.findIndex((c) => c.argv[1] === "send");
     const esc = w.calls.findIndex((c) => c.argv[1] === "keys");
     expect(prompt).toBeLessThan(esc);
+    // A goal-mode lane reads working: /goal pause goes in with no status gate (a gated send would be refused).
+    expect(w.calls[prompt]!.argv).toEqual(["--json", "send", "t5", "--", "/goal pause"]);
   });
 
   test("a failed Escape still leaves the lane paused and says so", async () => {

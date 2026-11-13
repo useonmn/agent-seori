@@ -287,17 +287,19 @@ async function up(d: Deps, cwdFlag: string | undefined): Promise<void> {
 const dutyLine = (e: DutyEvent): string => `DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`;
 
 /**
- * One pass of the long-running duty loop. A record left from herdr refuses the pass with one `DUTY ERROR` line naming
- * its file, and the loop keeps running, so the next pass goes through once that file is cleaned up; any other error
- * still ends the loop.
+ * One pass of the long-running duty loop. A live record left from herdr is skipped and named once per pass as a
+ * `DUTY ERROR` line, so every hc lane is still supervised until that file is cleaned up (a herdr roles.json value
+ * still refuses the parts that need the lead). Any other error still ends the loop.
  */
 export async function dutyPass(d: Deps, out: (line: string) => void = console.log, err: (line: string) => void = console.error): Promise<void> {
+  const refused = new Set<string>();
   try {
-    for (const e of await dutyTick(d)) out(dutyLine(e));
+    for (const e of await dutyTick({ ...d, store: d.store.skippingHerdr((r) => refused.add(r.message)) })) out(dutyLine(e));
   } catch (e) {
     if (!(e instanceof HerdrRecord)) throw e;
-    err(`DUTY ERROR ${e.message}`);
+    refused.add(e.message);
   }
+  for (const message of refused) err(`DUTY ERROR ${message}`);
 }
 
 /** This file, which the units' ExecStart runs with bun. */
