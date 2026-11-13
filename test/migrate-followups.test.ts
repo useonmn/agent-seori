@@ -1,11 +1,11 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Deps, done, Refusal } from "../src/harness.ts";
+import { type Deps, done, flushInbox, Refusal } from "../src/harness.ts";
 import { migrate } from "../src/migrate.ts";
 import { moveBack, moveInbox } from "../src/migrate-inbox.ts";
-import { readJournal, writeJournal } from "../src/migrate-journal.ts";
+import { createJournal, readJournal, writeJournal } from "../src/migrate-journal.ts";
 import { herdrRef } from "./fake.ts";
 import { terminal } from "./helpers/hc-rig.ts";
 import { migrateWorld, msg, NEW, OLD } from "./migrate-setup.ts";
@@ -196,6 +196,25 @@ describe("seori migrate follow-ups", () => {
     expect(err.message).toContain("herdr socket gone");
     expect(readJournal(d.store.root, "k")!.phase).toBe("switched");
     expect(d.store.lane("k")!.sessionRef).toMatchObject(NEW);
+  });
+
+  test("an unreadable journal of another session does not stop this session's inbox from flushing", async () => {
+    const { d } = migrateWorld("idle");
+    mkdirSync(join(d.store.root, "migrate"), { recursive: true });
+    writeFileSync(join(d.store.root, "migrate", "other.json"), "");
+    d.store.saveInbox(OLD, [msg("one", 1)]);
+    expect(await flushInbox(d, OLD)).toBe("delivered");
+    // Read by name it still refuses, and the refusal names the file to inspect or delete.
+    expect(() => readJournal(d.store.root, "other")).toThrow(join(d.store.root, "migrate", "other.json"));
+  });
+
+  test("createJournal publishes a whole file, refuses an existing one, and leaves no temp file", () => {
+    const { d } = migrateWorld("idle");
+    const j = { name: "k", kind: "lane", phase: "hold", from: OLD, to: "hc", at: 1 } as const;
+    expect(createJournal(d.store.root, j)).toBe(true);
+    expect(createJournal(d.store.root, { ...j, at: 2 })).toBe(false);
+    expect(readJournal(d.store.root, "k")!.at).toBe(1);
+    expect(readdirSync(join(d.store.root, "migrate"))).toEqual(["k.json"]);
   });
 
   test("done refuses a lane being migrated", async () => {
