@@ -14,6 +14,8 @@ import type { VoiceTranscriber } from "./voice.ts";
 const TEXT_LIMIT = 4096;
 const TOPIC_NAME_LIMIT = 128;
 const MAX_BACKOFF_MS = 30_000;
+/** How long one voice message may take to download and transcribe before it is delivered without a transcript. */
+const TRANSCRIBE_TIMEOUT_MS = 120_000;
 
 type User = { id: number; is_bot?: boolean; username?: string };
 type FileRef = { file_id: string; file_name?: string; mime_type?: string; file_size?: number; width?: number; height?: number; duration?: number; emoji?: string };
@@ -59,6 +61,11 @@ export type TelegramDeps = {
    * failing, download error) leaves the text as it was (the file is still referenced) and calls `warn` once.
    */
   transcribe?: VoiceTranscriber;
+  /**
+   * The signal that ends one transcription after `ms` (AbortSignal.timeout by default): a hook still running then is
+   * killed and the message is delivered without a transcript, so a hung hook never stops the messages after it.
+   */
+  deadline?: (ms: number) => AbortSignal;
   warn?: (line: string) => void;
 };
 
@@ -76,6 +83,7 @@ export class TelegramAdapter implements MessengerAdapter {
   private readonly now: () => number;
   private readonly pairing: boolean;
   private readonly transcribe: VoiceTranscriber | undefined;
+  private readonly deadline: (ms: number) => AbortSignal;
   private readonly warn: (line: string) => void;
 
   constructor(config: MessengerConfig, private readonly root: string, deps: TelegramDeps = {}) {
@@ -90,6 +98,7 @@ export class TelegramAdapter implements MessengerAdapter {
     this.now = deps.now ?? Date.now;
     this.pairing = deps.pairing === true;
     this.transcribe = deps.pairing === true ? undefined : deps.transcribe;
+    this.deadline = deps.deadline ?? ((ms) => AbortSignal.timeout(ms));
     this.warn = deps.warn ?? ((line) => void process.stderr.write(`${line}\n`));
   }
 
@@ -175,7 +184,9 @@ export class TelegramAdapter implements MessengerAdapter {
       if (!Array.isArray(result)) continue;
       for (const update of result as Update[]) {
         if (signal.aborted) return;
-        const m = await this.withTranscript(update, token, this.inbound(update));
+        const m = await this.withTranscript(update, token, this.inbound(update), signal);
+        // Stopped mid-transcription: neither deliver nor commit, so the next receive offers this update again.
+        if (signal.aborted) return;
         // A rejection propagates before the save, so this update is fetched again on the next receive.
         if (m) await onMessage(m);
         offset = update.update_id + 1;
@@ -184,17 +195,28 @@ export class TelegramAdapter implements MessengerAdapter {
     }
   }
 
-  /** `m` plus a transcript line when the update carries a voice/audio file and hooks.transcribe produces one. */
-  private async withTranscript(update: Update, token: string, m: InboundMessage | undefined): Promise<InboundMessage | undefined> {
+  /**
+   * `m` plus a transcript line when the update carries a voice/audio file and hooks.transcribe produces one within
+   * TRANSCRIBE_TIMEOUT_MS. Past the deadline, or when `signal` aborts, the hook is killed and `m` is returned as it was.
+   */
+  private async withTranscript(update: Update, token: string, m: InboundMessage | undefined, signal: AbortSignal): Promise<InboundMessage | undefined> {
     const file = (update.edited_message ?? update.message)?.voice ?? (update.edited_message ?? update.message)?.audio;
     if (!m || !file || !this.transcribe) return m;
+    const stop = AbortSignal.any([signal, this.deadline(TRANSCRIBE_TIMEOUT_MS)]);
+    const { promise: stopped, reject } = Promise.withResolvers<never>();
+    const onStop = () => reject(new Error(`no transcript after ${TRANSCRIBE_TIMEOUT_MS / 1000} s`));
+    if (stop.aborted) onStop();
+    else stop.addEventListener("abort", onStop, { once: true });
     try {
-      const text = await this.transcribe(() => this.download(token, file));
+      const text = await Promise.race([this.transcribe(() => this.download(token, file), stop), stopped]);
       return { ...m, text: `${m.text}\n[transcript: ${text}]` };
     } catch (e) {
+      if (signal.aborted) return m;
       const why = String((e as Error)?.message ?? e).replaceAll(token, "<token>").trim().split("\n")[0];
       this.warn(`seori: telegram (${this.source}): voice message not transcribed: ${why}`);
       return m;
+    } finally {
+      stop.removeEventListener("abort", onStop);
     }
   }
 

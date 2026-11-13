@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InboundMessage, SendUncertain } from "../src/messenger/adapter.ts";
-import { TelegramAdapter } from "../src/messenger/telegram.ts";
+import { TelegramAdapter, type TelegramDeps } from "../src/messenger/telegram.ts";
+import { voiceTranscriber } from "../src/messenger/voice.ts";
+import type { Exec } from "../src/runtime/exec.ts";
 
 const TOKEN = "123:abc";
 const OWNER = "42";
@@ -296,6 +298,66 @@ describe("TelegramAdapter receive", () => {
     await t.adapter.receive(ac.signal, async () => {});
     expect(started).toBeGreaterThan(0);
     expect(Date.now() - started).toBeLessThan(500);
+  });
+});
+
+describe("TelegramAdapter voice transcription that never finishes", () => {
+  const voice = (update_id: number, message_id: number) => dm(update_id, message_id, "", { text: undefined, voice: { file_id: `v${message_id}`, duration: 2 } });
+
+  function adapter(t: ReturnType<typeof setup>, deps: TelegramDeps) {
+    return new TelegramAdapter({ source: "telegram", owner: OWNER, options: { apiBase: t.apiBase, pollTimeoutSec: 0 } }, t.root, {
+      env: { SEORI_TELEGRAM_TOKEN: TOKEN },
+      sleep: async () => {},
+      ...deps,
+    });
+  }
+
+  test("the deadline kills the hook and the voice message arrives without a transcript; the next message follows", async () => {
+    const t = setup();
+    writeFileSync(join(t.root, "config.json"), JSON.stringify({ hooks: { transcribe: ["stt", "{file}"] } }));
+    const deadlines: AbortController[] = [];
+    const events: string[] = [];
+    // A hook that never exits; once it is spawned, its deadline passes.
+    const exec: Exec = (_cmd, _argv, options) => {
+      options?.onSpawn?.({ kill: () => events.push("kill") });
+      deadlines.at(-1)!.abort();
+      return new Promise(() => {});
+    };
+    const stt = voiceTranscriber(t.root, exec);
+    const a = adapter(t, {
+      transcribe: (_fetchFile, signal) => stt(async () => join(t.root, "v.ogg"), signal),
+      deadline: () => {
+        deadlines.push(new AbortController());
+        return deadlines.at(-1)!.signal;
+      },
+      warn: (line) => events.push(line),
+    });
+    t.updates.push(voice(1, 1), dm(2, 2, "second"));
+    const got = await collect(a, 2);
+    expect(got.map((m) => m.text)).toEqual(["[attachment: voice (2s) telegram-file:v1]", "second"]);
+    expect(events).toHaveLength(2);
+    expect(events[0]).toBe("kill");
+    expect(events[1]).toStartWith("seori: telegram (telegram): voice message not transcribed: ");
+    expect(cursor(t.root)).toEqual({ offset: 3 });
+  });
+
+  test("abort ends receive while a transcription is still running; the voice message is kept for the next receive", async () => {
+    const t = setup();
+    const ac = new AbortController();
+    const warns: string[] = [];
+    const delivered: InboundMessage[] = [];
+    const a = adapter(t, {
+      transcribe: () => {
+        ac.abort();
+        return new Promise(() => {});
+      },
+      warn: (line) => warns.push(line),
+    });
+    t.updates.push(voice(1, 1));
+    await a.receive(ac.signal, async (m) => void delivered.push(m));
+    expect(delivered).toEqual([]);
+    expect(warns).toEqual([]);
+    expect(existsSync(join(t.root, "messenger", "telegram", "cursor.json"))).toBe(false);
   });
 });
 

@@ -72,14 +72,16 @@ export function substitute(argv: ArgvTemplate, vars: HookVars): string[] {
   );
 }
 
-const pending = new Map<Promise<void>, HookName>();
+/** A started hook: `kill` is set once its process is spawned; a killed hook's own exit is not reported again. */
+type Running = { readonly name: HookName; kill?: () => void; killed?: boolean };
+const pending = new Map<Promise<void>, Running>();
 
-/** How long the CLI waits for hooks still running at exit; a slower hook is reported as timed out and left behind. */
+/** How long the CLI waits for hooks still running at exit; a slower hook is killed and reported as timed out. */
 export const HOOK_SETTLE_MS = 2000;
 
 /**
  * Resolves once every hook started so far has finished, or after `ms`: a hook that hangs never keeps a command from
- * exiting (one `timed out` line per hook still running). The CLI awaits it before exiting.
+ * exiting: each hook still running is killed, then gets one `timed out` line. The CLI awaits it before exiting.
  */
 export async function hooksSettled(ms: number = HOOK_SETTLE_MS): Promise<void> {
   if (pending.size === 0) return;
@@ -90,7 +92,11 @@ export async function hooksSettled(ms: number = HOOK_SETTLE_MS): Promise<void> {
   const outcome = await Promise.race([Promise.all([...pending.keys()]).then(() => "done" as const), deadline]);
   clearTimeout(timer);
   if (outcome === "timeout") {
-    for (const name of pending.values()) process.stderr.write(`seori: hook ${name} failed (timed out after ${ms} ms)\n`);
+    for (const hook of pending.values()) {
+      hook.killed = true;
+      hook.kill?.();
+      process.stderr.write(`seori: hook ${hook.name} failed (timed out after ${ms} ms)\n`);
+    }
   }
 }
 
@@ -101,7 +107,9 @@ const firstLine = (s: string): string => s.trim().split("\n")[0] ?? "";
  * error or a non-zero exit writes one stderr line. The returned promise is only for callers that want to await it.
  */
 export function runHook(d: Deps, name: Exclude<HookName, "transcribe">, vars: HookVars): Promise<void> {
+  const hook: Running = { name };
   const fail = (why: string) => {
+    if (hook.killed) return;
     process.stderr.write(`seori: hook ${name} failed (${why})\n`);
   };
   const run = async (): Promise<void> => {
@@ -110,14 +118,18 @@ export function runHook(d: Deps, name: Exclude<HookName, "transcribe">, vars: Ho
       if (!argv) return;
       const [cmd, ...rest] = substitute(argv, vars);
       if (cmd === undefined) return;
-      const res = await d.exec(cmd, rest);
+      const res = await d.exec(cmd, rest, {
+        onSpawn: (proc) => {
+          hook.kill = () => proc.kill();
+        },
+      });
       if (res.code !== 0) fail(firstLine(res.stderr) || `exit ${res.code}`);
     } catch (e) {
       fail(firstLine(e instanceof Error ? e.message : String(e)));
     }
   };
   const p = run();
-  pending.set(p, name);
+  pending.set(p, hook);
   void p.finally(() => pending.delete(p));
   return p;
 }
