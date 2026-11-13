@@ -216,6 +216,16 @@ describe("seori resume", () => {
     expect(pane.received).toEqual([]);
   });
 
+  test("a lane being migrated is refused for pause and resume, and nothing reaches its pane", async () => {
+    for (const status of ["working", "paused"] as const) {
+      const { d, pane } = setup(status, { migration: true, pausedFrom: "working" });
+      const act = status === "working" ? pauseLane : resumeLane;
+      expect(await act(d, "fix-a", undefined, noSleep).catch((e: unknown) => e)).toBeInstanceOf(Refusal);
+      expect(pane.received).toEqual([]);
+      expect(d.store.lane("fix-a")!.status).toBe(status);
+    }
+  });
+
   test("a gone pane is a clear refusal and the lane stays paused for duty to mark lost", async () => {
     const { w, d } = setup("paused", { pausedFrom: "working" });
     w.panes.delete("w1:p5");

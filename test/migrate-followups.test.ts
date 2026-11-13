@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Deps } from "../src/harness.ts";
+import { type Deps, done, Refusal } from "../src/harness.ts";
 import { migrate } from "../src/migrate.ts";
 import { moveBack, moveInbox } from "../src/migrate-inbox.ts";
 import { readJournal, writeJournal } from "../src/migrate-journal.ts";
@@ -145,6 +145,28 @@ describe("seori migrate follow-ups", () => {
     expect(waits).toBe(1);
     expect(d.store.queued(OLD).map((m) => m.text)).toEqual(["one", "in flight"]);
     expect(existsSync(d.store.inboxPath(NEW))).toBe(false);
+  });
+
+  test("a lane paused while it was asked for its checkpoint is DEFERRED, and its replacement never gets a kickoff", async () => {
+    const { r, d, lines, opts, pane } = migrateWorld("idle");
+    // The owner's pause lands while the [MIGRATE k] ask is out (a pause begun before the hold was set).
+    pane.onPrompt = () => d.store.saveLane({ ...d.store.lane("k")!, status: "paused", pausedFrom: "working" });
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(0);
+    expect(lines).toEqual(["DEFERRED k paused"]);
+    expect(r.sent().filter((s) => s.text.startsWith("/goal "))).toEqual([]);
+    expect(Object.keys(r.terminals())).toEqual([]);
+    expect(readJournal(d.store.root, "k")).toBeUndefined();
+    expect(d.store.lane("k")!.migration).toBeUndefined();
+    expect(d.store.lane("k")!.status).toBe("paused");
+    expect(d.store.lane("k")!.sessionRef).toEqual(OLD);
+  });
+
+  test("done refuses a lane being migrated", async () => {
+    const { d, lines } = migrateWorld("idle");
+    d.store.saveLane({ ...d.store.lane("k")!, status: "ready", migration: true });
+    expect(await done(d, "k").catch((e: unknown) => e)).toBeInstanceOf(Refusal);
+    expect(d.store.lane("k")!.status).toBe("ready");
+    expect(lines).toEqual([]);
   });
 
   test("enqueue appends under the append lock: refused while another process holds it, free again after", () => {

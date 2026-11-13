@@ -145,6 +145,14 @@ async function agentSession(d: Deps, s: Subject, j: MigrateJournal | undefined, 
       opts.log(`DEFERRED ${s.name} ${why}`);
       return 0;
     }
+    // A pause or close begun before the hold was set may have landed during the ask: a kickoff would wake or revive it.
+    const now = s.kind === "lane" ? d.store.lane(s.name)?.status : undefined;
+    if (now === "paused" || now === "done" || now === "lost") {
+      removeJournal(d.store.root, s.name);
+      s.setHold(false);
+      opts.log(`DEFERRED ${s.name} ${now}`);
+      return 0;
+    }
     j = { ...j, briefPath: await capture(d, s, j, asked === "gone") };
     writeJournal(d.store.root, j);
   }

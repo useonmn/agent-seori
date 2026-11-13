@@ -117,6 +117,8 @@ function clearPausedMarks(lane: Lane): void {
  */
 export async function pauseLane(d: Deps, key: string, note?: string, opts: PauseOptions = {}): Promise<PauseOutcome> {
   const lane = laneOrRefuse(d, key);
+  // seori migrate re-reads the lane after its checkpoint ask and defers on a pause that was already under way.
+  if (lane.migration === true) throw new Refusal(`lane ${key} is being migrated; wait for seori migrate to finish`);
   if (lane.status === "paused") return { lane, lines: [`PAUSED ${key} already`] };
   if (!PAUSABLE.has(lane.status)) throw new Refusal(`lane ${key} is ${lane.status}; only a working, waiting or ready lane can be paused`);
   const sleep = opts.sleep ?? Bun.sleep;
@@ -152,6 +154,7 @@ export async function pauseLane(d: Deps, key: string, note?: string, opts: Pause
  */
 export async function resumeLane(d: Deps, key: string, note?: string, opts: PauseOptions = {}): Promise<PauseOutcome> {
   const lane = laneOrRefuse(d, key);
+  if (lane.migration === true) throw new Refusal(`lane ${key} is being migrated; wait for seori migrate to finish`);
   if (lane.status !== "paused") throw new Refusal(`lane ${key} is ${lane.status}, not paused`);
   const goal = await goalCommandOrRefuse(d, lane, "/goal resume", RESUMED_SHOWN, opts.sleep ?? Bun.sleep, `lane ${key}'s pane ${refText(lane.sessionRef)} is gone; nothing to resume (duty marks the lane lost)`);
   if (goal !== "confirmed") throw new Unverified(`RESUME_UNVERIFIED ${key} /goal resume ${goal}; lane left paused`);
