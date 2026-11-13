@@ -2,12 +2,11 @@
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
 // never pushes, never closes a pane and never edits a lane record. See docs/hourly-loop.md.
 import { appendFileSync, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { uptime } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { KEY_RE, Refusal, reservedKey, startLane, tellLead, type Deps } from "./harness.ts";
 import { statusOf } from "./runtime/index.ts";
-import type { Item, Lane, LoopRun } from "./store.ts";
+import { bootCutoff, type Item, type Lane, type LoopRun } from "./store.ts";
 import { refText } from "./refs.ts";
 
 export const HOUR = 3_600_000;
@@ -147,13 +146,10 @@ function alive(pid: number): boolean {
   }
 }
 
-// Slack for the boot time (os.uptime() is whole seconds; an NTP step right after boot shifts the wall clock), as in store.ts.
-const BOOT_SLACK_MS = 60_000;
-
 /** A lock file written before this boot: its pid may belong to an unrelated process now. */
 function beforeBoot(path: string): boolean {
   try {
-    return statSync(path).mtimeMs < Date.now() - uptime() * 1000 - BOOT_SLACK_MS;
+    return statSync(path).mtimeMs < bootCutoff();
   } catch {
     return false;
   }
