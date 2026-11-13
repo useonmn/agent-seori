@@ -384,7 +384,10 @@ export class Store {
       .flatMap((f): SessionRef[] => {
         const stem = f.slice(0, -".jsonl".length);
         if (stem.startsWith(HC_INBOX_PREFIX)) return [{ runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) }];
-        if (readQueue(join(dir, f)).length > 0) throw new HerdrRecord(join(dir, f), stem.replaceAll("_", ":"));
+        const left = readQueue(join(dir, f)).length;
+        if (left > 0) {
+          throw new HerdrRecord(join(dir, f), stem.replaceAll("_", ":"), `read its ${left} queued message(s), then remove ${join(dir, f)} (they are dropped with it)`);
+        }
         return [];
       })
       .filter((r) => this.queued(r).length > 0);

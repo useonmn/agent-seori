@@ -28,7 +28,7 @@ Roles:
 
 How the lead talks to you: it reacts with eyes to each of your messages and handles it, reading the message you replied to first (on Telegram a bot cannot fetch an older message, so it sees only the text of your reply). Each job gets one thread with one status message it edits in place (⏳ while working, ✅ when done) and a status emoji at the start of the thread name (🔄 working, ⏸ waiting, ✅ done); when the job is done it removes the reaction and closes the thread, and if you write there again it reopens the thread and the job's lane. A reply is one message that grows by editing, not a burst of messages. seori itself only sends and edits messages; reactions, reading a replied-to message, thread names and closing, and finished files go through the optional agent-messenger's bot commands (otherwise the lead skips them, and posts a file's path or link). Apart from those status markers it writes no emojis, and it sends as the bot.
 
-The runtime gives every session a terminal and reports the agent's state in it (idle, working, blocked). seori reads that state before it does anything to a session. The runtime is hc (herdr-core) and the agent is always omp. [docs/runtime.md](docs/runtime.md) explains what seori does on hc.
+The runtime gives every session a terminal and reports the agent's state in it (idle, working, blocked). seori reads that state before it does anything to a session. The runtime is hc (herdr-core) and the agent is always omp. [docs/runtime.md](docs/runtime.md) explains what seori does on hc. For a home last used with herdr, it also says which leftover records are skipped and which stop each duty pass with a `DUTY ERROR` line naming the file until that file is removed.
 
 The examples below show hc refs (`hc:t7`).
 

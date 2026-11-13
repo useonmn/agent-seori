@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { main } from "../src/cli.ts";
+import { dutyPass, main } from "../src/cli.ts";
 import { dutyTick, send } from "../src/harness.ts";
 import { HerdrRecord } from "../src/refs.ts";
 import { World } from "./fake.ts";
@@ -69,6 +69,26 @@ describe("records a herdr seori wrote", () => {
     expect(d.store.inboxPanes()).toEqual([{ runtime: "hc", id: "t7" }]);
     writeFileSync(join(d.store.root, "inbox", "w1_p3.jsonl"), `${JSON.stringify({ at: 1, from: "cli", text: "a" })}\n`);
     expect(() => d.store.inboxPanes()).toThrow("names the herdr pane w1:p3");
+  });
+
+  test("a duty loop pass with an open herdr lane prints one DUTY ERROR line naming the file and returns; other errors still throw", async () => {
+    const d = home();
+    const file = join(d.store.root, "lanes", "old-lane.json");
+    writeFileSync(file, JSON.stringify(OLD_LANE));
+    const out: string[] = [];
+    const err: string[] = [];
+    await dutyPass(d, (l) => void out.push(l), (l) => void err.push(l));
+    expect(err).toEqual([`DUTY ERROR ${file} names the herdr pane w1:p3; seori runs on hc only: close that pane and remove ${file}`]);
+    expect(out).toEqual([]);
+    const broken = { ...d, store: Object.assign(Object.create(d.store), { inboxPanes: () => { throw new Error("disk gone"); } }) };
+    await expect(dutyPass(broken, () => {}, () => {})).rejects.toThrow("disk gone");
+  });
+
+  test("a herdr inbox that still holds messages names how many are dropped with it", () => {
+    const d = home();
+    const file = join(d.store.root, "inbox", "w1_p3.jsonl");
+    writeFileSync(file, `${JSON.stringify({ at: 1, from: "cli", text: "a" })}\n${JSON.stringify({ at: 2, from: "cli", text: "b" })}\n`);
+    expect(() => d.store.inboxPanes()).toThrow(`read its 2 queued message(s), then remove ${file} (they are dropped with it)`);
   });
 
   test("seori status refuses a herdr home with one line, exit 2 at the CLI", async () => {
