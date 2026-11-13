@@ -1,7 +1,7 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Ceilings, lockFile } from "./store.ts";
+import type { Ceilings } from "./store.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 
 // `$SEORI_HOME/config.json`: optional settings for the agent and runtime choice (read by src/agent/profile.ts and
@@ -10,9 +10,6 @@ import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 // default, so a typo (`toknes`) cannot switch a ceiling off without anyone noticing.
 
 export type RepoIdentity = { readonly name: string; readonly email: string };
-
-/** A person or agent the owner trusts on one messenger (`source`), by sender id; `name` labels them to the lead. */
-export type TrustedSender = { readonly source: string; readonly id: string; readonly name?: string };
 
 export type GuardThresholds = {
   /** 1-minute load per core (percent) that raises an alert, and the level it must fall under to clear. */
@@ -59,21 +56,6 @@ export type SeoriConfig = {
   readonly heavy: { readonly slots: number; readonly maxLoadPct: number };
   /** Every lane's workflow (src/workflow.ts) unless `seori start --workflow` says otherwise; unset: stock omp goal mode. */
   readonly workflow?: Workflow;
-  /**
-   * Messages from people and agents other than the owner reach the lead too (direct messages to the bot, mentions, and
-   * threads the bot is in). false: only the owner's messages, as upstream.
-   */
-  readonly talkWithOthers: boolean;
-  /**
-   * At most this many agent messages in a row in one conversation (chat or thread) with no human message between reach
-   * the lead; the next one is replaced by one line saying the agent loop was stopped, and the rest are not delivered.
-   */
-  readonly agentTurnLimit: number;
-  /**
-   * Senders the owner trusts: their messages reach the lead labelled `trusted` (src/daemon.ts), and the lead may act on
-   * their requests. Changed only by `seori msg trust add|remove --because <owner message>` (src/msg.ts).
-   */
-  readonly trusted: readonly TrustedSender[];
 };
 
 /** The name of an instance whose config.json sets none: the first seori on a PC keeps the label it always had. */
@@ -92,9 +74,6 @@ export const DEFAULT_CONFIG: SeoriConfig = {
   supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20, activityPaths: [], ulwPlan: { tokens: 300_000, wallMinutes: 60 } },
   guard: { loadAlertPct: 150, loadOkPct: 80, memFreeMinPct: 10, diskFreeMinGb: 20, panesMax: 30 },
   heavy: { slots: 1, maxLoadPct: 80 },
-  talkWithOthers: true,
-  agentTurnLimit: 6,
-  trusted: [],
 };
 
 export const configPath = (root: string): string => join(root, "config.json");
@@ -133,7 +112,7 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "talkWithOthers", "agentTurnLimit", "trusted"], path);
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;
@@ -181,12 +160,6 @@ export function loadConfig(root: string): SeoriConfig {
   const slots = num(heavy, "slots", `${path} heavy`, D.heavy.slots);
   if (!Number.isInteger(slots) || slots < 1) throw new ConfigError(`${path} heavy.slots must be a whole number of at least 1`);
 
-  const talkWithOthers = raw["talkWithOthers"] ?? D.talkWithOthers;
-  if (typeof talkWithOthers !== "boolean") throw new ConfigError(`${path}: talkWithOthers must be true or false`);
-  const agentTurnLimit = num(raw, "agentTurnLimit", path, D.agentTurnLimit);
-  if (!Number.isInteger(agentTurnLimit)) throw new ConfigError(`${path}.agentTurnLimit must be a whole number`);
-  const trusted = parseTrusted(raw["trusted"] ?? D.trusted, path);
-
   return {
     name,
     repoIdentities,
@@ -216,53 +189,7 @@ export function loadConfig(root: string): SeoriConfig {
     },
     heavy: { slots, maxLoadPct: num(heavy, "maxLoadPct", `${path} heavy`, D.heavy.maxLoadPct) },
     ...(workflow !== undefined ? { workflow } : {}),
-    talkWithOthers,
-    agentTurnLimit,
-    trusted,
   };
-}
-
-function parseTrusted(value: unknown, path: string): TrustedSender[] {
-  const shape = `${path}: trusted must be a list of {"source": "<messenger source>", "id": "<sender id>", "name"?: "<label>"}`;
-  if (!Array.isArray(value)) throw new ConfigError(shape);
-  return value.map((t, i) => {
-    if (!isObj(t)) throw new ConfigError(shape);
-    only(t, ["source", "id", "name"], `${path} trusted[${i}]`);
-    const { source, id, name } = t;
-    if (typeof source !== "string" || !source || typeof id !== "string" || !id || (name !== undefined && (typeof name !== "string" || !name))) {
-      throw new ConfigError(`${path} trusted[${i}]: "source" and "id" must be nonempty strings, and "name" one when given`);
-    }
-    return { source, id, ...(name !== undefined ? { name } : {}) };
-  });
-}
-
-/**
- * Replaces config.json's `trusted` list with `change(current list)`, keeping every other key as written. Read, change and
- * write happen under config.json.lock, so two writers never lose each other's change; a held lock refuses (ConfigError)
- * rather than wait. A config.json that does not load is refused too and never rewritten. The new file is fsynced and
- * renamed into place: a reader never sees half a file.
- */
-export function updateTrusted(root: string, change: (list: readonly TrustedSender[]) => readonly TrustedSender[], now: number): void {
-  const path = configPath(root);
-  const release = lockFile(`${path}.lock`, now);
-  if (!release) throw new ConfigError(`${path} is being changed by another seori command (${path}.lock); try again`);
-  try {
-    const current = loadConfig(root);
-    const raw = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Obj) : {};
-    const next = { ...raw, trusted: change(current.trusted) };
-    parseTrusted(next.trusted, path);
-    const tmp = `${path}.${process.pid}.tmp`;
-    const fd = openSync(tmp, "w");
-    try {
-      writeSync(fd, `${JSON.stringify(next, null, 2)}\n`);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmp, path);
-  } finally {
-    release();
-  }
 }
 
 /** The identity configured for `owner/repo`, matched without case. */

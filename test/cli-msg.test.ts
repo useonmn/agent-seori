@@ -1,13 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
-import { join } from "node:path";
+import { writeFileSync } from "node:fs";
 import { main } from "../src/cli.ts";
 import { Channel } from "../src/channel.ts";
-import { loadConfig } from "../src/config.ts";
 import { Refusal, type Deps } from "../src/harness.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
-import { threadLine } from "../src/msg.ts";
 import { World } from "./fake.ts";
 
 // `seori msg ...` end to end through the CLI with the file-backed fake messenger: exit codes and the lines the lead sees.
@@ -36,67 +32,33 @@ function setup() {
   return { w, d, root, channel, fake };
 }
 
-describe("seori msg react, edit, typing and thread", () => {
-  const inThread = (channel: Channel, at: number) => {
-    channel.appendInbound({ id: "fake:c1:4", kind: "messenger", source: "fake", chat: "c1", thread: "t7", from: "u1", at, text: "in a thread" });
-    channel.appendInbound({ id: "fake:c1:4:edit:99", kind: "messenger", source: "fake", chat: "c1", thread: "t7", from: "u1", at, text: "(edited) in a thread" });
-  };
-
-  test("each acts through the messenger on the message, chat or thread named", async () => {
-    const { w, d, fake, channel } = setup();
-    inThread(channel, w.clock);
-    expect(await run(["msg", "react", "fake:c1:4"], d)).toEqual({ code: 0, out: "REACTED fake:c1:4" });
-    expect(await run(["msg", "react", "fake:c1:4:edit:99", "--remove"], d)).toEqual({ code: 0, out: "UNREACTED fake:c1:4:edit:99" });
-    expect(await run(["msg", "edit", "--to", "fake:c1:t7", "--message", "9", "--text", "✅ Fix login"], d)).toEqual({ code: 0, out: "EDITED fake:c1:t7 message=9" });
-    expect(await run(["msg", "typing", "--of", "fake:c1:4"], d)).toEqual({ code: 0, out: "TYPING fake:c1:t7" });
-    expect(await run(["msg", "thread", "--of", "fake:c1:4", "--name", "Fix login", "--status", "done", "--close"], d)).toEqual({
-      code: 0,
-      out: "THREAD fake:c1:t7 name=\"✅ Fix login\" closed",
-    });
-    expect(await run(["msg", "thread", "--to", "fake:c1:t7", "--reopen"], d)).toEqual({ code: 0, out: "THREAD fake:c1:t7 reopened" });
-    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([
-      { action: "react", chat: "c1", message: "4", on: true },
-      { action: "react", chat: "c1", message: "4", on: false },
-      { action: "edit", chat: "c1", thread: "t7", message: "9", text: "✅ Fix login" },
-      { action: "typing", chat: "c1", thread: "t7", message: "4" },
-      { action: "thread", chat: "c1", thread: "t7", message: "4", name: "Fix login", status: "done", state: "close" },
-      { action: "thread", chat: "c1", thread: "t7", state: "reopen" },
-    ]);
+describe("seori msg edit", () => {
+  test("--to edits the message named through the messenger, never the ledger", async () => {
+    const { d, fake, channel } = setup();
+    expect(await run(["msg", "edit", "--to", "fake:c1:t7", "--message", "9", "--text", "Fix login: done"], d)).toEqual({ code: 0, out: "EDITED fake:c1:t7 message=9" });
+    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([{ action: "edit", chat: "c1", thread: "t7", message: "9", text: "Fix login: done" }]);
     expect(fake.sent()).toEqual([]);
     expect(channel.ledger()).toEqual([]);
   });
 
-  test("edit --reply-of edits seori's first reply to that message, wherever it went out", async () => {
+  test("--reply-of edits seori's first reply to that message, wherever it went out", async () => {
     const { d, fake } = setup();
-    expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "⏳ Fix login · 0m"], d)).out).toBe("SENT fake:c1:1 message=1");
+    expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "Fix login, 0m"], d)).out).toBe("SENT fake:c1:1 message=1");
     expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--again", "--text", "the result"], d)).out).toBe("SENT fake:c1:1 message=2");
-    expect(await run(["msg", "edit", "--reply-of", "fake:c1:1", "--text", "✅ Fix login"], d)).toEqual({ code: 0, out: "EDITED fake:c1:1 message=1" });
-    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([{ action: "edit", chat: "c1", message: "1", text: "✅ Fix login" }]);
+    expect(await run(["msg", "edit", "--reply-of", "fake:c1:1", "--text", "Fix login: done"], d)).toEqual({ code: 0, out: "EDITED fake:c1:1 message=1" });
+    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([{ action: "edit", chat: "c1", message: "1", text: "Fix login: done" }]);
     await expect(main(["msg", "edit", "--reply-of", "fake:c1:2", "--text", "x"], d)).rejects.toThrow(/no reply to fake:c1:2 has been sent/);
     await expect(main(["msg", "edit", "--reply-of", "fake:c1:1", "--to", "fake:c1", "--message", "1", "--text", "x"], d)).rejects.toThrow(/exactly one of --reply-of ID or --to/);
   });
 
-  test("the THREAD line says only what the messenger did; nothing done is SKIPPED", () => {
-    expect(threadLine("slack:C1", { status: "done", notes: ["slack: threads have no names"] })).toEqual(["THREAD slack:C1 status=done", "NOTE slack: threads have no names"]);
-    expect(threadLine("discord:D1", { notes: ["discord: channel D1 is not a thread"] })).toEqual(["SKIPPED thread discord:D1", "NOTE discord: channel D1 is not a thread"]);
-    expect(threadLine("telegram:-100:9", { name: "✅ Fix login", state: "close", notes: [] })).toEqual(["THREAD telegram:-100:9 name=\"✅ Fix login\" closed"]);
-  });
-
   test("a messenger failure exits 1 with FAILED and what the messenger said", async () => {
-    const { w, d, fake, channel } = setup();
-    inThread(channel, w.clock);
+    const { d, fake } = setup();
     writeFileSync(fake.sendModePath, "error");
-    expect(await run(["msg", "react", "fake:c1:4"], d)).toEqual({ code: 1, out: "FAILED react fake:c1:4: fake messenger: react failed (send-mode error)" });
-    expect(await run(["msg", "thread", "--of", "fake:c1:4", "--close"], d)).toEqual({ code: 1, out: "FAILED thread fake:c1:t7: fake messenger: thread failed (send-mode error)" });
+    expect(await run(["msg", "edit", "--to", "fake:c1", "--message", "9", "--text", "x"], d)).toEqual({ code: 1, out: "FAILED edit fake:c1: fake messenger: edit failed (send-mode error)" });
   });
 
   test("refusals name what is wrong and nothing reaches the messenger", async () => {
     const { d, fake } = setup();
-    await expect(main(["msg", "react", "fake:c1:404"], d)).rejects.toThrow(/unknown message id fake:c1:404/);
-    await expect(main(["msg", "typing", "--to", "fake:c1", "--of", "fake:c1:1"], d)).rejects.toThrow(/exactly one of --to or --of/);
-    await expect(main(["msg", "thread", "--of", "fake:c1:1"], d)).rejects.toThrow(/nothing to change/);
-    await expect(main(["msg", "thread", "--of", "fake:c1:1", "--close", "--reopen"], d)).rejects.toThrow(/--close or --reopen/);
-    await expect(main(["msg", "thread", "--of", "fake:c1:1", "--status", "finished"], d)).rejects.toThrow(/working, waiting or done/);
     await expect(main(["msg", "edit", "--to", "fake:c1", "--text", "x"], d)).rejects.toThrow(/--message/);
     await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "9", "--text", " "], d)).rejects.toThrow(/empty/);
     await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "../../guilds/1", "--text", "x"], d)).rejects.toThrow(/--message must be a message id/);
@@ -195,49 +157,5 @@ describe("seori msg", () => {
     expect(failed.code).toBe(1);
     expect(failed.out).toBe(`FAILED ${c} fake:c1:2: no messenger "fake" in messengers.json; the draft stays open: flush again, or drop it`);
     expect((await run(["msg", "drafts"], d)).out).toStartWith(`${c}  `);
-  });
-});
-
-describe("seori msg trust", () => {
-  const trustSetup = () => {
-    const s = setup();
-    s.channel.appendInbound({ id: "fake:c1:p", kind: "messenger", source: "fake", chat: "c1", from: "u2", sender: { kind: "person", id: "u2" }, at: s.w.clock, text: "trust me" });
-    s.channel.appendInbound({ id: "fake:c1:o", kind: "messenger", source: "fake", chat: "c1", from: "u1", sender: { kind: "owner", id: "u1" }, at: s.w.clock, text: "trust u3" });
-    s.channel.appendInbound({ id: "fake:c1:x", kind: "messenger", source: "fake", chat: "c1", from: "u1", sender: { kind: "owner", id: "u1" }, at: s.w.clock, text: "ship it, and trust u30" });
-    writeFileSync(join(s.root, "config.json"), JSON.stringify({ name: "seori-dev" }));
-    return s;
-  };
-  const config = (root: string) => readFileSync(join(root, "config.json"), "utf8");
-
-  test("add needs --because naming an owner's message; a person's message is refused and config.json is left as it was", async () => {
-    const { d, root } = trustSetup();
-    const before = config(root);
-    await expect(main(["msg", "trust", "add", "fake:u3", "--name", "Dev", "--because", "fake:c1:p"], d)).rejects.toThrow(Refusal);
-    await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:nosuch"], d)).rejects.toThrow(Refusal);
-    await expect(main(["msg", "trust", "add", "fake:u3"], d)).rejects.toThrow(Refusal);
-    // The owner's message came in on fake: it cannot trust someone on another messenger.
-    await expect(main(["msg", "trust", "add", "slack:u3", "--because", "fake:c1:o"], d)).rejects.toThrow(Refusal);
-    // Another writer holds config.json: nothing is written.
-    writeFileSync(join(root, "config.json.lock"), JSON.stringify({ pid: process.pid, host: hostname(), at: 0 }));
-    await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:o"], d)).rejects.toThrow(Refusal);
-    rmSync(join(root, "config.json.lock"));
-    // An owner message that does not name this sender is not the owner asking for it.
-    await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:x"], d)).rejects.toThrow(Refusal);
-    expect(config(root)).toBe(before);
-    expect(await run(["msg", "trust", "add", "fake:u3", "--name", "Dev", "--because", "fake:c1:o"], d)).toEqual({ code: 0, out: 'TRUSTED fake:u3 name="Dev"' });
-    expect(loadConfig(root).trusted).toEqual([{ source: "fake", id: "u3", name: "Dev" }]);
-    expect(loadConfig(root).name).toBe("seori-dev");
-    expect(await run(["msg", "trust", "list"], d)).toEqual({ code: 0, out: 'TRUSTED fake:u3 name="Dev"' });
-  });
-
-  test("remove follows the same rule; list is EMPTY afterwards", async () => {
-    const { d, root } = trustSetup();
-    await run(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:o"], d);
-    await expect(main(["msg", "trust", "remove", "fake:u3", "--because", "fake:c1:p"], d)).rejects.toThrow(Refusal);
-    expect(loadConfig(root).trusted).toEqual([{ source: "fake", id: "u3" }]);
-    expect(await run(["msg", "trust", "remove", "fake:u3", "--because", "fake:c1:o"], d)).toEqual({ code: 0, out: "UNTRUSTED fake:u3" });
-    expect(loadConfig(root).trusted).toEqual([]);
-    expect(await run(["msg", "trust", "list"], d)).toEqual({ code: 0, out: "EMPTY" });
-    await expect(main(["msg", "trust", "remove", "fake:u3", "--because", "fake:c1:o"], d)).rejects.toThrow(Refusal);
   });
 });

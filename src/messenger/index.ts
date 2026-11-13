@@ -10,7 +10,7 @@ export function adapterFor(config: MessengerConfig, root: string): MessengerAdap
   switch (config.source) {
     case "fake": {
       const pollMs = config.options?.["pollMs"];
-      return new FakeAdapter(root, { owner: config.owner, ...(typeof pollMs === "number" ? { pollMs } : {}) });
+      return new FakeAdapter(root, typeof pollMs === "number" ? { pollMs } : {});
     }
     case "telegram":
       return new TelegramAdapter(config, root, { transcribe: voiceTranscriber(root) });

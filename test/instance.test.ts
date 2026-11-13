@@ -27,23 +27,6 @@ async function captureLog(fn: () => Promise<unknown>): Promise<string> {
 
 const opened = (w: World) => w.calls.filter((c) => ["create", "split", "start", "run"].includes(String(c.argv[1]))).length;
 
-describe("talking with others: config", () => {
-  test("talkWithOthers defaults to true and agentTurnLimit to 6; wrong types are errors", () => {
-    const root = mkdtempSync(join(tmpdir(), "seori-talk-"));
-    expect([loadConfig(root).talkWithOthers, loadConfig(root).agentTurnLimit]).toEqual([true, 6]);
-    writeFileSync(join(root, "config.json"), JSON.stringify({ talkWithOthers: false, agentTurnLimit: 2 }));
-    expect([loadConfig(root).talkWithOthers, loadConfig(root).agentTurnLimit]).toEqual([false, 2]);
-    expect(loadConfig(root).trusted).toEqual([]);
-    writeFileSync(join(root, "config.json"), JSON.stringify({ trusted: [{ source: "slack", id: "U9", name: "Dev" }, { source: "fake", id: "u3" }] }));
-    expect(loadConfig(root).trusted).toEqual([{ source: "slack", id: "U9", name: "Dev" }, { source: "fake", id: "u3" }]);
-    const badTrusted = [{ trusted: {} }, { trusted: [{ source: "slack" }] }, { trusted: [{ source: "", id: "U9" }] }, { trusted: [{ source: "slack", id: "U9", name: 3 }] }, { trusted: [{ source: "slack", id: "U9", role: "admin" }] }];
-    for (const bad of [{ talkWithOthers: "yes" }, { agentTurnLimit: -1 }, { agentTurnLimit: 1.5 }, { agentTurnLimit: "6" }, ...badTrusted]) {
-      writeFileSync(join(root, "config.json"), JSON.stringify(bad));
-      expect(() => loadConfig(root)).toThrow(ConfigError);
-    }
-  });
-});
-
 describe("instance name", () => {
   test("config.json name: default seori, any script, and a name herdr could not take as a label is an error", () => {
     const root = mkdtempSync(join(tmpdir(), "seori-name-"));

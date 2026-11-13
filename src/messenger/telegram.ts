@@ -1,9 +1,6 @@
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { extname, join } from "node:path";
-import {
-  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
-  type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
-} from "./adapter.ts";
+import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
 import type { VoiceTranscriber } from "./voice.ts";
 
@@ -12,13 +9,11 @@ import type { VoiceTranscriber } from "./voice.ts";
 // keeps unconfirmed ones for 24 hours, so the saved offset is the whole at-least-once story.
 
 const TEXT_LIMIT = 4096;
-const TOPIC_NAME_LIMIT = 128;
 const MAX_BACKOFF_MS = 30_000;
 /** How long one voice message may take to download and transcribe before it is delivered without a transcript. */
 const TRANSCRIBE_TIMEOUT_MS = 120_000;
 
-type User = { id: number; is_bot?: boolean; username?: string; first_name?: string; last_name?: string };
-type Entity = { type: string; offset: number; length: number; user?: User };
+type User = { id: number; is_bot?: boolean; username?: string };
 type FileRef = { file_id: string; file_name?: string; mime_type?: string; file_size?: number; width?: number; height?: number; duration?: number; emoji?: string };
 type Message = {
   message_id: number;
@@ -38,16 +33,10 @@ type Message = {
   video_note?: FileRef;
   animation?: FileRef;
   sticker?: FileRef;
-  reply_to_message?: Message;
-  forum_topic_created?: unknown;
-  entities?: Entity[];
-  caption_entities?: Entity[];
 };
 type Update = { update_id: number; message?: Message; edited_message?: Message };
 type ApiBody = { ok?: boolean; result?: unknown; description?: string; error_code?: number; parameters?: { retry_after?: number } };
 type Cursor = { offset: number };
-/** How many forum topics the bot remembers having joined (mentioned in or posted in); older lines are not read. */
-const TOPICS_KEPT = 500;
 
 export type TelegramDeps = {
   env?: Record<string, string | undefined>;
@@ -90,14 +79,6 @@ export class TelegramAdapter implements MessengerAdapter {
   private readonly transcribe: VoiceTranscriber | undefined;
   private readonly deadline: (ms: number) => AbortSignal;
   private readonly warn: (line: string) => void;
-  /**
-   * Forum topics (`<chat>:<topic>`) the bot was mentioned in or posted in, where others' messages pass without a mention.
-   * A file under root, because `seori msg send` posts from another process than the daemon's receive: one line per
-   * topic, only ever appended (O_APPEND), so two processes joining at once never drop each other's line.
-   */
-  private readonly topicsPath: string;
-  /** The bot itself, learned with getMe when receive starts. */
-  private me: User | undefined;
 
   constructor(config: MessengerConfig, private readonly root: string, deps: TelegramDeps = {}) {
     this.source = config.source;
@@ -113,28 +94,6 @@ export class TelegramAdapter implements MessengerAdapter {
     this.transcribe = deps.pairing === true ? undefined : deps.transcribe;
     this.deadline = deps.deadline ?? ((ms) => AbortSignal.timeout(ms));
     this.warn = deps.warn ?? ((line) => void process.stderr.write(`${line}\n`));
-    this.topicsPath = join(root, "messenger", config.source, "topics");
-  }
-
-  private joined(chat: string, topic: string): boolean {
-    let lines: string[];
-    try {
-      lines = readFileSync(this.topicsPath, "utf8").split("\n");
-    } catch {
-      return false;
-    }
-    return lines.slice(-TOPICS_KEPT - 1).includes(`${chat}:${topic}`);
-  }
-
-  /** Notes a topic as joined; a failure only warns (the message it came with is handled already). */
-  private join(chat: string, topic: string): void {
-    if (this.joined(chat, topic)) return;
-    try {
-      mkdirSync(join(this.root, "messenger", this.source), { recursive: true });
-      appendFileSync(this.topicsPath, `${chat}:${topic}\n`);
-    } catch (e) {
-      this.warn(`seori: telegram (${this.source}): could not note topic ${topic} of chat ${chat} as joined: ${(e as Error).message}`);
-    }
   }
 
   private token(): string {
@@ -207,10 +166,6 @@ export class TelegramAdapter implements MessengerAdapter {
     const token = this.token();
     // getUpdates refuses to run while a webhook is set; dropping pending updates would lose messages, so keep them.
     await this.poll(token, "deleteWebhook", { drop_pending_updates: false }, signal, 30_000);
-    if (!this.pairing) {
-      this.me = (await this.poll(token, "getMe", {}, signal, 30_000)) as User | undefined;
-      if (signal.aborted) return;
-    }
     let offset = this.cursor.load()?.offset;
     while (!signal.aborted) {
       const result = await this.poll(
@@ -223,14 +178,11 @@ export class TelegramAdapter implements MessengerAdapter {
       if (!Array.isArray(result)) continue;
       for (const update of result as Update[]) {
         if (signal.aborted) return;
-        const seen = this.inbound(update);
-        const m = await this.withTranscript(update, token, seen?.message, signal);
+        const m = await this.withTranscript(update, token, this.inbound(update), signal);
         // Stopped mid-transcription: neither deliver nor commit, so the next receive offers this update again.
         if (signal.aborted) return;
         // A rejection propagates before the save, so this update is fetched again on the next receive.
         if (m) await onMessage(m);
-        // Only once the mention was handled: a rejected one is offered again and must not have joined the topic.
-        if (seen?.joins) this.join(seen.joins.chat, seen.joins.topic);
         offset = update.update_id + 1;
         this.cursor.save({ offset });
       }
@@ -276,69 +228,36 @@ export class TelegramAdapter implements MessengerAdapter {
     return path;
   }
 
-  /**
-   * An update as an InboundMessage, or undefined for anything to skip. The owner's messages pass as they always did.
-   * Anyone else's (people, and agents: from.is_bot) pass in a private chat with the bot, and in a group when they mention
-   * the bot, reply to one of its messages, or are in a forum topic the bot was mentioned in or posted in; src/daemon.ts
-   * drops them again unless config.json talkWithOthers is on. The bot's own messages and channel posts never pass.
-   */
-  private inbound(update: Update): { message: InboundMessage; joins?: { chat: string; topic: string } } | undefined {
+  /** The owner's message as an InboundMessage, or undefined for anything to skip (others, bots, channels, empty). */
+  private inbound(update: Update): InboundMessage | undefined {
     const edited = update.edited_message !== undefined;
     const msg = update.edited_message ?? update.message;
-    if (!msg?.from) return undefined;
-    const chat = String(msg.chat.id);
-    const topic = msg.is_topic_message && msg.message_thread_id !== undefined ? String(msg.message_thread_id) : undefined;
-    let kind: "owner" | "person" | "agent" = "owner";
-    let joins: { chat: string; topic: string } | undefined;
+    if (!msg?.from || msg.from.is_bot) return undefined;
     if (this.pairing) {
       // Pairing: a new direct message from anyone; the owner is whoever pair accepts.
-      if (msg.from.is_bot || edited || msg.chat.type !== "private" || msg.chat.id !== msg.from.id) return undefined;
+      if (edited || msg.chat.type !== "private" || msg.chat.id !== msg.from.id) return undefined;
     } else {
-      if (msg.chat.type === "channel" || (this.me !== undefined && msg.from.id === this.me.id)) return undefined;
-      kind = msg.from.is_bot ? "agent" : String(msg.from.id) === this.owner ? "owner" : "person";
-      if (kind === "owner") {
-        if (msg.chat.type === "private" && chat !== this.owner) return undefined;
-      } else if (msg.chat.type !== "private") {
-        if (this.addressed(msg)) {
-          if (topic !== undefined) joins = { chat, topic };
-        } else if (topic === undefined || !this.joined(chat, topic)) return undefined;
-      }
+      if (String(msg.from.id) !== this.owner) return undefined;
+      if (msg.chat.type === "channel") return undefined;
+      if (msg.chat.type === "private" && String(msg.chat.id) !== this.owner) return undefined;
     }
     const lines = attachments(msg);
     const body = msg.text ?? msg.caption ?? "";
     if (!body && lines.length === 0) return undefined;
     const text = [body, ...lines].filter((l) => l).join("\n");
+    const chat = String(msg.chat.id);
     const id = String(msg.message_id);
     const stamp = msg.edit_date ?? msg.date;
-    // In a forum topic every message points at the topic's first (service) message: that is the topic, not a reply.
-    const parent = msg.reply_to_message;
-    const isTopicRoot = parent !== undefined && (parent.forum_topic_created !== undefined || (msg.is_topic_message === true && parent.message_id === msg.message_thread_id));
-    const parentText = parent && !isTopicRoot ? [parent.text ?? parent.caption ?? "", ...attachments(parent)].filter((l) => l).join("\n") : "";
-    const message: InboundMessage = {
-      ...(parent && !isTopicRoot ? { replyTo: { id: messageId(this.source, chat, String(parent.message_id)), ...(parentText ? { text: parentText } : {}) } } : {}),
+    return {
       id: edited ? editId(this.source, chat, id, String(stamp)) : messageId(this.source, chat, id),
       source: this.source,
       chat,
       // Outside a forum topic message_thread_id may be a reply root, not a topic (telegram-bot-api#447).
-      ...(topic !== undefined ? { thread: topic } : {}),
+      ...(msg.is_topic_message && msg.message_thread_id !== undefined ? { thread: String(msg.message_thread_id) } : {}),
       from: String(msg.from.id),
-      sender: { kind, id: String(msg.from.id), ...(kind !== "owner" && senderName(msg.from) ? { name: senderName(msg.from) } : {}) },
       at: (edited ? stamp : msg.date) * 1000,
       text: edited ? `(edited) ${text}` : text,
     };
-    return { message, ...(joins ? { joins } : {}) };
-  }
-
-  /** The message mentions the bot (@username or a text mention of its id) or replies to one of the bot's messages. */
-  private addressed(msg: Message): boolean {
-    const me = this.me;
-    if (!me) return false;
-    if (msg.reply_to_message?.from?.id === me.id) return true;
-    const text = msg.text ?? msg.caption ?? "";
-    const handle = me.username ? `@${me.username.toLowerCase()}` : undefined;
-    return (msg.entities ?? msg.caption_entities ?? []).some((e) =>
-      e.type === "text_mention" ? e.user?.id === me.id : e.type === "mention" && handle !== undefined && text.slice(e.offset, e.offset + e.length).toLowerCase() === handle
-    );
   }
 
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {
@@ -366,9 +285,6 @@ export class TelegramAdapter implements MessengerAdapter {
         throw e;
       }
     }
-    // A topic the bot posted in: others' messages there pass without a mention (receive reads this file). The message
-    // is out already, so failing to note the topic only warns.
-    if (target.thread !== undefined) this.join(target.chat, target.thread);
     return { messageId: first! };
   }
 
@@ -387,51 +303,11 @@ export class TelegramAdapter implements MessengerAdapter {
     }
   }
 
-  async react(chat: string, message: string, on: boolean): Promise<void> {
-    await this.act("setMessageReaction", { chat_id: chat, message_id: Number(message), reaction: on ? [{ type: "emoji", emoji: EYES }] : [] });
-  }
-
   async edit(target: SendTarget, message: string, text: string): Promise<void> {
     if (!text.trim()) throw new Error(`telegram (${this.source}): refusing to edit a message to empty text`);
     if (text.length > TEXT_LIMIT) throw new Error(`telegram (${this.source}): an edited message holds at most ${TEXT_LIMIT} characters, got ${text.length}`);
     const body = { chat_id: target.chat, message_id: Number(message), text, link_preview_options: { is_disabled: true } };
     await this.act("editMessageText", body, /message is not modified/);
-  }
-
-  async typing(target: ThreadTarget): Promise<ActionNotes> {
-    await this.act("sendChatAction", { chat_id: target.chat, action: "typing", ...(target.thread !== undefined ? { message_thread_id: Number(target.thread) } : {}) });
-    return [];
-  }
-
-  /** Topics: renamed in forum supergroups and private chats with topics; closed and reopened only in forum supergroups. */
-  async thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult> {
-    if (target.thread === undefined) return { notes: ["telegram: the message is not in a topic, so there is no topic to rename or close; the status message carries the status"] };
-    const topic = { chat_id: target.chat, message_thread_id: Number(target.thread) };
-    const notes: string[] = [];
-    let named: string | undefined;
-    let state: ThreadChange["state"];
-    if (change.name !== undefined) {
-      const name = threadName(change.name, change.status);
-      if (name.length > TOPIC_NAME_LIMIT) throw new Error(`telegram (${this.source}): a topic name holds at most ${TOPIC_NAME_LIMIT} characters, got ${name.length}`);
-      await this.act("editForumTopic", { ...topic, name }, /TOPIC_NOT_MODIFIED/);
-      named = name;
-    } else if (change.status !== undefined) {
-      notes.push(`telegram: a topic's name cannot be read back; pass --name with --status`);
-    }
-    if (change.state !== undefined) {
-      // Private chat ids are the user's id (positive); groups and supergroups are negative.
-      if (target.chat.startsWith("-")) {
-        await this.act(change.state === "close" ? "closeForumTopic" : "reopenForumTopic", topic, /TOPIC_NOT_MODIFIED/);
-        state = change.state;
-      } else {
-        notes.push("telegram: a topic in a private chat cannot be closed or reopened; the ✅ at the start of its name marks it done");
-      }
-    }
-    return { ...(named !== undefined ? { name: named } : {}), ...(state !== undefined ? { state } : {}), notes };
-  }
-
-  async fetchMessage(_chat: string, _message: string): Promise<FetchedMessage> {
-    return { unavailable: "Telegram bots cannot read a message by id; a reply carries the text it replies to, shown in the lead channel line" };
   }
 
   async check(): Promise<string> {
@@ -445,11 +321,6 @@ export class TelegramAdapter implements MessengerAdapter {
       throw e;
     }
   }
-}
-
-/** A Telegram user's display name: first and last name, else the username. */
-function senderName(u: User): string | undefined {
-  return [u.first_name, u.last_name].filter((p) => p).join(" ") || u.username || undefined;
 }
 
 function formatSize(bytes: number): string {
