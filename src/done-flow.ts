@@ -88,7 +88,8 @@ function eventDetail(e: unknown): string {
  * later pass. READY lanes without a Done line are the lead's to close.
  */
 export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Promise<DutyEvent[]> {
-  const due = d.store.lanes().filter((l) => l.status === "ready" && l.done !== undefined && l.final);
+  // A lane being migrated (seori migrate) is left alone, as dutyTick and superviseTick leave it.
+  const due = d.store.lanes().filter((l) => l.status === "ready" && l.done !== undefined && l.final && l.migration !== true);
   if (!due.length) return [];
   let closeAfterMin: number;
   try {
