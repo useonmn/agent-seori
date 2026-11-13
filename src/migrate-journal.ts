@@ -25,6 +25,7 @@ export type MigrateJournal = {
 
 const dir = (root: string): string => join(root, "migrate");
 const pathOf = (root: string, name: string): string => join(dir(root), `${name}.json`);
+export const journalPath = pathOf;
 
 export function readJournal(root: string, name: string): MigrateJournal | undefined {
   const path = pathOf(root, name);
