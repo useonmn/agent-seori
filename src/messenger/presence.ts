@@ -23,6 +23,8 @@ export const IDENTIFY_WINDOW_MS = 24 * 60 * 60_000;
 export const SLACK_TICK_MS = 60_000;
 /** How long setting away on release may take once stopped. */
 export const RELEASE_TIMEOUT_MS = 10_000;
+/** A gateway that has not sent hello (op 10) this long after opening is closed and replaced. */
+export const HELLO_TIMEOUT_MS = 30_000;
 export const DISCORD_INTENTS_GUILD_MESSAGES = 1 << 9;
 const DISCORD_GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json";
 
@@ -100,8 +102,15 @@ export const discordPresence = (
   const ws = open();
   let seq: number | null = null;
   let beat: unknown;
+  let helloTimer: unknown;
+  let acked = true;
   let over = false;
+  const stopHello = () => {
+    if (helloTimer !== undefined) clock.clearInterval(helloTimer);
+    helloTimer = undefined;
+  };
   const stopBeat = () => {
+    stopHello();
     if (beat !== undefined) clock.clearInterval(beat);
     beat = undefined;
   };
@@ -111,11 +120,27 @@ export const discordPresence = (
     stopBeat();
     on.end(e);
   };
+  // The injected clock only has intervals: the hello timeout is one that is cleared by hello (or any end) before it can repeat.
+  helloTimer = clock.setInterval(() => {
+    ws.close();
+    end({ code: "no-hello" });
+  }, HELLO_TIMEOUT_MS);
+  const heartbeat = () => ws.send(JSON.stringify({ op: 1, d: seq }));
   ws.onMessage((raw) => {
     const m = JSON.parse(raw) as { op: number; s?: number | null; d?: { heartbeat_interval?: number } };
     if (typeof m.s === "number") seq = m.s;
     if (m.op === 10 && m.d?.heartbeat_interval) {
-      beat = clock.setInterval(() => ws.send(JSON.stringify({ op: 1, d: seq })), m.d.heartbeat_interval);
+      stopHello();
+      beat = clock.setInterval(() => {
+        if (!acked) {
+          // No op 11 since the last beat: the connection is a zombie.
+          ws.close();
+          end({ code: "zombie" });
+          return;
+        }
+        acked = false;
+        heartbeat();
+      }, m.d.heartbeat_interval);
       on.identify();
       ws.send(
         JSON.stringify({
@@ -128,6 +153,10 @@ export const discordPresence = (
           },
         }),
       );
+    } else if (m.op === 11) {
+      acked = true;
+    } else if (m.op === 1) {
+      heartbeat();
     } else if (m.op === 7 || m.op === 9) {
       ws.close();
       end({ code: `op${m.op}` });

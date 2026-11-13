@@ -322,6 +322,56 @@ describe("seori presence discord", () => {
     expect(r.out.filter((l) => l === "PRESENCE_READY discord")).toHaveLength(1);
   });
 
+  test("a gateway that never acknowledges a heartbeat is closed as a zombie and a new one identifies", async () => {
+    const r = rig({
+      onOpen: (g, i) => {
+        if (i === 1) return r.stop.abort();
+        hello(g, 30_000);
+        r.t.fire(); // first beat goes out
+        r.t.fire(); // no op 11 came back: the second tick ends the connection
+      },
+    });
+    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(r.out).toContain("PRESENCE_RECONNECT discord code=zombie retry_in=5s");
+    expect(r.gateways).toHaveLength(2);
+    expect(r.gateways[0]!.closed).toBe(true);
+    expect(ops(r.gateways[0]!)).toEqual([2, 1]);
+  }, 2000);
+
+  test("acknowledged heartbeats keep the connection, and an op 1 request is answered with an immediate heartbeat", async () => {
+    const r = rig({
+      onOpen: (g) => {
+        hello(g, 30_000);
+        g.msg({ op: 0, s: 4, t: "READY", d: {} });
+        r.t.fire();
+        g.msg({ op: 11 });
+        r.t.fire();
+        g.msg({ op: 11 });
+        g.msg({ op: 1, d: null });
+        r.stop.abort();
+      },
+    });
+    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(r.gateways).toHaveLength(1);
+    expect(r.gateways[0]!.sent.slice(1)).toEqual([{ op: 1, d: 4 }, { op: 1, d: 4 }, { op: 1, d: 4 }]);
+    expect(r.out).toEqual(["PRESENCE_READY discord"]);
+    expect(r.t.live.size).toBe(0);
+  }, 2000);
+
+  test("a gateway that never sends hello is closed as no-hello and a new one identifies", async () => {
+    const r = rig({
+      onOpen: (_g, i) => {
+        if (i === 1) return r.stop.abort();
+        r.t.fire(); // the hello timeout passes
+      },
+    });
+    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(r.out).toContain("PRESENCE_RECONNECT discord code=no-hello retry_in=5s");
+    expect(r.gateways).toHaveLength(2);
+    expect(r.gateways[0]!.closed).toBe(true);
+    expect(ops(r.gateways[0]!)).toEqual([]);
+  }, 2000);
+
   test("op 7 and op 9 end the connection and a new one identifies", async () => {
     const r = rig({
       onOpen: (g, i) => {
