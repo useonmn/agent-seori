@@ -95,11 +95,11 @@ describe("create / start / createGroup", () => {
     for (const role of ["daemon", "duty-loop"] as const) expect(unset(argv(role))).toEqual([]);
   });
 
-  test("the unset list is every token variable the messenger adapters read, plus the removed Slack user-token mode's", () => {
+  test("the unset list is every token variable the messenger adapters read", () => {
     const dir = join(import.meta.dir, "..", "src", "messenger");
     const read = new Set(readdirSync(dir).flatMap((f) => readFileSync(join(dir, f), "utf8").match(/SEORI_[A-Z_]*(TOKEN|COOKIE)\b/g) ?? []));
     const unset: string[] = [...MESSENGER_TOKEN_ENV];
-    expect(unset.sort()).toEqual([...read, "SEORI_SLACK_USER_TOKEN", "SEORI_SLACK_COOKIE"].sort());
+    expect(unset.sort()).toEqual([...read].sort());
   });
 
   test("a spec with a home labels the terminal seori.home=<homeTag>", async () => {

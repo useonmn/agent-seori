@@ -152,13 +152,15 @@ export class SlackAdapter implements MessengerAdapter {
     this.now = deps.now ?? Date.now;
     this.pairing = deps.pairing === true;
     this.cursorRoot = deps.cursorRoot ?? root;
-    if (config.options?.["mode"] === "user" || (!this.has("botToken", BOT_ENV) && (this.has("userToken") || this.has("cookie")))) {
+    const mode = config.options?.["mode"];
+    if (mode === "user" || (!this.has("botToken", BOT_ENV) && (this.has("userToken", "SEORI_SLACK_USER_TOKEN") || this.has("cookie", "SEORI_SLACK_COOKIE")))) {
       throw new Error(`slack ${this.source}: Slack user-token mode was removed; create a Slack bot app (see skills/seori-mode/references/messengers.md) and use its bot and app tokens`);
     }
+    if (mode !== undefined && mode !== "bot") throw new Error(`slack ${this.source}: options "mode" must be "bot" or left out, got ${JSON.stringify(mode)}`);
   }
 
-  /** Whether `key` is set for this source (in secrets.json, or `envName` when given). */
-  private has(key: string, envName?: string): boolean {
+  /** Whether `key` is set for this source (`envName`, or secrets.json). */
+  private has(key: string, envName: string): boolean {
     try {
       secret(this.root, this.source, key, envName, this.env);
       return true;
