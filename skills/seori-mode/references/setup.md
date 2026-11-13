@@ -2,19 +2,20 @@
 
 Run these once, in order. Stop and ask the owner wherever a step needs their choice or their hand. Talk to the owner in their language.
 
-## 1. herdr and its omp integration
+## 1. hc, omp and the rest
 
-herdr is the terminal multiplexer seori runs in. Every lane is a herdr tab; herdr lets seori read a pane, type into it and see whether its omp is idle, working or blocked.
+hc (herdr-core) is the terminal runtime seori runs in. Every lane is an hc terminal labelled with this home's `seori.group`; omp reports its state to hc (idle, working, blocked), and seori reads it, types into a terminal and reads its screen through hc.
 
 ```sh
-command -v herdr || curl -fsSL https://herdr.dev/install.sh | sh
-herdr integration status          # the omp: line must not say "not installed"
-herdr integration install omp     # only if it does
+command -v hc                                   # hc must be on PATH
+grep -E '^\s*notes\s*=\s*false' "${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/config.toml"
 ```
 
-The integration is required. Without it herdr reports omp as idle at all times, so seori cannot tell a busy lane from an idle one and refuses to start lanes. Ask the owner before installing herdr itself; the integration install is safe to run.
+`notes = false` is required: without it hc types its own notes into the agents' input, and seori's inbox must be the only thing that types there. Ask the owner before installing hc or editing its config.
 
-Also needed: bun 1.3+, git, omp on PATH, and the GitHub CLI `gh` logged in (`gh auth status`) for reviews, merges and Done signals on PRs.
+Also needed: bun 1.3+, git, omp on PATH (logged in to a model provider), the GitHub CLI `gh` logged in (`gh auth status`) for reviews, merges and Done signals on PRs, and on Linux a running systemd user session (`systemctl --user`). macOS works without systemd; Windows is not supported.
+
+herdr can stand in for hc (`SEORI_RUNTIME=herdr`). It then needs its omp integration: `herdr integration status` must show an `omp:` line that does not say `not installed` (`herdr integration install omp` if it does); without it herdr reports omp as idle at all times and seori refuses to start lanes.
 
 ## 2. Install seori
 
@@ -28,7 +29,7 @@ What it does:
 - `bun install` and `bun link`, so `seori` is on PATH (bun's global bin directory, usually `~/.bun/bin`, must be on PATH);
 - links this skill to `~/.omp/agent/skills/seori-mode` (`SKILLS_DIR` picks another place), and leaves a real directory there alone;
 - creates `~/.seori` with mode 700;
-- warns when herdr, its omp integration, omp or gh is missing.
+- warns when hc, hc's `notes = false`, omp, gh or (on Linux) `systemctl` is missing.
 
 It never creates or overwrites `secrets.json`, `messengers.json` or `config.json`. Read every `WARNING:` line it prints and fix it before going on.
 
@@ -40,16 +41,16 @@ Follow `messengers.md`: pick the messenger with the owner, create the bot, write
 
 ## 4. Start seori
 
-From a shell inside herdr, in the directory lanes should start in by default:
+From a shell, with hc running:
 
 ```sh
 seori up [--cwd DIR]
-# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 hourly=w1:p4 daemon=w1:p5 home=~/.seori
+# UP lead=hc:t1 duty=hc:t2 units=seori-seori-1a2b3c4d-daemon.service,seori-seori-1a2b3c4d-duty.service,seori-seori-1a2b3c4d-hourly.service home=~/.seori name=seori
 ```
 
-That opens a herdr workspace with the lead pane (omp with `prompts/lead.md`), the duty pane, the duty loop, the hourly loop and the messenger daemon. From now on the lead pane receives the owner's messages and answers them. If `messengers.json` changes later, the daemon restarts on its own.
+That opens the lead terminal (omp with `prompts/lead.md`) and the duty terminal, labelled `seori.group=<name>`, and on Linux runs the duty loop, the hourly loop and the messenger daemon as `systemd --user` units (on macOS as hc terminals of the same group). On herdr it opens one workspace with all five panes. From now on the lead pane receives the owner's messages and answers them. If `messengers.json` changes later, the daemon restarts on its own.
 
-Tell the owner the lead is up and which pane it is in.
+Tell the owner the lead is up and which terminal it is in.
 
 ## 5. Optional config
 
@@ -83,4 +84,4 @@ Unless it was done before, run `onboarding.md`.
 
 ## Restarting
 
-After a reboot or a herdr restart: start herdr, run `seori up` again, then in the lead pane `seori boot`. Nothing in `~/.seori` is lost: lanes, messages, the worklog and watches are on disk.
+After a reboot: on Linux the units come back on their own; run `seori up` again to reopen the lead and duty terminals, then in the lead `seori boot`. Nothing in `~/.seori` is lost: lanes, messages, the worklog and watches are on disk.

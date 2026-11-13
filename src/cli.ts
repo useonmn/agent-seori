@@ -38,14 +38,15 @@ import { refText } from "./refs.ts";
 import { parseRef } from "./runtime/types.ts";
 import { removeUnits, systemctl, unitDir, writeUnits, type UnitKind } from "./systemd.ts";
 
-const USAGE = `seori - a proactive multi-session harness on herdr + omp
+const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is an option)
 
-  seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes (once per home);
-                                              on hc: lead and duty terminals (label seori.group=<name>, cwd default
-                                              $SEORI_HOME); daemon, duty loop and hourly loop as systemd --user units
-                                              seori-<name>-<daemon|duty|hourly> on Linux, in hc terminals on macOS
+  seori up [--cwd DIR]                         start this home's lead, duty, duty loop, hourly loop and daemon (once per home);
+                                              hc: lead and duty terminals labelled seori.group=<name> (cwd default $SEORI_HOME);
+                                              daemon, duty loop and hourly loop as systemd --user units
+                                              seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS;
+                                              herdr: one workspace with five panes
   seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
-  seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, lessons + brief + lane rules
+  seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
                                               Done line read back live before close; ID = lead channel id for progress posts;
                                               ceilings block (report to lead); exits 4 with HOLD when the host is full
@@ -70,26 +71,27 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
   seori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
   seori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
   seori backlog import <owner/repo> [--label seori] [--cwd DIR]   open labelled issues -> items
-  seori review <owner/repo#N> [--model M]      fresh omp reviewer at the exact head -> receipt
+  seori review <owner/repo#N> [--model M]      fresh isolated agent reviewer at the exact head -> receipt
   seori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks + verify-pr -> squash merge
   seori verify-pr <owner/repo#N>               commit identities (config repoIdentities) + fix-needs-a-test rule; exit 2 on FAIL
   seori done <key> [--lesson T [--evidence P]] lead closes a READY lane (a Done line must read back live); optional lesson
   seori object <key> --reason T [--reason T]   the lead objects to a READY claim: back to working with the reasons
-  seori pause <key> [--note T] | resume <key> [--note T]   pause/resume a lane's omp goal (exit 3 if unconfirmed)
+  seori pause <key> [--note T] | resume <key> [--note T]   pause/resume a lane's agent goal (exit 3 if unconfirmed)
   seori checkpoint <key> --step ID --result T --evidence P [--remote-effect R ...] | checkpoints <key>
   seori lesson add <key|--cwd DIR> --rule T --evidence P | lesson list [--cwd DIR] | lesson mark <id> --outcome O
                                               O = helped|no-effect|harmful|encoded; new lanes get a repo's pending/helped lessons
   seori lesson add --global --rule T --evidence P   the lead's rule for every lane (refused from a lane's terminal)
   seori worklog add <title> --source REF | next <id> <text> | note <id> <text> | close <id> --result T | list [--open]
-  seori boot                                   read-only check after a restart or compaction (exit 1 if something was unreadable)
+  seori boot                                   read-only check after a restart or compaction (exit 1 if unreadable or drifted)
   seori can-launch | guard                     room for a lane? (exit 4 HOLD) | host reading and guard state
   seori heavy <label> -- <cmd...>              run a heavy command when load is low and a heavy slot is free
   seori status
   seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
-  seori daemon-loop                            run the daemon and restart it when it crashes (seori up's daemon pane)
-  seori down [duty|loop|daemon|all]            stop the duty loop, hourly loop and daemon processes (default all);
-                                              exit 1 if one is still running after 30 s
-  seori install-skill [--skills-dir DIR]       link the seori-mode skill into omp; install.sh runs it
+  seori daemon-loop                            run the daemon and restart it when it crashes (seori up's daemon unit or pane)
+  seori down [duty|loop|daemon|all]            stop the duty loop, hourly loop and daemon (default all); all also disables
+                                              the systemd units and closes the seori.group terminals; exit 1 if a process
+                                              still runs after 30 s
+  seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
   seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
                                               answer messenger messages (one reply per id) or send a notice; while the
@@ -119,7 +121,8 @@ SEORI_MODEL=M passes --model M to every agent seori starts (lead, duty, lanes) a
 seori runs omp only: SEORI_AGENT or "agent" in $SEORI_HOME/config.json naming anything else is refused (exit 2); SEORI_AGENT_CMD overrides the omp command and must name omp (its basename is omp).
 watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), else for the lead; refusals exit 2.
 watch stop, rearm and log take a name of that same owner's live watches (--for picks another owner) or any watch's id.
-up and start need herdr's omp integration (herdr integration install omp).`;
+SEORI_RUNTIME=hc|herdr picks the runtime (else "runtime" in config.json, else the terminal seori runs in, else hc, then herdr, on PATH).
+On herdr, up and start need herdr's omp integration (herdr integration install omp).`;
 
 type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after a bare `--`, verbatim (seori heavy). */ rest: string[] };
 

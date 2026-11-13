@@ -6,7 +6,7 @@ seori includes or adapts material from the projects below.
 
 - Source: https://github.com/sisyphuslabs/dori-superagent
 - Use: harness design (lead, lanes, duty loop, hourly loop, review and merge gate) and portions of code and prompts adapted for omp.
-- License: MIT
+- License: MIT for upstream code up to and including commit ba96abf (that commit and its ancestors). Code first introduced upstream after ba96abf is under the Sustainable Use License; the files that contain such code are listed in the next section.
 
 ```
 MIT License

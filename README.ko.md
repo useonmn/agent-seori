@@ -1,6 +1,6 @@
 # seori (서리)
 
-[omp](https://github.com/can1357/oh-my-pi)와 [herdr](https://github.com/herdrdev/herdr) 위에서 돌아가는, 여러 코딩 에이전트 세션을 함께 굴리는 도구입니다.
+여러 코딩 에이전트 세션을 함께 굴리는 도구입니다. 에이전트는 [omp](https://github.com/can1357/oh-my-pi)(oh-my-pi) 하나만 씁니다. 기본 런타임은 [hc](https://herdr.dev)(herdr-core)이고, [herdr](https://github.com/herdrdev/herdr)도 쓸 수 있습니다. 주 플랫폼은 Linux이고 macOS도 지원하며, Windows는 지원하지 않습니다.
 
 [English](README.md) | 한국어
 
@@ -12,29 +12,35 @@ seori의 설계는 [dori-superagent](https://github.com/sisyphuslabs/dori-supera
 curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 ```
 
-그다음 herdr를 켜고, 창 하나에서 omp를 실행해 `서리 모드`(또는 `seori mode`)라고 말하면 됩니다. 나머지는 seori-mode 스킬이 차례로 안내합니다. 사람이 고르거나 직접 해야 하는 단계에서는 멈추고 묻습니다. 순서는 이렇습니다: 봇 이름 정하기, herdr의 omp 연동, 설치, 메신저 고르기(텔레그램, 슬랙, 디스코드), 브라우저에서 함께 봇 만들기, `secrets.json`과 `seori msg check`, `seori msg pair`로 나를 주인으로 등록하기, 봇으로 첫인사 보내기, `seori up`, 그리고 온보딩. 온보딩에서는 내가 허락한 도구만 읽기 전용으로 살펴보고 omp 메모리에 기억해 둡니다. 설정이 끝난 뒤에 다시 `서리 모드`라고 하면 `seori boot`를 돌리고 그 결과를 알려 줍니다. 자세한 내용은 [서리 모드 스킬](#서리-모드-스킬)에 있습니다.
+그다음 hc 터미널을 열고, omp를 실행해 `서리 모드`(또는 `seori mode`)라고 말하면 됩니다. 나머지는 seori-mode 스킬이 차례로 안내합니다. 사람이 고르거나 직접 해야 하는 단계에서는 멈추고 묻습니다. 순서는 이렇습니다: 봇 이름 정하기, 설치, 메신저 고르기(텔레그램, 슬랙, 디스코드), 브라우저에서 함께 봇 만들기, `secrets.json`과 `seori msg check`, `seori msg pair`로 나를 주인으로 등록하기, 봇으로 첫인사 보내기, `seori up`, 그리고 온보딩. 온보딩에서는 내가 허락한 도구만 읽기 전용으로 살펴보고 에이전트 메모리에 기억해 둡니다. 설정이 끝난 뒤에 다시 `서리 모드`라고 하면 `seori boot`를 돌리고 그 결과를 알려 줍니다. 자세한 내용은 [서리 모드 스킬](#서리-모드-스킬)에 있습니다.
 
 ## seori가 하는 일
 
 사람과 이야기하는 세션은 리드(lead) 하나뿐입니다. 일 하나하나는 레인(lane)이라는 별도 세션에서 돌아갑니다.
 
-- 리드: 사람과 대화하는 유일한 omp 세션입니다. 요청을 받으면 브리프(작업 설명서)를 쓰고 레인을 엽니다. 레인이 보낸 결과를 확인하고 머지합니다.
-- 레인: 일 하나당 하나씩 여는 omp 세션입니다. herdr 탭 하나를 혼자 씁니다. 브리프를 받아 omp 목표 모드(goal mode)로 일하고, 끝나면 증거 링크를 붙여 READY를 보냅니다. 완료 조건(Done 줄)을 달고 시작한 레인은, READY 몇 분 뒤 그 조건을 실제로 다시 확인해서 모두 맞으면 seori가 직접 닫습니다(리드가 반대하지 않으면).
-- 듀티(duty): 레인들을 지켜보는 세션과 프로세스(`seori duty`)입니다. 바쁜 리드와 듀티 창에 온 메시지는 모아 뒀다가 한가해지면 전해 줍니다. 조용한 레인은 깨우고, 그래도 안 되면 리드에게 알립니다. Done 줄이 맞는 레인을 닫고, 한도를 넘거나 멈춰 버린 레인, 컴퓨터 자원 부족을 리드에게 알리고, 레인의 진행 상황을 주인의 메신저 스레드에 올립니다.
+- 리드: 사람과 대화하는 유일한 에이전트 세션입니다. 요청을 받으면 브리프(작업 설명서)를 쓰고 레인을 엽니다. 레인이 보낸 결과를 확인하고 머지합니다.
+- 레인: 일 하나당 하나씩 여는 에이전트 세션이고, 터미널 하나를 혼자 씁니다. 브리프를 받아 목표 모드(goal mode)로 일하고, 끝나면 증거 링크를 붙여 READY를 보냅니다. 완료 조건(Done 줄)을 달고 시작한 레인은, READY 몇 분 뒤 그 조건을 실제로 다시 확인해서 모두 맞으면 seori가 직접 닫습니다(리드가 반대하지 않으면).
+- 듀티(duty): 레인들을 지켜보는 세션과 프로세스(`seori duty`)입니다. 바쁜 리드와 듀티 세션에 온 메시지는 모아 뒀다가 한가해지면 전해 줍니다. 조용한 레인은 깨우고, 그래도 안 되면 리드에게 알립니다. Done 줄이 맞는 레인을 닫고, 한도를 넘거나 멈춰 버린 레인, 컴퓨터 자원 부족을 리드에게 알리고, 레인의 진행 상황을 주인의 메신저 스레드에 올립니다.
 - 시간 단위 루프(hourly loop): `seori loop`입니다. 한 시간에 한 번 백로그(할 일 목록)를 보고, 레인 자리가 비어 있으면 다음 일을 시작합니다. 사람이 정해야 할 질문은 리드를 통해 묻습니다. 자세한 설계: [docs/hourly-loop.md](docs/hourly-loop.md)
 - 데몬: `seori daemon`입니다. 메신저로 온 메시지를 받아 리드에게 전할 수 있게 저장하고, 에이전트가 걸어 둔 감시(watch)를 돌립니다. 자세한 내용은 [메신저 채널](#메신저-채널)과 [감시](#감시)에 있습니다.
 - 리뷰와 머지 관문: PR은 정확히 지금 헤드(head) 커밋에 대한 CLEAR 리뷰 기록이 있고, 체크가 모두 통과하고, verify-pr도 통과해야만 머지됩니다.
 
-herdr는 워크스페이스, 탭, 창(pane)을 만들어 주고, 각 omp 세션이 지금 쉬는 중(idle)인지, 일하는 중(working)인지, 막혀 있는지(blocked) 알려 줍니다. seori는 창에 무언가를 하기 전에 항상 이 상태부터 확인합니다.
+런타임이 세션마다 터미널을 만들어 주고, 그 안의 에이전트가 지금 쉬는 중(idle)인지, 일하는 중(working)인지, 막혀 있는지(blocked) 알려 줍니다. seori는 세션에 무언가를 하기 전에 항상 이 상태부터 확인합니다. 기본 런타임은 hc이고, herdr도 쓸 수 있습니다. 에이전트는 언제나 omp입니다. [docs/runtime.md](docs/runtime.md)에 런타임을 고르는 방법과 두 런타임의 차이가 나와 있습니다.
+
+아래 예시는 hc 참조(`hc:t7`)를 보여 줍니다. herdr에서는 같은 명령에 `w1:p3` 같은 pane id를 씁니다.
 
 ## 준비물
 
-- Bun 1.3 이상
-- herdr 0.9.5 이상, 그리고 herdr의 omp 연동: `herdr integration install omp`. 이건 꼭 필요합니다. 연동이 없으면 herdr는 omp를 늘 "쉬는 중"으로 보고합니다. 그러면 seori가 바쁜 레인과 쉬는 레인을 구분할 수 없어서, 레인을 열지 않습니다. 설치 여부는 `herdr integration status`로 확인합니다. `omp:` 줄에 `not installed`가 없으면 됩니다.
-- omp (oh-my-pi). `omp` 명령이 PATH에 있어야 합니다.
+- Linux(주 플랫폼) 또는 macOS.
+- Bun 1.3 이상.
+- hc(herdr-core)가 PATH에 있어야 합니다. hc의 `config.toml`(`~/.config/herdr-core/config.toml`, 또는 `$XDG_CONFIG_HOME` 아래)에 `notes = false`를 넣으세요. 이 설정이 없으면 hc가 에이전트 입력에 자기 메모를 넣는데, seori의 inbox만 거기에 쓰도록 되어 있습니다. `install.sh`가 이 줄을 확인하고 경고하지만, 파일을 직접 고치지는 않습니다.
+- omp(oh-my-pi)가 PATH에 있어야 합니다. 모델 제공자에 로그인된 상태여야 합니다.
+- Linux에서는 systemd 사용자 세션이 돌고 있어야 합니다(`systemctl --user`): `seori up`이 데몬과 두 루프를 `systemd --user` 유닛으로 돌립니다. macOS에서는 systemd가 필요 없고, hc 터미널에서 돌립니다.
 - GitHub CLI `gh`. PR 헤드 커밋, 체크, 리뷰, 머지에 씁니다.
 
-Linux와 macOS를 지원합니다(주 플랫폼은 Linux). Windows는 지원하지 않습니다.
+선택:
+
+- hc 대신 herdr 0.9.5 이상을 쓸 수도 있습니다. herdr의 omp 연동이 필요합니다(`herdr integration install omp`, `herdr integration status`의 `omp:` 줄에 `not installed`가 없어야 합니다). 연동이 없으면 herdr가 omp를 늘 "쉬는 중"으로 보고해서 seori가 레인을 열지 않습니다.
 
 ## 직접 빠르게 시작하기
 
@@ -43,18 +49,24 @@ bun install
 bun link   # `seori` 명령을 PATH에 넣습니다. 싫으면 아래의 `seori`를 `bun src/cli.ts`로 바꿔 쓰면 됩니다.
 ```
 
-herdr를 켜고, 셸에서:
+hc가 돌고 있는 상태에서 셸에서:
 
 ```sh
 seori up
-# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 hourly=w1:p4 daemon=w1:p5 home=~/.seori
+# UP lead=hc:t1 duty=hc:t2 units=seori-seori-1a2b3c4d-daemon.service,seori-seori-1a2b3c4d-duty.service,seori-seori-1a2b3c4d-hourly.service home=~/.seori name=seori
 ```
 
-리드 창, 듀티 창, 듀티 루프, 시간 단위 루프, 데몬이 열립니다. 이제 리드 창에 말을 걸면 됩니다. 리드가 브리프를 쓰고 레인을 엽니다. 셸에서 직접 열어도 됩니다:
+hc에서 `seori up`은 터미널 두 개를 엽니다. 리드(인스턴스 이름, 기본 `seori`)와 듀티(`seori-duty`)이고, 둘 다 `seori.group=<이름>` 라벨이 붙습니다. 작업 폴더는 `$SEORI_HOME`이고, `--cwd`로 바꿀 수 있습니다. Linux에서는 데몬, 듀티 루프, 시간 단위 루프가 `systemd --user` 유닛(`seori-<이름>-<hash>-daemon`, `seori-<이름>-<hash>-duty`, `seori-<이름>-<hash>-hourly`, `<hash>`는 `$SEORI_HOME` 경로의 16진수 8자리)으로 돌고, enabled 상태라 재부팅이나 WSL 재시작 뒤에도 다시 뜹니다. macOS에서는 같은 세 프로세스가 hc 터미널에서 돕니다. `seori up`은 데몬의 heartbeat를 기다린 뒤 루프를 시작하고, 두 번째 `seori up`은 `ALREADY UP`을 출력하고 아무것도 열지 않습니다.
+
+herdr에서는 `seori up`이 리드 창, 듀티 창, 듀티 루프, 시간 단위 루프, 데몬이 들어간 워크스페이스를 엽니다.
+
+`seori down`은 프로세스를 멈추고, 유닛을 비활성화하고 지우고, 그룹의 모든 터미널(레인 포함)을 닫습니다. 그룹 바깥의 셸에서 실행하세요. 리드 터미널 안에서 실행하면, 그 터미널이 마지막에 닫히면서 출력이 멈춥니다.
+
+리드에게 말을 걸면 됩니다. 리드가 브리프를 쓰고 레인을 엽니다. 셸에서 직접 열어도 됩니다:
 
 ```sh
 seori start fix-flaky-login --brief examples/brief.md
-# STARTED fix-flaky-login pane=w1:p6 brief=~/.seori/briefs/fix-flaky-login.md
+# STARTED fix-flaky-login pane=hc:t3 brief=~/.seori/briefs/fix-flaky-login.md
 seori status
 ```
 
@@ -62,7 +74,7 @@ seori status
 
 레인 이름(key)은 `^[a-z][a-z0-9-]{1,40}$` 형식이어야 하고, 이미 열려 있는 이름은 쓸 수 없습니다.
 
-레인 안에서 omp는 레인 규칙에 적힌 명령으로 진행 상황을 알리고 일을 마칩니다:
+레인 안에서 에이전트는 레인 규칙에 적힌 명령으로 진행 상황을 알리고 일을 마칩니다:
 
 ```sh
 seori report fix-flaky-login --text 'reproduced: 1 failure in 20 runs, shared session fixture'
@@ -73,20 +85,22 @@ seori ready fix-flaky-login --text 'root cause fixed in owner/repo#12, checks gr
 리드는 `[READY fix-flaky-login]`을 받으면:
 
 ```sh
-seori review owner/repo#12            # 새 omp 리뷰어가 헤드 커밋을 리뷰하고 기록(receipt)을 남깁니다
+seori review owner/repo#12            # 새 격리된 리뷰어가 헤드 커밋을 리뷰하고 기록(receipt)을 남깁니다
 seori merge owner/repo#12 --dry-run   # MERGE_OK ... (dry run) 또는 MERGE_REFUSED <이유>
 seori merge owner/repo#12             # 기록, 체크, verify-pr을 확인한 뒤 gh pr merge --squash --match-head-commit <sha>
-seori done fix-flaky-login            # 레인 창을 닫습니다. READY인 레인만 닫을 수 있습니다
+seori done fix-flaky-login            # 레인 터미널을 닫습니다. READY인 레인만 닫을 수 있습니다
 ```
 
 `--done`을 달고 연 레인은 저절로 닫힙니다. [완료 조건(Done 줄)과 자동 닫기](#완료-조건done-줄과-자동-닫기)를 보세요.
+
+직접 시작한 세션도 seori에 맡길 수 있습니다. `seori adopt <key> --ref hc:t9 [--brief FILE]`는 이미 돌고 있는 에이전트 세션을 레인으로 등록하고, 거기에 아무것도 입력하지 않습니다. `seori sync`는 레인 기록과 그룹의 살아 있는 세션을 비교합니다(`--write`를 주면 사라진 레인을 lost로 표시하고, 세션을 닫지는 않습니다).
 
 ## 명령 목록
 
 ```
 seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시간 단위 루프, 데몬 창을 엽니다
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
-seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 탭, omp 세션, 교훈 + 브리프 + 레인 규칙
+seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널 또는 탭, 에이전트 세션, 교훈 + 브리프 + 레인 규칙
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
                                             닫기 전에 Done 줄을 실제로 확인; ID = 진행 상황을 올릴 리드 채널 id;
                                             한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4
@@ -108,12 +122,12 @@ seori down [duty|loop|daemon|all]            듀티 루프, 시간 단위 루프
 seori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
 seori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
 seori backlog import <owner/repo> [--label seori] [--cwd DIR]   라벨 붙은 열린 이슈를 백로그로 가져옵니다
-seori review <owner/repo#N> [--model M]      헤드 커밋을 새 omp 리뷰어로 리뷰 -> 기록
+seori review <owner/repo#N> [--model M]      헤드 커밋을 새 격리된 리뷰어로 리뷰 -> 기록
 seori merge <owner/repo#N> [--dry-run]       헤드에 CLEAR 기록 + 체크 통과 + verify-pr -> squash 머지
 seori verify-pr <owner/repo#N>               커밋 신원(config의 repoIdentities) + 수정에는 테스트 규칙; FAIL이면 종료 코드 2
 seori done <key> [--lesson T [--evidence P]] 리드가 READY 레인을 닫습니다 (Done 줄은 실제로 맞아야 함); 교훈을 남길 수 있음
 seori object <key> --reason T [--reason T]   리드가 READY 주장에 반대합니다: 이유와 함께 다시 일하는 상태로
-seori pause <key> [--note T] | resume <key> [--note T]   레인의 omp 목표를 멈추거나 다시 켭니다 (확인 못 하면 종료 코드 3)
+seori pause <key> [--note T] | resume <key> [--note T]   레인의 에이전트 목표를 멈추거나 다시 켭니다 (확인 못 하면 종료 코드 3)
 seori checkpoint <key> --step ID --result T --evidence P [--remote-effect R ...] | checkpoints <key>
 seori lesson add <key|--cwd DIR> --rule T --evidence P | lesson list [--cwd DIR] | lesson mark <id> --outcome O
                                             O = helped|no-effect|harmful|encoded; 새 레인은 그 저장소의 pending/helped 교훈을 받음
@@ -152,19 +166,19 @@ seori watch log <id|name> [-n N]             감시가 최근에 본 일
 
 ## 레인이 시작되는 방법
 
-1. `seori start <key> --brief FILE`은 먼저 herdr의 omp 연동과, 컴퓨터에 레인을 열 자리가 있는지 확인합니다([컴퓨터 자원 감시](#컴퓨터-자원-감시-can-launch-무거운-작업-자리) 참고, `--force`면 자리 확인을 건너뜀). 읽을 수 없는 Done 줄(`--done`)은 거절합니다.
+1. `seori start <key> --brief FILE`은 먼저 컴퓨터에 레인을 열 자리가 있는지 확인합니다([컴퓨터 자원 감시](#컴퓨터-자원-감시-can-launch-무거운-작업-자리) 참고, `--force`면 자리 확인을 건너뜀). 읽을 수 없는 Done 줄(`--done`)은 거절합니다.
 2. 그 레인 폴더의 교훈([교훈](#교훈) 참고), 브리프, 레인 규칙을 합쳐 `~/.seori/briefs/<key>.md`에 씁니다.
-3. 새 탭을 열고, 그 창에서 `herdr agent start`(`--kind omp`)로 omp를 켭니다. omp가 입력을 받을 준비가 되면 바로 돌아옵니다. 이때 프롬프트는 넘기지 않습니다. 넘기면 첫 작업이 끝날 때까지 기다리다가 시간 초과가 나기 때문입니다.
-4. 이어서 `herdr agent prompt`로 `/goal` 명령을 보냅니다. 목표에는 브리프 위치와 레인 이름이 들어갑니다. omp는 목표 모드로 바뀌고, 목표를 이룰 때까지 계속 일합니다.
-5. 레인은 `working`으로 기록되고(주어졌다면 Done 줄, `--thread`, 한도도 함께), 리드는 `[START <key>]`를 받습니다.
+3. hc에서: 터미널이 인스턴스 그룹(`seori.group=<이름>`)에 합류하고, seori가 에이전트 명령을 입력한 뒤 에이전트의 첫 상태 보고를 기다립니다. 이어서 `/goal` 명령을 보냅니다. 목표에는 브리프 위치와 레인 이름이 들어갑니다. 그다음 omp가 이 명령을 받아 `working`을 보고하기를 기다립니다. 보고가 없으면 Enter를 한 번 더 누르고, 그래도 없으면 그 터미널을 확인하라는 경고를 출력하고 레인을 열어 둡니다.
+4. herdr에서: 먼저 herdr의 omp 연동을 확인하고, 새 탭을 열어 `herdr agent start --kind omp`로 omp를 켭니다. omp가 준비되면, 같은 `/goal` 명령을 `herdr agent prompt`로 보냅니다.
+5. 어느 쪽이든 레인은 `working`으로 기록되고(주어졌다면 Done 줄, `--thread`, 한도도 함께), 리드는 `[START <key>]`를 받습니다.
 
-레인 규칙은 omp에게 이렇게 시킵니다: 첫 답에서 결과물과 끝나는 조건을 다시 말할 것, 그리고 `seori ready`가 성공하기 전에는 목표를 완료 처리하지 말 것. 그 뒤 레인은 `[REPORT <key>]`(밖의 일 때문에 막혔으면 `[REPORT <key> WAITING]`)를 보내고, 마지막에 증거 링크와 함께 `[READY <key>]`를 보냅니다. 또 한 단계를 끝낼 때마다 체크포인트를 남기고, 재시작이나 압축 뒤에는 `seori checkpoints <key>`로 먼저 읽어 볼 것, 주인이 멈춰 둔 동안에는 아무것도 시작하지 말 것도 시킵니다. 누가 레인을 닫는지도 규칙에 적혀 있습니다: 보통은 리드가 직접 닫고, Done 줄이 있는 레인은 기다리는 시간이 지나면 seori가 닫습니다.
+레인 규칙은 에이전트에게 이렇게 시킵니다: 첫 답에서 결과물과 끝나는 조건을 다시 말할 것, 그리고 `seori ready`가 성공하기 전에는 목표를 완료 처리하지 말 것. 그 뒤 레인은 `[REPORT <key>]`(밖의 일 때문에 막혔으면 `[REPORT <key> WAITING]`)를 보내고, 마지막에 증거 링크와 함께 `[READY <key>]`를 보냅니다. 또 한 단계를 끝낼 때마다 체크포인트를 남기고, 재시작이나 압축 뒤에는 `seori checkpoints <key>`로 먼저 읽어 볼 것, 주인이 멈춰 둔 동안에는 아무것도 시작하지 말 것도 시킵니다. 누가 레인을 닫는지도 규칙에 적혀 있습니다: 보통은 리드가 직접 닫고, Done 줄이 있는 레인은 기다리는 시간이 지나면 seori가 닫습니다.
 
 ## seori가 지키게 하는 규칙
 
 - 말하는 쪽은 하나: 사람과 이야기하는 건 리드뿐입니다. 레인은 사람에게 할 말을 모두 리드에게 보냅니다. 듀티는 머지하지 않고 사람과 이야기하지 않습니다.
 - READY에는 증거가 필요: `seori ready`는 `--evidence` 링크가 하나도 없거나 최종 답이 비어 있으면 거절합니다. `seori done`은 READY가 아닌 레인을 닫지 않습니다. Done 줄이 있는 레인의 READY는 "다 했다"는 주장이고, seori가 닫기 전에 실제로 다시 확인합니다. [완료 조건(Done 줄)과 자동 닫기](#완료-조건done-줄과-자동-닫기)를 보세요.
-- 리드와 듀티 창은 방해하지 않고, 레인은 일하는 중에도 메시지를 받음: `seori send`는 먼저 herdr에게 상대 상태를 묻습니다. 쉬는 중이면 바로 전합니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 `working`으로 보이므로, 열려 있는 레인 창에는 일하는 중이어도 바로 전합니다. omp는 이를 작업 중 끼어든 지시(steer)로 받아 처리하고 하던 일을 이어 갑니다. 바쁜 리드나 듀티 창, 그리고 막혀 있는(blocked, 대화 상자가 열린) 창에 온 메시지는 `~/.seori/inbox/`에 모아 두고, 듀티 루프가 창이 받을 수 있을 때 한 번에 전합니다. 창 앞에 omp 대신 셸이 나와 있으면(omp가 꺼졌거나 Ctrl+Z로 멈춘 경우) 절대 입력하지 않습니다. 셸에 입력한 글자는 명령으로 실행되기 때문입니다.
+- 리드와 듀티 창은 방해하지 않고, 레인은 일하는 중에도 메시지를 받음: `seori send`는 먼저 런타임에 상대 세션의 상태를 묻습니다. 쉬는 중이면 바로 전합니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 `working`으로 보이므로, 열려 있는 레인 창에는 일하는 중이어도 바로 전합니다. 에이전트는 이를 작업 중 끼어든 지시(steer)로 받아 처리하고 하던 일을 이어 갑니다. 바쁜 리드나 듀티 창, 그리고 막혀 있는(blocked, 대화 상자가 열린) 창에 온 메시지는 `~/.seori/inbox/`에 모아 두고, 듀티 루프가 창이 받을 수 있을 때 한 번에 전합니다. 창 앞에 에이전트 대신 셸이 나와 있으면(에이전트가 꺼졌거나 Ctrl+Z로 멈춘 경우) 절대 입력하지 않습니다. 셸에 입력한 글자는 명령으로 실행되기 때문입니다.
 - 10분, 20분, 40분 알림: 10분 동안 보고가 없는 레인에는 `prompts/nudge.md`를 보냅니다. 창이 일하는 중(working)이어도 보냅니다. 목표 모드의 레인은 목표가 끝날 때까지 계속 working으로 보이므로, working만으로는 진행으로 치지 않습니다. 알림은 작업 중 끼어든 지시(steer)로 들어갑니다. 20분에 한 번 더 보내고, 40분이 되면 리드에게 `[ESCALATE <key>]`를 보냅니다. 그래서 레인은 적어도 10분마다 진행 상황을 보고합니다. 새 보고가 들어오면 알림 횟수는 처음부터 다시 셉니다. 기다림(waiting)을 보고한 레인이나 막혀 있는(blocked) 레인은 건드리지 않습니다. 레인 창이 `blockedPromptMin`분(기본 10분) 넘게 막혀 있으면(도구 승인이나 질문이 기다리는 중) 대화 상자 하나마다 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내고, 그 창에는 아무것도 입력하지 않습니다. READY 전에 창이 사라지면 `[LOST <key>]`로 알립니다.
 - 머지 조건: `seori merge`는 PR의 지금 헤드 커밋에 대한 CLEAR 리뷰 기록(`~/.seori/receipts/`)을 요구합니다. 기록은 `seori review`만 남깁니다. 리뷰어는 새로 띄운 비대화형 omp이고, 저장소의 AGENTS.md, 스킬, 규칙, 확장을 읽지 않는 격리된 상태로 돕니다. `gh`로 PR을 읽고, 마지막 줄에 `VERDICT: CLEAR` 또는 `VERDICT: BLOCK`을 딱 한 번 씁니다. 이 줄이 없으면 기록도 없습니다. 그다음 `gh pr checks`에 체크가 하나 이상 있어야 하고, 모두 통과하거나 건너뛰어야 하며, 적어도 하나는 통과해야 합니다. 체크가 하나도 없으면 통과로 보지 않습니다. 마지막으로 verify-pr이 통과해야 합니다([verify-pr과 머지 관문](#verify-pr과-머지-관문) 참고). 리뷰 뒤에 푸시가 있으면 헤드가 바뀌므로 예전 기록은 쓸 수 없습니다.
 
@@ -258,7 +272,7 @@ seori resume fix-flaky-login
 # RESUMED fix-flaky-login as working, goal resumed
 ```
 
-`seori pause <key>`는 레인의 omp에 `/goal pause`를 보내고, 창에 그 결과(`Goal mode paused.` 또는 `Warning: No active goal to pause.`, 어느 쪽이든 목표가 저절로 이어지지 않음)가 보일 때만 레인을 `paused`로 기록합니다. 그 뒤 3초쯤 창을 지켜보다가 차례가 돌고 있거나 새로 시작되면 Escape를 한 번 눌러 끊습니다. 그래서 막 시작하려던 차례도 멈춥니다. 일하는 중, 기다리는 중, READY인 레인을 멈출 수 있고, 이미 멈춘 레인이면 `PAUSED <key> already`를 출력합니다. `seori resume <key>`는 `/goal resume`을 보내고 `Goal mode resumed.`(또는 `Warning: No paused goal to resume.`)를 기다린 뒤, 멈추기 전 상태로 돌려놓고 조용했던 시간을 처음부터 다시 셉니다. 그래서 오래 멈췄다가 다시 켜도 바로 깨우기 알림이나 멈춤 알림이 가지 않습니다. `--note`는 레인 기록에 남습니다.
+`seori pause <key>`는 레인의 에이전트에 `/goal pause`를 보내고, 창에 그 결과(`Goal mode paused.` 또는 `Warning: No active goal to pause.`, 어느 쪽이든 목표가 저절로 이어지지 않음)가 보일 때만 레인을 `paused`로 기록합니다. 그 뒤 3초쯤 창을 지켜보다가 차례가 돌고 있거나 새로 시작되면 Escape를 한 번 눌러 끊습니다. 그래서 막 시작하려던 차례도 멈춥니다. 일하는 중, 기다리는 중, READY인 레인을 멈출 수 있고, 이미 멈춘 레인이면 `PAUSED <key> already`를 출력합니다. `seori resume <key>`는 `/goal resume`을 보내고 `Goal mode resumed.`(또는 `Warning: No paused goal to resume.`)를 기다린 뒤, 멈추기 전 상태로 돌려놓고 조용했던 시간을 처음부터 다시 셉니다. 그래서 오래 멈췄다가 다시 켜도 바로 깨우기 알림이나 멈춤 알림이 가지 않습니다. `--note`는 레인 기록에 남습니다.
 
 창에서 6초쯤 안에 확인하지 못하면 `PAUSE_UNVERIFIED <key> ...`나 `RESUME_UNVERIFIED <key> ...`를 출력하고 종료 코드 3으로 끝나며, 레인은 그대로 둡니다. 레인이 아직 돌고 있을 수 있으니 창을 보고 다시 시도하세요.
 
@@ -268,9 +282,9 @@ seori resume fix-flaky-login
 
 듀티 루프는 열린 레인마다 두 가지를 지켜보고, 각각 한 번씩 리드에게 알립니다. seori는 이 일로 레인에 메시지를 보내거나, 멈추거나, 끄지 않습니다. 결정은 리드가 합니다.
 
-한도. 레인마다 걸린 시간, 토큰, 비용 한도를 둘 수 있습니다. `seori start --wall-minutes N --token-limit N --cost-limit N`은 그 레인 하나의 한도를 정합니다. `none`은 그 한도를 끄고, 빠진 플래그는 설정의 기본값을 씁니다. 이 플래그를 하나도 주지 않은 레인은 `config.json`의 `supervision.defaults`를 따르고, 기본값은 모두 꺼져 있습니다. 걸린 시간은 레인을 연 때부터 셉니다. 토큰과 비용은 레인 omp 세션 파일(경로는 herdr가 알려 줌)의 어시스턴트 메시지에서 더합니다. 읽을 수 없는 값은 한도에 닿지 않은 것으로 보고, `usage-unknown` 듀티 이벤트로 한 번 보여 줍니다. 한도에 닿으면 리드에게 `[BLOCKED <key>] <종류> ceiling reached (<값>, limit <한도>); the lane keeps running until you decide`를 보냅니다. 한도마다, 한도 값마다 한 번이고(리드가 한도를 올리면 거기에 닿을 때 다시 알림), 레인 기록에도 남습니다.
+한도. 레인마다 걸린 시간, 토큰, 비용 한도를 둘 수 있습니다. `seori start --wall-minutes N --token-limit N --cost-limit N`은 그 레인 하나의 한도를 정합니다. `none`은 그 한도를 끄고, 빠진 플래그는 설정의 기본값을 씁니다. 이 플래그를 하나도 주지 않은 레인은 `config.json`의 `supervision.defaults`를 따르고, 기본값은 모두 꺼져 있습니다. 걸린 시간은 레인을 연 때부터 셉니다. 토큰과 비용은 레인 에이전트 세션 파일(경로는 런타임이 알려 줌)의 어시스턴트 메시지에서 더합니다. 읽을 수 없는 값은 한도에 닿지 않은 것으로 보고, `usage-unknown` 듀티 이벤트로 한 번 보여 줍니다. 한도에 닿으면 리드에게 `[BLOCKED <key>] <종류> ceiling reached (<값>, limit <한도>); the lane keeps running until you decide`를 보냅니다. 한도마다, 한도 값마다 한 번이고(리드가 한도를 올리면 거기에 닿을 때 다시 알림), 레인 기록에도 남습니다.
 
-멈춤. herdr가 일하는 중으로 보는 working 레인이 `supervision.hungAfterMin`분(기본 20분) 동안 보고도 없고 파일도 바꾸지 않으면, 멈춘 것으로 보고 `[STALLED <key>] ...`를 보냅니다. 멈출 때마다 한 번입니다. 파일 변경은 새 HEAD, 또는 레인 폴더에서 `git status`가 보여 주는 파일들(`node_modules` 제외)의 시각과 크기 변화입니다. git 저장소가 아니면 보고만 진행으로 칩니다. waiting 레인은 기다린다고 말했으니 조용해도 멈춤이 아닙니다. 변경 기록은 `duty/supervision.json`에 둡니다.
+멈춤. 런타임이 일하는 중으로 보는 working 레인이 `supervision.hungAfterMin`분(기본 20분) 동안 보고도 없고 파일도 바꾸지 않으면, 멈춘 것으로 보고 `[STALLED <key>] ...`를 보냅니다. 멈출 때마다 한 번입니다. 파일 변경은 새 HEAD, 또는 레인 폴더에서 `git status`가 보여 주는 파일들(`node_modules` 제외)의 시각과 크기 변화입니다. git 저장소가 아니면 보고만 진행으로 칩니다. waiting 레인은 기다린다고 말했으니 조용해도 멈춤이 아닙니다. 변경 기록은 `duty/supervision.json`에 둡니다.
 
 ## 작업 기록(worklog)
 
@@ -309,9 +323,9 @@ seori worklog list --open
 
 ## 컴퓨터 자원 감시, can-launch, 무거운 작업 자리
 
-자원 감시(host guard)는 컴퓨터 상태를 한 번에 읽습니다: 코어당 1분 부하(퍼센트, 100 = 모든 코어가 바쁨), 남은 메모리, `$SEORI_HOME`이 있는 디스크의 남은 공간(`df -k -P`), 살아 있는 herdr 창 수(`herdr pane list`).
+자원 감시(host guard)는 컴퓨터 상태를 한 번에 읽습니다: 코어당 1분 부하(퍼센트, 100 = 모든 코어가 바쁨), 남은 메모리, `$SEORI_HOME`이 있는 디스크의 남은 공간(`df -k -P`), 살아 있는 런타임 세션 수(`hc ls` 또는 `herdr pane list`).
 
-- `seori can-launch`는 `CAN_LAUNCH`(종료 코드 0)나 `HOLD <이유> | <이유>`(종료 코드 4)를 출력합니다. 남은 메모리가 `guard.memFreeMinPct`보다 적거나, 남은 디스크가 `guard.diskFreeMinGb`보다 적거나, 창이 `guard.panesMax`보다 많으면 새 레인을 막습니다(HOLD). CPU 부하로는 막지 않습니다. 너무 빨리 바뀌어서 계획에 쓸 수 없기 때문입니다(대신 무거운 명령이 부하를 기다립니다). 읽지 못한 값으로는 막지도 알리지도 않습니다. 그래서 `df`나 herdr 호출이 한 번 실패해도 모든 일이 멈추지 않습니다. `seori guard`에서는 `unknown`으로 보입니다.
+- `seori can-launch`는 `CAN_LAUNCH`(종료 코드 0)나 `HOLD <이유> | <이유>`(종료 코드 4)를 출력합니다. 남은 메모리가 `guard.memFreeMinPct`보다 적거나, 남은 디스크가 `guard.diskFreeMinGb`보다 적거나, 창이 `guard.panesMax`보다 많으면 새 레인을 막습니다(HOLD). CPU 부하로는 막지 않습니다. 너무 빨리 바뀌어서 계획에 쓸 수 없기 때문입니다(대신 무거운 명령이 부하를 기다립니다). 읽지 못한 값으로는 막지도 알리지도 않습니다. 그래서 `df`나 런타임 호출이 한 번 실패해도 모든 일이 멈추지 않습니다. `seori guard`에서는 `unknown`으로 보입니다.
 - `seori start`도 같은 확인을 합니다. 자리가 없으면 `HOLD` 줄과 `lane <key> not started; queue it (seori backlog add) or pass --force`를 출력하고 종료 코드 4로 끝납니다. `--force`면 확인을 건너뜁니다. 리드 규칙은 레인을 열기 전에 `seori can-launch`를 돌리고, HOLD면 일을 백로그에 넣으라고 시킵니다.
 - `seori guard`는 `HOST load N% per core, memory free N%, disk free N GB, panes N`과 `HOST_GUARD OK` 또는 `HOST_GUARD ALERT <이유>`를 출력합니다. 읽기만 합니다.
 - 듀티 루프는 기준을 넘으면 리드에게 `[HOST-GUARD ALERT] <이유>`를, 모두 다시 괜찮아지면 `[HOST-GUARD CLEAR] <값>`을 보냅니다. 넘을 때마다 한 번씩입니다(상태는 `duty/guard.json`). 부하는 `guard.loadAlertPct`를 넘으면 알리고, `guard.loadOkPct` 밑으로 떨어질 때까지 높은 상태로 봅니다. 그래서 기준 근처에서 오르내려도 알림이 계속 바뀌지 않습니다. 메모리, 디스크, 창 수는 레인을 막는 기준과 같은 기준으로 알립니다. 한 번 울린 알림은 값을 제대로 읽어서 괜찮을 때만 풉니다. 읽지 못한 값이 있는 동안에는 알림을 그대로 두므로, 잘못된 CLEAR 뒤에 ALERT가 다시 오는 일이 없습니다.
@@ -322,13 +336,13 @@ seori worklog list --open
 
 ## 주인 스레드에 진행 상황 올리기
 
-메신저 메시지 때문에 연 레인에는 그 메시지의 리드 채널 id를 달 수 있습니다: `seori start <key> --brief FILE --thread <id>`. id는 리드가 그 메시지에서 보는 것, 즉 `<source>:<chat>:<message id>`입니다(`seori msg list`에 나오는 것). 그러면 듀티 루프가 레인의 최신 보고를 그 메시지 아래 스레드 답글로 `[<key>] <보고 내용>` 형태로 올립니다. 최대 `progressEveryMin`분(기본 15분, 레인을 연 때나 마지막으로 올린 때부터)마다 한 번이고, 보고가 바뀌었을 때만, 레인이 working이나 waiting일 때만 올립니다. 올리기 전에 홈 폴더는 `~`로, herdr 창 id는 `<pane>`으로 바꿉니다.
+메신저 메시지 때문에 연 레인에는 그 메시지의 리드 채널 id를 달 수 있습니다: `seori start <key> --brief FILE --thread <id>`. id는 리드가 그 메시지에서 보는 것, 즉 `<source>:<chat>:<message id>`입니다(`seori msg list`에 나오는 것). 그러면 듀티 루프가 레인의 최신 보고를 그 메시지 아래 스레드 답글로 `[<key>] <보고 내용>` 형태로 올립니다. 최대 `progressEveryMin`분(기본 15분, 레인을 연 때나 마지막으로 올린 때부터)마다 한 번이고, 보고가 바뀌었을 때만, 레인이 working이나 waiting일 때만 올립니다. 올리기 전에 홈 폴더는 `~`로, pane id는 `<pane>`으로 바꿉니다.
 
 갔는지 확실하지 않은 글은 올린 것으로 치고, 두 번 보내지 않습니다. 확실히 실패했거나, 그 source의 메신저가 설정되지 않았거나, 스레드 id가 그 형식이 아니면 `post-failed` 듀티 이벤트가 되고 다음 차례에 다시 시도합니다. 올린 글은 레인 기록에 남습니다.
 
 ## 메신저 채널
 
-리드는 자기 창뿐 아니라 메신저로도 요청을 받을 수 있습니다. 메신저 설정은 `$SEORI_HOME/messengers.json`에 씁니다:
+리드는 자기 터미널뿐 아니라 메신저로도 요청을 받을 수 있습니다. 메신저 설정은 `$SEORI_HOME/messengers.json`에 씁니다:
 
 ```json
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
@@ -380,20 +394,20 @@ seori msg pair telegram --write
 - 슬랙은 Socket Mode를 씁니다(공개 주소가 필요 없습니다). 저장한 뒤에야 받았다고 알립니다. 다시 연결될 때마다 본 적 있는 대화를 커서부터 `conversations.history`로, 최근 스레드는 `conversations.replies`로 읽어서, 연결이 끊긴 동안 온 메시지와 스레드 답글도 놓치지 않습니다. 읽기 권한이 없는 대화는 건너뛰고, ping에 답하지 않는 연결은 다시 연결합니다.
 - 디스코드는 게이트웨이를 쓰고, 다시 켜지면 세션을 이어 갑니다(resume). 이어 갈 수 없으면 본 적 있는 대화를 커서부터 REST로 읽습니다.
 
-고친 메시지는 `(edited)`로 시작하는 새 메시지로 리드에게 갑니다. 첨부 파일은 내려받지 않고 `[attachment: 이름 (종류, 크기) 참조]` 줄로 적습니다. 긴 답은 메신저 한도(4096, 3900, 2000자)에 맞춰 문단, 줄, 단어 경계에서 나눠 보내고, 첫 조각이 원래 메시지에 답글(스레드)로 붙습니다. 첫 조각이 간 뒤에 실패하면, 갔을 수도 있는 다른 보내기처럼 불확실로 기록합니다.
+고친 메시지는 `(edited)`로 시작하는 새 메시지로 리드에게 갑니다. 첨부 파일은 내려받지 않고 `[attachment: 이름 (종류, 크기) 참조]` 줄로 적습니다. 한 가지 예외로, `hooks.transcribe`가 설정되어 있으면 텔레그램 음성 메시지는 `messenger/telegram/voice/`에 내려받아(삭제하지 않고) 후크를 돌리고, 그 필사본을 첨부 줄 뒤에 붙입니다([후크](#후크) 참고). 긴 답은 메신저 한도(4096, 3900, 2000자)에 맞춰 문단, 줄, 단어 경계에서 나눠 보내고, 첫 조각이 원래 메시지에 답글(스레드)로 붙습니다. 첫 조각이 간 뒤에 실패하면, 갔을 수도 있는 다른 보내기처럼 불확실로 기록합니다.
 
 `fake`는 `$SEORI_HOME/messenger/fake/` 아래 파일로 움직입니다. `in.jsonl`에 `{"msgId":"1","chat":"c1","from":"u1","text":"..."}` 한 줄을 덧붙이면 리드에게 메시지를 보낸 것이 되고, 답은 `out.jsonl`에 쌓입니다. `send-mode`에 `ok`, `timeout`, `error`를 쓰면 보내기가 성공, 불확실, 실패로 끝납니다.
 
 메시지가 가는 길:
 
-1. 데몬(`seori up`의 다섯 번째 창)이 메시지를 받습니다. 주인이 보낸 것이면 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. 창에서 다시 켜기 루프로 돌기 때문에, 데몬이 죽어도 1초쯤 뒤에 다시 켜집니다. `messengers.json`이 바뀌면(새로 만들기, 고치기, 지우기) 데몬이 스스로 끝나고 루프가 새 설정으로 다시 켭니다. 그래서 `seori up` 뒤에 메신저를 설정해도 됩니다. `messengers.json`을 읽을 수 없으면 그 창에 오류를 남기고, 파일이 바뀔 때까지 메신저 없이 돕니다(heartbeat와 감시는 계속 돕니다). 그 창에서 Ctrl-C를 누르거나(종료 코드 130) 데몬 프로세스를 `kill`하면(143) 데몬과 루프가 함께 멈춥니다. SIGHUP(129, 창을 닫을 때도 이 신호가 갑니다)을 받으면 데몬은 감시 명령까지 깔끔하게 멈추고, 루프가 아직 돌고 있으면 루프가 다시 켭니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
-2. 리드의 omp는 `extensions/lead-channel.ts`를 불러옵니다. 리드만 불러오고, 듀티, 레인, 리뷰어는 불러오지 않습니다. 이 확장이 저장된 메시지를 id와 함께 리드의 대화에 넣고, 넣을 때마다 기록(ledger)을 남깁니다. omp를 다시 켜거나 `/new`, `/resume`, `/fork`를 해도 답하지 않은 메시지는 남아 있습니다.
+1. 데몬(Linux + hc에서는 systemd 유닛, 아니면 `seori up`의 터미널 또는 창)이 메시지를 받습니다. 주인이 보낸 것이면 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. `seori daemon-loop`가 다시 켜 주므로, 데몬이 죽어도 1초쯤 뒤에 다시 뜹니다(Linux에서는 systemd가 루프 자체도 다시 켜 줍니다). `messengers.json`이 바뀌면(새로 만들기, 고치기, 지우기) 데몬이 스스로 끝나고 루프가 새 설정으로 다시 켭니다. 그래서 `seori up` 뒤에 메신저를 설정해도 됩니다. `messengers.json`을 읽을 수 없으면 그 창에 오류를 남기고, 파일이 바뀔 때까지 메신저 없이 돕니다(heartbeat와 감시는 계속 돕니다). 그 창에서 Ctrl-C를 누르거나(종료 코드 130) 데몬 프로세스를 `kill`하면(143) 데몬과 루프가 함께 멈춥니다. SIGHUP(129, 창을 닫을 때도 이 신호가 갑니다)을 받으면 데몬은 감시 명령까지 깔끔하게 멈추고, 루프가 아직 돌고 있으면 루프가 다시 켭니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
+2. 리드의 omp는 `extensions/lead-channel.ts`를 불러옵니다. 리드만 불러오고, 듀티, 레인, 리뷰어는 불러오지 않습니다. 이 확장이 저장된 메시지를 id와 함께 리드의 대화에 넣고, 넣을 때마다 기록(ledger)을 남깁니다. 에이전트를 다시 켜거나 `/new`, `/resume`, `/fork`를 해도 답하지 않은 메시지는 남아 있습니다.
 3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 답은 리드의 차례가 끝날 때까지 초안으로 남습니다(아래 답 초안 참고). 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
 4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다. 열린 초안이 있는 id는 `seori msg list`에서 `drafted`로 보이고, 답한 것으로 치므로 다시 전하지 않습니다.
 
 ### 답 초안
 
-리드의 omp는 omp의 어드바이저(advisor)를 켜고 돌며, 어드바이저는 차례가 끝날 때 그 차례를 검토합니다. 차례 중간에 보낸 답은 이 검토보다 먼저 사람에게 가 버리고, 어드바이저가 문제를 짚으면 리드가 정정 메시지를 또 보내게 됩니다. 그래서 리드 확장이 돌고 있는 동안(`lead/consumer.lock`을 쥐고 있는 동안) `seori msg send`는 답이나 알림을 예전과 똑같이 검사한 뒤(모르는 id, `ALREADY_REPLIED`, `UNCERTAIN`, 메신저 설정) 보내지 않고 `$SEORI_HOME/lead/outbox.jsonl`에 넣어 두며, `DRAFTED <draft> <id들 또는 source:chat>: goes out when your turn ends`를 출력합니다. 확장은 리드의 차례가 끝나면(이어지는 차례가 없거나, 비동기 작업이나 하위 에이전트 같은 백그라운드 작업만 기다릴 때) 3초 뒤에 열린 초안을 오래된 것부터 보냅니다. 이때 그 차례가 끝나기 전에 마지막으로 쓴 초안만 보냅니다. 다음 차례(다음 주인 메시지, 레인 보고, 감시 알림이 곧바로 시작함)가 쓰거나 고친 초안은 그 차례가 끝나고 검토를 받을 때까지 기다립니다. 그 3초 안에 어드바이저가 이어지는 차례를 시키면 초안은 그 차례가 끝날 때까지 기다리므로, 리드가 먼저 고칠 수 있습니다. 초안은 consumer 잠금을 쥔 omp만, 그 omp가 시작한 뒤에 만든 것만 보냅니다. 앞선 리드가 남긴 초안(도중에 죽은 차례)은 리드가 정하도록 남겨 둡니다(아래 `[DRAFTS]` 참고). `seori up`은 리드의 omp를 `PI_CONFIG_FILES`가 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`, 이미 설정된 `PI_CONFIG_FILES`가 있으면 그 뒤에 붙임)을 가리키게 해서 띄우므로, 검토가 끝나야 차례가 끝난 것으로 칩니다. 이 설정은 리드만 받습니다.
+리드는 omp의 어드바이저(advisor)를 켜고 돌며, 어드바이저는 차례가 끝날 때 그 차례를 검토합니다. 차례 중간에 보낸 답은 이 검토보다 먼저 사람에게 가 버리고, 어드바이저가 문제를 짚으면 리드가 정정 메시지를 또 보내게 됩니다. 그래서 리드 확장이 돌고 있는 동안(`lead/consumer.lock`을 쥐고 있는 동안) `seori msg send`는 답이나 알림을 예전과 똑같이 검사한 뒤(모르는 id, `ALREADY_REPLIED`, `UNCERTAIN`, 메신저 설정) 보내지 않고 `$SEORI_HOME/lead/outbox.jsonl`에 넣어 두며, `DRAFTED <draft> <id들 또는 source:chat>: goes out when your turn ends`를 출력합니다. 확장은 리드의 차례가 끝나면(이어지는 차례가 없거나, 비동기 작업이나 하위 에이전트 같은 백그라운드 작업만 기다릴 때) 3초 뒤에 열린 초안을 오래된 것부터 보냅니다. 이때 그 차례가 끝나기 전에 마지막으로 쓴 초안만 보냅니다. 다음 차례(다음 주인 메시지, 레인 보고, 감시 알림이 곧바로 시작함)가 쓰거나 고친 초안은 그 차례가 끝나고 검토를 받을 때까지 기다립니다. 그 3초 안에 어드바이저가 이어지는 차례를 시키면 초안은 그 차례가 끝날 때까지 기다리므로, 리드가 먼저 고칠 수 있습니다. 초안은 consumer 잠금을 쥔 에이전트만, 그 omp가 시작한 뒤에 만든 것만 보냅니다. 앞선 리드가 남긴 초안(도중에 죽은 차례)은 리드가 정하도록 남겨 둡니다(아래 `[DRAFTS]` 참고). omp를 쓸 때, `seori up`은 리드를 `PI_CONFIG_FILES`가 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`, 이미 설정된 `PI_CONFIG_FILES`가 있으면 그 뒤에 붙임)을 가리키게 해서 띄우므로, 검토가 끝나야 차례가 끝난 것으로 칩니다. 이 설정은 리드만 받습니다.
 
 - 초안을 고치려면 정확히 같은 id들로 다시 보내거나(`REPLACED <draft>`), 어떤 초안이든(알림 포함) `seori msg send --replace <draft> --text '...'`를 씁니다. 초안의 id 중 일부에만 보내면 거절합니다.
 - `--now`는 예전처럼 바로 보냅니다(`SENT`나 `HELD`). 레인을 여는 메시지나 1분 넘게 걸릴 메시지에 보내는 첫 한 줄 확인 답은 늘 `--now`로 보내고, 초안으로 두지 않습니다. 열린 초안이 있는 id에 `--now`로 보내면, 초안이 두 번째 답이 되므로 거절합니다.
@@ -401,11 +415,11 @@ seori msg pair telegram --write
 - `seori msg drafts`는 열린 초안을 보여 주고, `seori msg drop <draft> --why '...'`는 초안을 버리며, `seori msg flush`는 지금 모두 보냅니다. flush는 초안마다 `SENT <draft> <대상> message=<id>`, `HELD <draft> <대상>: ...`(갔을 수도 있음: 끝난 것으로 치고, 답이면 uncertain으로 기록하며, 다시 보내지 않음), `FAILED <draft> <대상>: <오류>; ...`(열린 채로 남음)를 출력하고, 실패한 것이 있으면 1, 아니고 보류된 것이 있으면 3으로 끝납니다. flush는 한 번에 하나만 돕니다.
 - 듀티 루프는 5분 넘게 열려 있는 초안을 초안마다 한 번 리드에게 알립니다: `[DRAFTS] <n> reply draft(s) not sent: <초안들>; send them with seori msg flush or drop them with seori msg drop <draft> --why '...'`. 이런 초안은 도중에 죽은 차례나 실패한 flush가 남긴 것이라 저절로 보내지 않습니다.
 
-메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. `messengers.json`을 읽을 수 없으면(그동안 데몬은 메신저를 받지 않습니다) 리드에게 한 번 알리고, 데몬의 heartbeat가 90초보다 오래되어도 리드에게 한 번 알립니다. 어떤 메신저가 3분 동안 받지 못하고 있으면(토큰이 거절됨, 같은 텔레그램 봇을 다른 프로그램이 읽음, 디스코드 인텐트가 꺼짐, 메신저 서버가 2분 동안 답하지 않음 등) 오류 내용과 함께 리드에게 한 번 알립니다. 데몬은 받기가 계속 실패하는 동안 `messenger/<source>/health.json`을 남기고, 실패한 메신저를 점점 드물게 다시 켭니다(5초에서 두 배씩 늘려 최대 10분. 설정 오류로 디스코드의 하루 접속 한도를 다 쓰지 않도록). 메시지가 하나라도 들어오거나 3분 넘게 잘 돌면 파일을 지우고, `messengers.json`을 고치면 처음부터 다시 셉니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 omp가 없음) 2분 넘게 막혀 있으면(herdr가 blocked라고 보고함: 터미널에서 질문을 기다리거나, 모델 오류로 차례가 끝난 경우), 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다. 답이 이미 갔을 수도 있는 메시지(send-uncertain)나 포기한 메시지는 다시 전하지 않으므로, 꺼져 있다거나 막혀 있다는 알림도 보내지 않습니다. 리드가 돌고 있으면 초안이 있는 메시지도 답이 곧 가므로 막혀 있다는 알림을 보내지 않습니다. 메시지를 받아 가는 리드가 없으면 초안을 보낼 쪽도 없으므로, 초안이 있어도 꺼져 있다는 알림은 보냅니다.
+메신저가 설정되어 있으면 듀티 루프가 채널도 지켜봅니다. `messengers.json`을 읽을 수 없으면(그동안 데몬은 메신저를 받지 않습니다) 리드에게 한 번 알리고, 데몬의 heartbeat가 90초보다 오래되어도 리드에게 한 번 알립니다. 어떤 메신저가 3분 동안 받지 못하고 있으면(토큰이 거절됨, 같은 텔레그램 봇을 다른 프로그램이 읽음, 디스코드 인텐트가 꺼짐, 메신저 서버가 2분 동안 답하지 않음 등) 오류 내용과 함께 리드에게 한 번 알립니다. 데몬은 받기가 계속 실패하는 동안 `messenger/<source>/health.json`을 남기고, 실패한 메신저를 점점 드물게 다시 켭니다(5초에서 두 배씩 늘려 최대 10분. 설정 오류로 디스코드의 하루 접속 한도를 다 쓰지 않도록). 메시지가 하나라도 들어오거나 3분 넘게 잘 돌면 파일을 지우고, `messengers.json`을 고치면 처음부터 다시 셉니다. 그리고 리드가 꺼져 있거나(메시지를 받아 가는 리드 에이전트가 없음) 2분 넘게 막혀 있으면(런타임이 blocked라고 보고함: 터미널에서 질문을 기다리거나, 모델 오류로 차례가 끝난 경우), 또는 3번 전하고도 포기한 메시지가 있으면, 메시지마다 한 번씩 채팅으로 사람에게 알립니다. 답이 이미 갔을 수도 있는 메시지(send-uncertain)나 포기한 메시지는 다시 전하지 않으므로, 꺼져 있다거나 막혀 있다는 알림도 보내지 않습니다. 리드가 돌고 있으면 초안이 있는 메시지도 답이 곧 가므로 막혀 있다는 알림을 보내지 않습니다. 메시지를 받아 가는 리드가 없으면 초안을 보낼 쪽도 없으므로, 초안이 있어도 꺼져 있다는 알림은 보냅니다.
 
 ## 감시
 
-에이전트가 자기 창 밖의 일(CI, 개발 서버, 파일, 다른 창)을 기다릴 때는 계속 들여다보거나 잠들지 말고 감시를 걸어 두고 차례를 끝냅니다. 데몬이 대신 지켜보다가 무슨 일이 생기면 그 에이전트를 깨웁니다.
+에이전트가 자기 터미널 밖의 일(CI, 개발 서버, 파일, 다른 세션)을 기다릴 때는 계속 들여다보거나 잠들지 말고 감시를 걸어 두고 차례를 끝냅니다. 데몬이 대신 지켜보다가 무슨 일이 생기면 그 에이전트를 깨웁니다.
 
 ```sh
 seori watch add --checks owner/repo#12 --name ci
@@ -420,7 +434,7 @@ seori watch stop dev
 - `--command CMD [--filter RE] [--cwd DIR]`: 오래 도는 셸 명령입니다. 출력 줄 가운데 정규식에 맞는 줄(`--filter`가 없으면 모든 줄)이 알림이 되고, 한꺼번에 나온 줄은 알림 하나로 묶입니다(알림 하나에 40줄까지, 64 KiB보다 긴 줄은 잘림). 명령이 0으로 끝나면 감시도 끝납니다(done). 명령이 죽으면(0이 아닌 종료 코드나 시그널) 조금씩 기다렸다가 연달아 3번까지 다시 띄우고, 그래도 죽으면 감시를 멈춥니다. 마지막 대기 시간보다 오래 잘 돌았다면 그 횟수는 처음부터 다시 셉니다. 데몬이 정리 없이 죽었다면, 다시 켜진 데몬이 남겨진 명령을 먼저 끄고 새로 띄웁니다.
 - `--file PATH`: 파일이나 디렉터리입니다. 생기거나 바뀌거나 지워질 때마다 알림이 갑니다. 데몬이 꺼져 있던 사이에 바뀐 것도 알립니다. 디렉터리는 안쪽 전체를 봅니다(가장 최근 변경, 전체 크기, 항목 수; 항목 10,000개, 깊이 8단계까지, 심볼릭 링크는 따라가지 않음).
 - `--checks OWNER/REPO#N`: PR의 체크입니다. 모든 체크가 끝나면(통과든 실패든) 알림 하나를 보내고 끝납니다.
-- `--pane PANE --status idle|working|blocked|gone`: herdr 창의 에이전트 상태입니다. 그 상태가 되면 알림 하나를 보내고 끝납니다(`idle`은 herdr의 `done`도 포함).
+- `--pane PANE --status idle|working|blocked|gone`: 세션의 에이전트 상태(`hc:tN` 또는 herdr pane)입니다. 그 상태가 되면 알림 하나를 보내고 끝납니다(`idle`은 herdr의 `done`도 포함).
 
 음소거된 감시는 놓친 알림 수만 셉니다. 감시마다 기록 파일은 약 1 MiB로 유지합니다(오래된 부분은 `<id>.events.jsonl.1`로 옮김).
 
@@ -435,7 +449,7 @@ seori watch stop dev
 
 `seori watch list`는 감시마다 id, 이름, 주인, 상태, 무엇을 보는지, 지난 시간, 남은 시간, 지난 한 시간 동안 깨운 횟수, 음소거 중 놓친 알림 수를 보여 줍니다. `seori watch log <id|name> [-n N]`는 감시가 본 일과 보낸 알림 중 마지막 N개(기본 20개)를 보여 줍니다. `stop`, `rearm`, `log`는 이름을 `add`가 고를 주인(`--for`, 없으면 `SEORI_LANE`, 그것도 없으면 리드)의 살아 있는 감시 안에서만 찾습니다. 그래서 두 레인이 저마다 `ci`라는 감시를 가져도 됩니다. 그 주인의 감시 여러 개가 같은 이름이면(이름 없는 감시는 종류 이름을 씁니다) id 목록과 함께 거절합니다. id는 주인과 상관없이 통합니다.
 
-omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 깨우기 한도, 7일짜리 감시 5개는 같습니다. 다른 점은 감시가 에이전트 세션이 아니라 seori 안에(`$SEORI_HOME/watches/`에 감시마다 파일 하나) 있다는 것입니다. 그래서 `/new`, omp 재시작, 데몬 재시작에도 살아남고(다시 켜진 데몬이 이어서 돌림), `seori watch list` 하나로 모두 볼 수 있고, 죽은 명령은 저절로 다시 띄우며, PR 체크와 herdr 창 상태를 따로 지켜볼 수 있습니다.
+감시는 여러 종류의 대상을 지원하고, 알림을 묶어 보내며, 깨우기 한도가 있고, 7일짜리 상시 감시를 5개까지 둘 수 있습니다. 감시는 에이전트 세션이 아니라 seori 안에(`$SEORI_HOME/watches/`에 감시마다 파일 하나) 있습니다. 그래서 `/new`, 에이전트 재시작, 데몬 재시작에도 살아남고(다시 켜진 데몬이 이어서 돌림), `seori watch list` 하나로 모두 볼 수 있고, 죽은 명령은 저절로 다시 띄우며, PR 체크와 세션 상태를 따로 지켜볼 수 있습니다.
 
 ## 설정 (config.json)
 
@@ -456,11 +470,11 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 
 | 필드 | 기본값 | 뜻 |
 |---|---|---|
-| `name` | `"seori"` | 이 인스턴스의 이름. `seori up`이 여는 herdr 워크스페이스의 라벨이고, 들어갈 워크스페이스가 없는 레인이 새로 여는 워크스페이스의 라벨이기도 합니다. 1-40자의 글자(어떤 문자든), 숫자, `.`, `_`, `-`이고 글자나 숫자로 시작해야 합니다. 한 PC의 인스턴스마다 다른 이름을 주세요. [한 PC에서 여러 인스턴스 돌리기](#한-pc에서-여러-인스턴스-돌리기) 참고 |
+| `name` | `"seori"` | 이 인스턴스의 이름. `seori up`이 여는 hc 터미널의 `seori.group` 라벨(또는 herdr 워크스페이스의 라벨)이고, systemd 유닛 이름에도 들어갑니다. 1-40자의 글자(어떤 문자든), 숫자, `.`, `_`, `-`이고 글자나 숫자로 시작해야 합니다. 한 PC의 인스턴스마다 다른 이름을 주세요. [한 PC에서 여러 인스턴스 돌리기](#한-pc에서-여러-인스턴스-돌리기) 참고 |
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: 그 저장소 커밋에 있어야 할 Git 신원. verify-pr과 머지 관문이 이메일을 확인합니다. 저장소 이름은 대소문자를 무시하고 맞춥니다. 항목이 없는 저장소는 신원을 확인하지 않습니다 |
 | `closeAfterMin` | `5` | Done 줄이 있는 레인이 READY 뒤 몇 분 지나면 저절로 닫히는지(리드가 반대하지 않으면) |
 | `progressEveryMin` | `15` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지 |
-| `blockedPromptMin` | `10` | 레인 창에 대화 상자(herdr `blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
+| `blockedPromptMin` | `10` | 레인 창에 대화 상자(`blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
 | `supervision.defaults.wallMinutes` | `null` | 레인마다 걸린 시간 한도(분). `null`은 끔 |
 | `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |
 | `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔 |
@@ -469,7 +483,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 | `guard.loadOkPct` | `80` | 알림을 풀려면 부하(%)가 이보다 낮아져야 함 |
 | `guard.memFreeMinPct` | `10` | 남은 메모리(%)가 이보다 적으면 새 레인을 막고 알림 |
 | `guard.diskFreeMinGb` | `20` | `$SEORI_HOME` 디스크의 남은 공간(GB)이 이보다 적으면 새 레인을 막고 알림 |
-| `guard.panesMax` | `30` | 살아 있는 herdr 창이 이보다 많으면 새 레인을 막고 알림 |
+| `guard.panesMax` | `30` | 살아 있는 런타임 세션이 이보다 많으면 새 레인을 막고 알림 |
 | `heavy.slots` | `1` | `seori heavy` 명령이 동시에 몇 개까지 돌 수 있는지 |
 | `heavy.maxLoadPct` | `80` | 무거운 명령은 코어당 부하(%)가 이보다 낮아질 때까지 기다림 |
 
@@ -485,7 +499,7 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 
 ## 서리 모드 스킬
 
-`skills/seori-mode/`는 seori를 설정하고 리드가 일하는 방식을 요약해 둔 omp 스킬입니다. `서리 모드`, `seori mode`, 또는 seori에 붙인 이름으로 "<이름> 모드"라고 하면 omp가 불러옵니다. 스킬 파일은 영어로 쓰여 있지만, 말은 사용자의 언어로 합니다. 단계별 안내는 `references/`의 `setup.md`, `messengers.md`, `onboarding.md`, `writing.md`에 있습니다.
+`skills/seori-mode/`는 seori를 설정하고 리드가 일하는 방식을 요약해 둔 에이전트 스킬입니다. `서리 모드`, `seori mode`, 또는 seori에 붙인 이름으로 "<이름> 모드"라고 하면 에이전트가 불러옵니다. 스킬 파일은 영어로 쓰여 있지만, 말은 사용자의 언어로 합니다. 단계별 안내는 `references/`의 `setup.md`, `messengers.md`, `onboarding.md`, `writing.md`에 있습니다.
 
 `install.sh`([서리 모드로 빠르게 시작하기](#서리-모드로-빠르게-시작하기)의 한 줄 명령)에는 git과 Bun 1.3 이상이 필요합니다. 하는 일:
 
@@ -493,11 +507,11 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 - `bun install`과 `bun link`를 돌려, Bun의 전역 bin 폴더를 통해 `seori`를 PATH에 넣습니다.
 - `seori install-skill`로 스킬을 `~/.omp/agent/skills/seori-mode`에 링크합니다(`SKILLS_DIR`로 다른 곳 지정). 심볼릭 링크로 만듭니다. 예전 링크나 seori가 만든 복사본은 새로 바꾸고, 그 자리에 진짜 폴더가 있으면 건드리지 않고 경고만 합니다.
 - `~/.seori`(또는 `$SEORI_HOME`)를 권한 700으로 만듭니다.
-- herdr, herdr의 omp 연동, omp, gh, PATH의 `seori`가 없으면 경고합니다.
+- hc가 없으면, hc의 `config.toml`에 `notes = false`가 없으면, omp, gh, PATH의 `seori`가 없으면, Linux에서 `systemctl`이 없으면 경고합니다.
 
-herdr, omp, gh를 설치하지는 않습니다. `secrets.json`, `messengers.json`, `config.json`은 절대 만들거나 덮어쓰지 않습니다.
+hc, herdr, omp, gh를 설치하지는 않고, hc의 설정을 고치지도 않습니다. `secrets.json`, `messengers.json`, `config.json`은 절대 만들거나 덮어쓰지 않습니다.
 
-제거하려면 먼저 `seori up` 창들을 멈추고(듀티, 루프, 데몬 창에서 Ctrl-C, 그다음 워크스페이스 닫기) `seori uninstall`을 실행합니다(또는 `bash install.sh --uninstall`). 스킬 링크(또는 seori가 만든 복사본)를 지우고 `bun unlink`로 `seori` 명령을 뺍니다. 비밀 정보와 기록이 든 `~/.seori`는 `--purge`를 줄 때만 지웁니다.
+제거하려면 먼저 `seori down`을 실행합니다(프로세스를 멈추고, systemd 유닛을 지우고, 그룹 터미널을 닫습니다). 그다음 `seori uninstall`(또는 `bash install.sh --uninstall`)을 실행합니다. 스킬 링크(또는 seori가 만든 복사본)를 지우고 `bun unlink`로 `seori` 명령을 뺍니다. 비밀 정보와 기록이 든 `~/.seori`는 `--purge`를 줄 때만 지웁니다.
 
 ## 상태 저장 위치
 
@@ -505,11 +519,11 @@ herdr, omp, gh를 설치하지는 않습니다. `secrets.json`, `messengers.json
 
 ## 한 PC에서 여러 인스턴스 돌리기
 
-seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프, 감시, 작업 기록, 비밀 정보, 메신저 봇이 모두 그 안에 있으니 두 홈은 서로의 상태를 보지 않습니다. herdr와 omp에서도 서로 섞이지 않게 하려면:
+seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프, 감시, 작업 기록, 비밀 정보, 메신저 봇이 모두 그 안에 있으니 두 홈은 서로의 상태를 보지 않습니다. 런타임과 에이전트에서도 서로 섞이지 않게 하려면:
 
-- **이름.** 홈의 `config.json`에 있는 `name`이 그 홈의 herdr 워크스페이스 라벨입니다. 첫 인스턴스는 아무것도 안 해도 됩니다(기본값 `seori`). 다른 인스턴스에는 각자 다른 이름을 주세요. 이미 열린 라벨로 워크스페이스를 하나 더 열려고 하면 `seori up`이 거절합니다.
-- **omp 기억.** omp의 mnemopi 기억은 PC의 모든 omp가 같이 쓰는 DB 하나입니다. `~/.seori`가 아닌 홈에서는 seori가 그 홈의 `prompts/agent-omp.yml`에 `mnemopi.dbPath`를 `$SEORI_HOME/omp/memories/mnemopi.db`로 적어서, 그 인스턴스의 리드, 듀티, 레인이 자기가 배운 것만 기억하게 합니다. `~/.seori`는 omp 기본 DB(와 이미 쌓인 기억)를 그대로 씁니다.
-- **홈마다 한 번만.** 리드 창, 루프, 데몬 가운데 하나라도 이미 돌고 있는 홈에서 `seori up`을 실행하면 `ALREADY UP name=... home=...; nothing opened`를 출력하고 0으로 끝납니다. 그래서 자동 시작 스크립트는 로그온할 때마다 그냥 `seori up`을 부르면 됩니다. 한 인스턴스만 멈추려면 그 홈의 `SEORI_HOME`으로 `seori down`을 실행하세요. 다른 인스턴스는 계속 돕니다.
+- **이름.** 홈의 `config.json`에 있는 `name`이 hc에서는 그 홈의 `seori.group` 라벨(또는 herdr 워크스페이스 라벨)이고, systemd 유닛 이름에도 들어갑니다. 첫 인스턴스는 아무것도 안 해도 됩니다(기본값 `seori`). 다른 인스턴스에는 각자 다른 이름을 주세요.
+- **에이전트 기억.** omp의 기억은 PC 하나에 DB 하나라서, `~/.seori`가 아닌 홈에서 `prompts/agent-omp.yml`에 `mnemopi.dbPath`를 `$SEORI_HOME/omp/memories/mnemopi.db`로 적고, `~/.seori`는 omp 기본 DB를 그대로 씁니다.
+- **홈마다 한 번만.** 리드, 루프, 데몬 가운데 하나라도 이미 돌고 있는 홈에서 `seori up`을 실행하면 `ALREADY UP name=... home=...; nothing opened`를 출력하고 0으로 끝납니다. 한 인스턴스만 멈추려면 그 홈의 `SEORI_HOME`으로 `seori down`을 실행하세요. 다른 인스턴스는 계속 돕니다.
 
 두 번째 인스턴스를 더하는 방법(여기서는 `~/seori-two`에 `seori-two`라는 이름):
 
@@ -520,38 +534,44 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
    echo '{ "name": "seori-two" }' > "$SEORI_HOME/config.json"
    ```
 2. 봇을 따로 만듭니다. 새 봇이나 앱을 만들고([messengers.md](skills/seori-mode/references/messengers.md)), 봇 하나로 데몬 두 개를 섬길 수는 없습니다. 토큰은 `$SEORI_HOME/secrets.json`에 적고, 같은 셸에서 `seori msg check <source>`, `seori msg pair <source> --write`를 실행합니다. 계정 전체에 `SEORI_*_TOKEN` 변수를 두지 마세요. 모든 홈의 `secrets.json`보다 먼저 쓰입니다.
-3. 그 셸에서 `seori up --cwd ~/src`로 띄웁니다. `seori` 옆에 `seori-two` 워크스페이스가 열립니다.
-4. 자동 시작. herdr가 뜬 다음 systemd 사용자 유닛(Linux)이나 로그인 항목(macOS)에서 같은 두 줄(`export SEORI_HOME=...; seori up --cwd ...`)을 실행하세요. 두 번 돌아도 괜찮습니다.
+3. 그 셸에서 `seori up --cwd ~/src`로 띄웁니다. 터미널에는 `seori.group=seori-two` 라벨이 붙고, 유닛 이름은 `seori-seori-two-<hash>-*`입니다. `<hash>`는 홈 경로의 16진수 8자리라서 두 홈이 유닛을 나눠 쓰는 일이 없습니다. `seori down`은 이 홈을 가리키는 예전 `seori-<name>-*` 이름의 유닛도 지웁니다.
+4. 자동 시작. Linux에서는 유닛이 enabled 상태라 재부팅 뒤 데몬과 루프가 저절로 다시 뜹니다. 리드와 듀티 터미널만 다시 열면 됩니다(`seori up`을 다시 실행, 두 번째 실행은 무해합니다). macOS에서는 로그인 항목에서 같은 두 줄(`export SEORI_HOME=...; seori up --cwd ...`)을 hc가 뜬 뒤에 실행하세요.
 
-모든 `seori` 명령은 `SEORI_HOME`에 있는 홈을 대상으로 하니, 그 인스턴스용으로 쓰는 셸마다 설정하세요. seori가 연 창에는 이미 들어 있습니다.
+모든 `seori` 명령은 `SEORI_HOME`에 있는 홈을 대상으로 하니, 그 인스턴스용으로 쓰는 셸마다 설정하세요. seori가 띄운 세션과 유닛에는 이미 들어 있습니다.
 
 ## 환경 변수
 
 | 변수 | 뜻 |
 |---|---|
 | `SEORI_HOME` | 상태 폴더, 기본 `~/.seori`. 인스턴스마다 하나([한 PC에서 여러 인스턴스 돌리기](#한-pc에서-여러-인스턴스-돌리기)) |
-| `SEORI_AGENT_CMD` | 리뷰어용 omp 명령, 기본 `omp` (리드, 듀티, 레인은 항상 `herdr agent start --kind omp`로 시작) |
-| `SEORI_MODEL` | seori가 띄우는 모든 omp의 모델(`--model`)이자 리뷰어 기본 모델. 비우면 omp 기본 모델 |
-| `SEORI_CMD` | 에이전트와 루프 창이 seori를 부르는 방법, 기본 `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <경로>/src/cli.ts` |
+| `SEORI_RUNTIME` | `hc` 또는 `herdr`. `config.json`의 `"runtime"`과 자동 감지보다 먼저 ([docs/runtime.md](docs/runtime.md)) |
+| `SEORI_AGENT` | `omp`만 됩니다(기본값). 여기나 `config.json`의 `"agent"`에 다른 값이 있으면 모든 명령이 exit 2로 거부됩니다 |
+| `SEORI_AGENT_CMD` | seori가 omp에 쓰는 명령(리드, 듀티, hc 레인, 리뷰어). 기본 `omp`. 파일 이름(basename)이 `omp`여야 하며, 그 밖의 값이면 모든 명령이 exit 2로 거부됩니다. herdr에서 리드, 듀티, 레인은 항상 `herdr agent start --kind omp`로 시작 |
+| `SEORI_MODEL` | seori가 띄우는 모든 에이전트의 모델(`--model`)이자 리뷰어 기본 모델. 비우면 에이전트 기본 모델 |
+| `SEORI_CMD` | 에이전트와 루프가 seori를 부르는 방법, 기본 `SEORI_HOME=<home> [SEORI_HERDR_SESSION=...] [SEORI_MODEL=...] bun <경로>/src/cli.ts` |
 | `SEORI_SH` | 감시 명령을 돌릴 sh, 기본 PATH의 `sh` |
 | `SEORI_HERDR_SESSION` | 사용할 herdr 세션 이름 |
+| `HC_SESSION`, `XDG_RUNTIME_DIR` | seori가 말할 hc 코어를 정합니다(hc 자체의 변수). `seori up`이 systemd 유닛에 넘겨 줍니다 |
+| `SEORI_SYSTEMD_DIR`, `SEORI_SYSTEMCTL` | `seori up`이 유닛 파일을 쓸 곳(기본 `${XDG_CONFIG_HOME:-~/.config}/systemd/user`)과 쓸 systemctl(기본 `systemctl`). 테스트에서는 둘 다 가짜를 가리킵니다 |
 | `SEORI_MAX_LANES` | `seori loop --max-lanes` 기본값 (3) |
 | `SEORI_MAX_STARTS` | `seori loop --max-starts` 기본값 (2) |
 | `SEORI_MAX_LOAD` | `seori loop --max-load` 기본값 |
-| `SEORI_LANE` | seori가 레인 창에 넣어 주는 값. `seori send`의 기본 보낸 쪽이자 `seori watch add`의 기본 주인 |
-| `PI_CONFIG_FILES` | omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 더 붙입니다. `~/.seori`가 아닌 홈에서는 `agent-omp.yml`이 `mnemopi.dbPath`도 `$SEORI_HOME/omp/memories/mnemopi.db`로 정합니다 |
+| `SEORI_LANE` | seori가 레인 터미널에 넣어 주는 값. `seori send`의 기본 보낸 쪽이자 `seori watch add`의 기본 주인 |
+| `PI_CONFIG_FILES` | omp 전용: omp 설정 파일들. seori는 리드, 듀티, 레인의 omp에 `$SEORI_HOME/prompts/agent-omp.yml`(`startup.setupWizard: false`)을 붙여서, 설정 버전이 뒤처진 omp도 온보딩 마법사 대신 바로 프롬프트로 뜨게 합니다(제공자 로그인은 미리 `omp login`으로 해 두세요). 리드의 omp에만 `$SEORI_HOME/prompts/lead-omp.yml`(`advisor.syncBacklog: strict`)을 더 붙입니다. `~/.seori`가 아닌 홈에서는 `agent-omp.yml`이 `mnemopi.dbPath`도 `$SEORI_HOME/omp/memories/mnemopi.db`로 정합니다 |
 | `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | 메신저 토큰. `secrets.json`보다 먼저 |
 
 ## 테스트
 
 ```sh
-bun test         # 가짜 herdr와 gh로 도는 단위 테스트. 모델을 부르지 않습니다
+bun test         # 가짜 hc, 가짜 herdr, 가짜 systemctl, 가짜 gh로 도는 단위 테스트. 모델을 부르지 않습니다
 bun run typecheck
 ```
 
-GitHub Actions가 push와 PR마다 Ubuntu와 macOS에서 둘 다 돌립니다(`.github/workflows/ci.yml`).
+GitHub Actions가 push와 PR마다 Ubuntu와 macOS에서 둘 다 돌리고, Ubuntu에서 `e2e-hc` 작업도 돌립니다(`.github/workflows/ci.yml`).
 
-끝단 테스트 `test/e2e.test.ts`(레인과 시간 단위 루프), `test/e2e-channel.test.ts`(메신저 채널: 한가할 때, 바쁠 때, 몰아서, 리드 재시작, `/new`, 하위 에이전트, Esc, 모델 장애와 복구, 계속된 장애로 포기, 데몬 강제 종료와 설정 변경), `test/e2e-watch.test.ts`(감시: 명령 필터와 종료, 죽은 명령 다시 띄우기, 파일 변경, `/new`, 리드 재시작, 데몬 강제 종료, 깨우기 한도와 다시 켜기, 레인의 감시, 창 상태, 개수 제한, herdr가 꺼진 뒤 남은 명령 없음)는 진짜 herdr(omp 연동 설치), PATH의 omp, 그리고 `SEORI_E2E_OMP=1`이 필요합니다. 진짜 모델을 부르므로 비용이 들고, 조건이 없으면 건너뜁니다. 채널 테스트는 약 18분, 감시 테스트는 약 6분 걸립니다. `SEORI_E2E_ONLY=1,2,3`처럼 일부만 돌릴 수 있습니다(채널 8번 장애 시나리오만 약 9분).
+hc 끝단 테스트(`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`)는 자체 격리된 hc 코어를 띄우고, `SEORI_E2E_HC=1`과 PATH에 hc가 필요합니다. 모델은 부르지 않습니다. [docs/runtime.md](docs/runtime.md#testing-against-an-isolated-hc-core)를 보세요.
+
+예전 끝단 테스트 `test/e2e.test.ts`(레인과 시간 단위 루프), `test/e2e-channel.test.ts`(메신저 채널: 한가할 때, 바쁠 때, 몰아서, 리드 재시작, `/new`, 하위 에이전트, Esc, 모델 장애와 복구, 계속된 장애로 포기, 데몬 강제 종료와 설정 변경), `test/e2e-watch.test.ts`(감시: 명령 필터와 종료, 죽은 명령 다시 띄우기, 파일 변경, `/new`, 리드 재시작, 데몬 강제 종료, 깨우기 한도와 다시 켜기, 레인의 감시, 창 상태, 개수 제한, herdr가 꺼진 뒤 남은 명령 없음)는 진짜 herdr(omp 연동 설치), PATH의 omp, 그리고 `SEORI_E2E_OMP=1`이 필요합니다. 진짜 모델을 부르므로 비용이 들고, 조건이 없으면 건너뜁니다. 채널 테스트는 약 18분, 감시 테스트는 약 6분 걸립니다. `SEORI_E2E_ONLY=1,2,3`처럼 일부만 돌릴 수 있습니다(채널 8번 장애 시나리오만 약 9분).
 
 ## 텔레메트리
 
@@ -559,21 +579,22 @@ GitHub Actions가 push와 PR마다 Ubuntu와 macOS에서 둘 다 돌립니다(`.
 
 ## 원본과 다른 점
 
-- 에이전트: 원본과 달리 omp를 씁니다. 기본 에이전트 명령은 `omp`입니다.
-- 레인은 `herdr agent start --kind omp`로 켜고 `/goal`로 시작하므로, 모든 레인이 omp 목표 모드로 돕니다. 브리프에는 확인 가능한 끝나는 조건을 씁니다.
-- herdr의 omp 연동이 꼭 필요합니다. 이게 있어야 herdr가 omp의 상태를 알 수 있습니다.
-- 리뷰어는 저장소의 AGENTS.md, 스킬, 규칙, 확장에서 격리된 비대화형 omp입니다.
+- 런타임: dori처럼 hc가 기본이고, herdr는 같은 인터페이스 뒤에 두 번째 런타임으로 있습니다. 세션은 `seori.group` 라벨로 묶고(dori는 자기 키를 씀), seori와 dori가 서로의 터미널을 건드리지 않습니다.
+- 에이전트: omp만 씁니다. 다른 에이전트 값은 거부합니다.
+- Linux에서는 데몬과 루프를 `systemd --user` 유닛으로 돌리고, macOS에서는 hc 터미널에서 돕니다.
+- 레인은 `/goal`로 시작하므로, 모든 레인이 목표 모드로 돕니다. 브리프에는 확인 가능한 끝나는 조건을 씁니다.
+- 리뷰어는 저장소의 AGENTS.md, 스킬, 규칙, 확장에서 격리된 비대화형 에이전트입니다.
 - 텔레메트리가 없습니다.
 - 이름: 명령 `seori`, 상태 폴더 `~/.seori`, 환경 변수 `SEORI_*`.
 - "다 했다"는 주장은 증거를 붙인 레인의 READY입니다. 따로 주장하는 명령은 없습니다. Done 줄이 있는 레인은 READY 뒤 `closeAfterMin`분이 지나고, 모든 신호가 실제로 맞고, 커밋이나 푸시 안 된 작업이 없을 때 seori가 닫습니다.
 - `seori merge`는 리뷰 기록과 체크 다음에 verify-pr을 돌립니다. 커밋 신원과 "수정에는 테스트" 규칙이 머지 관문의 일부입니다.
 - `repoIdentities` 항목이 없는 저장소는 커밋 신원 확인을 건너뛰고, 출력에 그렇게 적습니다. 실패로 보지 않습니다.
-- 읽지 못한 컴퓨터 값(디스크, 창 수)으로는 레인을 막지도, 알리지도 않습니다.
+- 읽지 못한 컴퓨터 값(디스크, 세션 수)으로는 레인을 막지도, 알리지도 않습니다.
 - 주인은 `seori msg pair`로 등록합니다. 봇에게 다음에 DM을 보낸 사람이 주인이 됩니다.
 - 슬랙은 Socket Mode 봇 앱으로만 씁니다. 사용자 토큰은 쓰지 않습니다.
-- 음성, 접속 상태(presence), 리액션은 없습니다. 음성 메시지는 다른 파일처럼 첨부 파일 줄로 리드에게 갑니다.
+- 음성: 텔레그램 음성 메시지는 `hooks.transcribe`를 설정해야 필사됩니다. 접속 상태(presence)와 리액션은 없습니다.
 - 원본의 Dori 모드 대신 서리 모드 스킬(`skills/seori-mode`)이 있습니다.
 
 ## 라이선스
 
-MIT. [LICENSE](LICENSE)를 보세요.
+MIT. [LICENSE](LICENSE)를 보세요. 일부 파일에는 dori-superagent에서 가져온 코드가 Sustainable Use License 아래 들어 있습니다. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 그 파일 목록이 있습니다.
