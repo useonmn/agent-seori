@@ -602,6 +602,7 @@ export async function done(d: Deps, key: string): Promise<void> {
     const how = closed ? ` at ${new Date(closed.at).toISOString()} (${closed.text})` : "";
     throw new Refusal(`lane ${key} is already closed${how}; see its final state with: ${d.seoriCmd} status (record: ${join(d.store.root, "lanes", `${key}.json`)})`);
   }
+  if (lane.migration === true) throw new Refusal(`lane ${key} is being migrated; wait for seori migrate to finish`);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   const st = await statusOf(d.runtimes, lane.sessionRef);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
