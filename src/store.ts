@@ -317,9 +317,38 @@ export class Store {
 
   /**
    * Appends to the inbox of the session `ref` was forwarded to by a migration, if it was. Under ref's append lock, so
-   * seori migrate never writes the forward marker or moves the file aside between the lookup and the append.
+   * seori migrate never writes the forward marker or moves the file aside between the lookup and the append, and under
+   * the forwarded session's append lock too, so a rewrite of that inbox (rewriteInbox) never drops the entry.
    */
   enqueue(ref: SessionRef, msg: QueuedMessage): void {
+    const release = this.waitAppend(ref);
+    try {
+      const to = this.forwardOf(ref);
+      const releaseTo = to && this.waitAppend(to);
+      try {
+        appendFileSync(this.inboxPath(to ?? ref), JSON.stringify(msg) + "\n");
+      } finally {
+        releaseTo?.();
+      }
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Replaces the session's inbox with `edit` of its entries, read and written under its append lock, so an entry a
+   * sender appends meanwhile is never overwritten: it waits and lands after the write.
+   */
+  rewriteInbox(ref: SessionRef, edit: (msgs: QueuedMessage[]) => readonly QueuedMessage[]): void {
+    const release = this.waitAppend(ref);
+    try {
+      this.saveInbox(ref, edit(this.queued(ref)));
+    } finally {
+      release();
+    }
+  }
+
+  private waitAppend(ref: SessionRef): () => void {
     const deadline = Date.now() + APPEND_LOCK_WAIT_MS;
     let release = this.lockAppend(ref, Date.now());
     while (!release) {
@@ -327,16 +356,13 @@ export class Store {
       Bun.sleepSync(APPEND_LOCK_RETRY_MS);
       release = this.lockAppend(ref, Date.now());
     }
-    try {
-      appendFileSync(this.inboxPath(this.forwardOf(ref) ?? ref), JSON.stringify(msg) + "\n");
-    } finally {
-      release();
-    }
+    return release;
   }
 
   /**
    * The session's append lock (`<inbox>.append.lock`): enqueue holds it across the forward lookup and the append, seori
-   * migrate across writing or removing the forward marker and moving the inbox aside. Never held across a delivery.
+   * migrate across writing or removing the forward marker and moving the inbox aside, rewriteInbox across its read and
+   * write. Never held across a delivery.
    */
   lockAppend(ref: SessionRef, now: number): (() => void) | undefined {
     return lockFile(`${this.inboxPath(ref)}.append.lock`, now);
