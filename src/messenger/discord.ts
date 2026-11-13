@@ -134,7 +134,7 @@ export class DiscordAdapter implements MessengerAdapter {
   }
 
   private headers(token: string): Record<string, string> {
-    return { authorization: `Bot ${token}`, "user-agent": "DiscordBot (https://github.com/usunmn/seori, 1)" };
+    return { authorization: `Bot ${token}`, "user-agent": "DiscordBot (https://github.com/useonmn/agent-seori, 1)" };
   }
 
   private tokenRejected(where: string): Fatal {
