@@ -82,7 +82,7 @@ describe("create / start / createGroup", () => {
 
   test("an agent terminal unsets the messenger tokens before its shell; the daemon and duty loop terminals keep them", () => {
     const TOKENS = [
-      "SEORI_TELEGRAM_TOKEN", "SEORI_DISCORD_TOKEN", "SEORI_SLACK_BOT_TOKEN", "SEORI_SLACK_APP_TOKEN",
+      "SEORI_TELEGRAM_TOKEN", "SEORI_DISCORD_TOKEN", "SEORI_SLACK_BOT_TOKEN", "SEORI_SLACK_APP_TOKEN", "SEORI_SLACK_USER_TOKEN", "SEORI_SLACK_COOKIE",
     ];
     const argv = (role: SessionRole) => createArgv({ name: "x", cwd: "/w", env: { SEORI_LANE: "x" }, role, container: "tab" }, "sh", undefined);
     const unset = (a: string[]) => a.flatMap((v, i) => (v === "-u" ? [a[i + 1] ?? ""] : []));
@@ -95,11 +95,11 @@ describe("create / start / createGroup", () => {
     for (const role of ["daemon", "duty-loop"] as const) expect(unset(argv(role))).toEqual([]);
   });
 
-  test("the unset list is every token variable the messenger adapters read", () => {
+  test("the unset list is every token variable the messenger adapters read, plus the removed Slack user-token mode's", () => {
     const dir = join(import.meta.dir, "..", "src", "messenger");
     const read = new Set(readdirSync(dir).flatMap((f) => readFileSync(join(dir, f), "utf8").match(/SEORI_[A-Z_]*(TOKEN|COOKIE)\b/g) ?? []));
     const unset: string[] = [...MESSENGER_TOKEN_ENV];
-    expect(unset.sort()).toEqual([...read].sort());
+    expect(unset.sort()).toEqual([...read, "SEORI_SLACK_USER_TOKEN", "SEORI_SLACK_COOKIE"].sort());
   });
 
   test("a spec with a home labels the terminal seori.home=<homeTag>", async () => {

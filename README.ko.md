@@ -734,7 +734,7 @@ hc 끝단 테스트(`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`)는 자체 
 - `repoIdentities` 항목이 없는 저장소는 커밋 신원 확인을 건너뛰고, 출력에 그렇게 적습니다. 실패로 보지 않습니다.
 - 읽지 못한 컴퓨터 값(디스크, 세션 수)으로는 레인을 막지도, 알리지도 않습니다.
 - 주인은 `seori msg pair`로 등록합니다. 봇에게 다음에 DM을 보낸 사람이 주인이 됩니다.
-- 슬랙은 Socket Mode 봇 앱으로만 씁니다(봇 토큰만).
+- 슬랙은 Socket Mode 봇 앱으로만 씁니다(봇 토큰만). 없어진 사용자 토큰 방식의 설정(`options.mode: "user"`, 또는 `botToken` 없이 `secrets.json`에 `userToken`/`cookie`만 있는 경우)은 그렇다고 알려 주며 거절합니다.
 - 음성: 텔레그램 음성 메시지는 `hooks.transcribe`를 설정해야 필사됩니다.
 - 원본의 Dori 모드 대신 서리 모드 스킬(`skills/seori-mode`)이 있습니다.
 

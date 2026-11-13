@@ -1243,7 +1243,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       process.once("SIGTERM", onSignal);
       try {
         const root = d.store.root;
-        return await runPresence(root, x, realPresenceDeps(), stop.signal);
+        return await runPresence(root, realPresenceDeps(), stop.signal);
       } catch (e) {
         if (e instanceof PresenceConfigError) throw new Refusal(e.message);
         throw e instanceof Error ? new Error(redact(e.message)) : e;

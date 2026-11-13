@@ -208,6 +208,19 @@ export class SlackAdapter implements MessengerAdapter {
     this.statusRefreshMs = typeof refresh === "number" ? refresh : DEFAULT_STATUS_REFRESH_MS;
     const limit = config.options?.["statusLimitMs"];
     this.statusLimitMs = typeof limit === "number" ? limit : DEFAULT_STATUS_LIMIT_MS;
+    if (config.options?.["mode"] === "user" || (!this.has("botToken", BOT_ENV) && (this.has("userToken") || this.has("cookie")))) {
+      throw new Error(`slack ${this.source}: Slack user-token mode was removed; create a Slack bot app (see skills/seori-mode/references/messengers.md) and use its bot and app tokens`);
+    }
+  }
+
+  /** Whether `key` is set for this source (in secrets.json, or `envName` when given). */
+  private has(key: string, envName?: string): boolean {
+    try {
+      secret(this.root, this.source, key, envName, this.env);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private botToken(): string {

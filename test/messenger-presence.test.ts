@@ -138,7 +138,7 @@ describe("seori presence discord", () => {
         r.stop.abort();
       },
     });
-    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(await runPresence(root(), r.deps, r.stop.signal)).toBe(0);
     const g = r.gateways[0]!;
     const identify = g.sent[0] as { op: number; d: { token: string; presence: { status: string } } };
     expect(identify.op).toBe(2);
@@ -161,7 +161,7 @@ describe("seori presence discord", () => {
         g.close(1006);
       },
     });
-    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(await runPresence(root(), r.deps, r.stop.signal)).toBe(0);
     expect(r.gateways).toHaveLength(14);
     expect(r.gateways.every((g) => ops(g)[0] === 2)).toBe(true);
     expect(reconnects(r.out)).toEqual([5, 10, 20, 40, 80, 160, 300, 300, 300, 300, 300, 5, 10]);
@@ -179,7 +179,7 @@ describe("seori presence discord", () => {
         r.t.fire(); // no op 11 came back: the second tick ends the connection
       },
     });
-    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(await runPresence(root(), r.deps, r.stop.signal)).toBe(0);
     expect(r.out).toContain("PRESENCE_RECONNECT discord code=zombie retry_in=5s");
     expect(r.gateways).toHaveLength(2);
     expect(r.gateways[0]!.closed).toBe(true);
@@ -199,7 +199,7 @@ describe("seori presence discord", () => {
         r.stop.abort();
       },
     });
-    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(await runPresence(root(), r.deps, r.stop.signal)).toBe(0);
     expect(r.gateways).toHaveLength(1);
     expect(r.gateways[0]!.sent.slice(1)).toEqual([{ op: 1, d: 4 }, { op: 1, d: 4 }, { op: 1, d: 4 }]);
     expect(r.out).toEqual(["PRESENCE_READY discord"]);
@@ -213,7 +213,7 @@ describe("seori presence discord", () => {
         r.t.fire(); // the hello timeout passes
       },
     });
-    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(await runPresence(root(), r.deps, r.stop.signal)).toBe(0);
     expect(r.out).toContain("PRESENCE_RECONNECT discord code=no-hello retry_in=5s");
     expect(r.gateways).toHaveLength(2);
     expect(r.gateways[0]!.closed).toBe(true);
@@ -229,7 +229,7 @@ describe("seori presence discord", () => {
         else r.stop.abort();
       },
     });
-    expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(await runPresence(root(), r.deps, r.stop.signal)).toBe(0);
     expect(r.gateways).toHaveLength(3);
     expect(r.gateways[0]!.closed).toBe(true);
     expect(r.gateways[1]!.closed).toBe(true);
@@ -248,7 +248,7 @@ describe("seori presence discord", () => {
           g.close(code);
         },
       });
-      expect(await runPresence(root(), "discord", r.deps, r.stop.signal)).toBe(1);
+      expect(await runPresence(root(), r.deps, r.stop.signal)).toBe(1);
       expect(r.gateways).toHaveLength(1);
       expect(r.slept).toEqual([]);
       expect(r.out.some((l) => l.startsWith("PRESENCE_RECONNECT"))).toBe(false);
@@ -274,7 +274,7 @@ describe("seori presence discord", () => {
     });
     r.clock = start;
     r.onSleep = (ms) => void (r.clock += ms);
-    expect(await runPresence(dir, "discord", r.deps, r.stop.signal)).toBe(0);
+    expect(await runPresence(dir, r.deps, r.stop.signal)).toBe(0);
     expect(r.out[0]).toBe("PRESENCE_WAIT discord identify budget spent; next identify in 90s");
     expect(r.slept).toEqual([90_000]);
     expect(r.gateways).toHaveLength(1);
@@ -287,7 +287,7 @@ describe("seori presence discord", () => {
 
   test("no token in the config refuses with the secrets.json key named", async () => {
     const r = rig();
-    await expect(runPresence(home(), "discord", r.deps, r.stop.signal)).rejects.toThrow(`"discord": { "token": "..." }`);
+    await expect(runPresence(home(), r.deps, r.stop.signal)).rejects.toThrow(`"discord": { "token": "..." }`);
     expect(r.gateways).toHaveLength(0);
   });
 });
