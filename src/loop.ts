@@ -5,6 +5,7 @@ import { appendFileSync, copyFileSync, existsSync, linkSync, readFileSync, renam
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { KEY_RE, Refusal, reservedKey, startLane, tellLead, type Deps } from "./harness.ts";
+import { statusOf } from "./runtime/index.ts";
 import type { Item, Lane, LoopRun } from "./store.ts";
 
 export const HOUR = 3_600_000;
@@ -293,7 +294,7 @@ async function audit(d: Deps, run: LoopRun): Promise<void> {
     if (lane.status !== "working" && lane.status !== "waiting" && lane.status !== "ready") continue;
     let st;
     try {
-      st = await d.herdr.status(lane.paneId);
+      st = await statusOf(d.runtimes, lane.paneId);
     } catch (e) {
       run.findings.push(`herdr: ${lane.key}: ${e instanceof Error ? e.message : String(e)}`);
       continue;

@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
-import { Herdr, type AgentStatus, type Exec } from "../src/herdr.ts";
+import type { Exec } from "../src/runtime/exec.ts";
+import { Herdr } from "../src/runtime/herdr/client.ts";
+import { defaultRuntimes } from "../src/runtime/index.ts";
+import type { AgentStatus } from "../src/runtime/types.ts";
 import type { MessengerConfig, SendTarget } from "../src/messenger/adapter.ts";
 import { Store, type HostLoad } from "../src/store.ts";
 
@@ -182,7 +185,7 @@ export class World {
     const root = mkdtempSync(join(tmpdir(), "seori-test-"));
     return {
       store: new Store(root),
-      herdr: new Herdr(this.exec, "", join(root, "messages")),
+      runtimes: defaultRuntimes(new Herdr(this.exec, "", join(root, "messages"))),
       exec: this.exec,
       now: () => this.clock,
       agentCmd: "omp",

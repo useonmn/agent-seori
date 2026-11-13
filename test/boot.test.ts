@@ -4,7 +4,9 @@ import { join, relative } from "node:path";
 import { bootReport } from "../src/boot.ts";
 import { Channel } from "../src/channel.ts";
 import type { Deps } from "../src/harness.ts";
-import { Herdr, type Exec } from "../src/herdr.ts";
+import type { Exec } from "../src/runtime/exec.ts";
+import { Herdr } from "../src/runtime/herdr/client.ts";
+import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { Lane } from "../src/store.ts";
 import { WatchStore } from "../src/watch/store.ts";
 import { worklogAdd, worklogNext } from "../src/worklog.ts";
@@ -23,7 +25,7 @@ function setup(): { w: World; d: Deps; listFails: { on: boolean } } {
     }
     return w.exec(cmd, argv);
   };
-  const d: Deps = { ...w.deps(), exec, herdr: new Herdr(exec, "") };
+  const d: Deps = { ...w.deps(), exec, runtimes: defaultRuntimes(new Herdr(exec, "")) };
   return { w, d, listFails };
 }
 

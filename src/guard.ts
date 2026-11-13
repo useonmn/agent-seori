@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type GuardThresholds, type SeoriConfig } from "./config.ts";
 import { tellLead, type Deps, type DutyEvent } from "./harness.ts";
-import { DeliveryUncertain, HerdrError } from "./herdr.ts";
+import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
 
 // The host guard: one reading of the machine (load, memory, disk, panes) that holds new lanes (`seori can-launch`)
 // and tells the lead once when the host crosses a threshold and once when it recovers (the duty tick's guardTick).
@@ -52,7 +52,7 @@ export function parsePaneCount(stdout: string): number | undefined {
 
 /**
  * Reads the host: load and memory from Deps.host, free disk of $SEORI_HOME's volume from `df -k -P`, and the live pane
- * count from `herdr pane list` (in seori's herdr session when SEORI_HERDR_SESSION is set, as Herdr does).
+ * count from the runtime's session list (herdr: `pane list`, in seori's herdr session when SEORI_HERDR_SESSION is set).
  */
 export async function sampleHost(d: Deps): Promise<HostSample> {
   const host = d.host();
@@ -65,10 +65,12 @@ export async function sampleHost(d: Deps): Promise<HostSample> {
   else unreadable.push(`disk free unreadable (df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)})`);
 
   let panes: number | undefined;
-  const session = process.env["SEORI_HERDR_SESSION"];
-  const pl = await d.exec("herdr", [...(session ? ["--session", session] : []), "pane", "list"]);
-  panes = pl.code === 0 ? parsePaneCount(pl.stdout) : undefined;
-  if (panes === undefined) unreadable.push(`panes unreadable (herdr pane list: ${pl.code === 0 ? "unexpected output" : why(pl.stderr, pl.stdout)})`);
+  const rt = d.runtimes.default;
+  try {
+    panes = (await rt.list()).length;
+  } catch (e) {
+    unreadable.push(`panes unreadable (${rt.kind} pane list: ${e instanceof ToolError ? why(e.result.stderr, e.result.stdout) : "unexpected output"})`);
+  }
 
   return {
     ...(host.load1 !== null ? { loadPct: host.cores > 0 ? Math.round((host.load1 / host.cores) * 100) : 0 } : {}),
@@ -205,7 +207,7 @@ export async function guardTick(d: Deps): Promise<DutyEvent[]> {
   try {
     await tellLead(d, text, "duty");
   } catch (e) {
-    const detail = e instanceof DeliveryUncertain ? "delivery uncertain" : e instanceof HerdrError ? why(e.result.stderr, e.result.stdout) : e instanceof Error ? e.message : String(e);
+    const detail = e instanceof DeliveryUncertain ? "delivery uncertain" : e instanceof ToolError ? why(e.result.stderr, e.result.stdout) : e instanceof Error ? e.message : String(e);
     events.push({ action: "guard-delivery-failed", detail: `${events[0]!.action} kept in the lead inbox: ${detail}` });
   }
   return events;

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Refusal, type Deps } from "../src/harness.ts";
-import type { ExecResult } from "../src/herdr.ts";
+import type { ExecResult } from "../src/runtime/exec.ts";
 import { checkSignals, defaultSignalIo, parseDone, splitDone, unpushedWork, type SignalIo } from "../src/signals.ts";
 import type { Lane } from "../src/store.ts";
 import { World } from "./fake.ts";

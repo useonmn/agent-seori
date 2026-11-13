@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { Herdr, HerdrError, interactiveShellInFront, shq, type Exec, type ExecResult } from "../src/herdr.ts";
+import { shq, type Exec, type ExecResult } from "../src/runtime/exec.ts";
+import { interactiveShellInFront } from "../src/runtime/foreground.ts";
+import { Herdr, HerdrError } from "../src/runtime/herdr/client.ts";
 import { shPath } from "../src/platform.ts";
 
 // A recorder in place of the herdr binary: every argv is kept, and each reply is chosen per call.
@@ -75,7 +77,7 @@ describe("herdr argv", () => {
     const r = recorder((argv) => ok(argv[1] === "process-info" ? { process_info: { foreground_processes: [{ name: "omp", argv: ["omp"] }] } } : {}));
     const h = new Herdr(r.exec, "");
     const text = `it's "done" $(rm -rf ~) \`id\`\nline two`;
-    expect(await h.deliver("w1:p1", text)).toBe(true);
+    expect(await h.deliver("w1:p1", text)).toEqual({ kind: "delivered" });
     expect(r.calls).toEqual([["pane", "get", "w1:p1"], ["pane", "process-info", "--pane", "w1:p1"], ["agent", "prompt", "w1:p1", text]]);
   });
 });

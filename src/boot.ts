@@ -5,6 +5,7 @@ import { ConfigError, configPath, loadConfig } from "./config.ts";
 import { heartbeatPath, healthPath } from "./daemon.ts";
 import { HEARTBEAT_STALE_MS, type Deps } from "./harness.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
+import { ToolError } from "./runtime/index.ts";
 import type { Lane } from "./store.ts";
 import { WatchStore } from "./watch/store.ts";
 import { worklogLines, worklogPath, worklogRead } from "./worklog.ts";
@@ -18,7 +19,7 @@ const OPEN_STATUSES: ReadonlySet<string> = new Set(["working", "waiting", "ready
 /** Longest text shown from a report, a final answer or a channel message. */
 const PREVIEW_CHARS = 80;
 
-/** One pane from `herdr pane list`: its id and, when herdr detects one, the agent and its status. */
+/** One session from the runtime's list: its id and, when the runtime detects one, the agent and its status. */
 type ListedPane = { readonly paneId: string; readonly agent?: string; readonly status: string };
 
 const preview = (text: string): string => JSON.stringify(text.length > PREVIEW_CHARS ? `${text.slice(0, PREVIEW_CHARS)}...` : text);
@@ -26,22 +27,19 @@ const iso = (at: number): string => new Date(at).toISOString();
 const ageText = (ms: number): string => `${Math.max(0, Math.floor(ms / 1000))}s`;
 
 /**
- * `herdr pane list`, through Deps.exec like every herdr call (the session from SEORI_HERDR_SESSION, as Herdr's default).
- * Throws on a failed or unparsable list: a failed list is never an empty one, so no lane is called vanished on it.
+ * The default runtime's session list (herdr: `pane list`). Throws on a failed or unparsable list: a failed list is never
+ * an empty one, so no lane is called vanished on it.
  */
 async function listPanes(d: Deps): Promise<ListedPane[]> {
-  const session = process.env["SEORI_HERDR_SESSION"];
-  const argv = [...(session ? ["--session", session] : []), "pane", "list"];
-  const res = await d.exec("herdr", argv);
-  if (res.code !== 0) throw new Error(`herdr pane list exited ${res.code}: ${(res.stderr || res.stdout).trim()}`);
-  const panes = (JSON.parse(res.stdout) as { result?: { panes?: unknown } }).result?.panes;
-  if (!Array.isArray(panes)) throw new Error("herdr pane list returned no panes array");
-  return panes.map((p) => {
-    const o = (p ?? {}) as Record<string, unknown>;
-    if (typeof o["pane_id"] !== "string") throw new Error("herdr pane list returned a pane without pane_id");
-    const agent = typeof o["agent"] === "string" && o["agent"] ? o["agent"] : undefined;
-    return { paneId: o["pane_id"], ...(agent ? { agent } : {}), status: agent ? String(o["agent_status"] ?? "unknown") : "shell" };
-  });
+  const rt = d.runtimes.default;
+  let sessions;
+  try {
+    sessions = await rt.list();
+  } catch (e) {
+    if (e instanceof ToolError) throw new Error(`${rt.kind} pane list exited ${e.result.code}: ${(e.result.stderr || e.result.stdout).trim()}`);
+    throw e;
+  }
+  return sessions.map((s) => ({ paneId: s.ref.id, ...(s.agent ? { agent: s.agent } : {}), status: s.status ?? "unknown" }));
 }
 
 /** Every lane file, parsed one by one so a damaged file is named and the other lanes are still checked. */

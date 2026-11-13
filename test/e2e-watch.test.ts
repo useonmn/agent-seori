@@ -5,7 +5,9 @@ import { join, resolve } from "node:path";
 import type { LedgerEvent, WatchRow } from "../src/channel.ts";
 import { LEAD_EXTENSION } from "../src/cli.ts";
 import { startAgent, type Deps } from "../src/harness.ts";
-import { Herdr, HerdrError, shq, spawnExec } from "../src/herdr.ts";
+import { shq, spawnExec } from "../src/runtime/exec.ts";
+import { Herdr, HerdrError } from "../src/runtime/herdr/client.ts";
+import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { Lane } from "../src/store.ts";
 import { MAX_RESTARTS, WAKE_BUDGET, type Watch, WatchStore } from "../src/watch/store.ts";
 
@@ -157,7 +159,7 @@ async function restartLead(): Promise<void> {
   if (pid === undefined) throw new Error("no omp in the lead pane");
   process.kill(pid, "SIGTERM");
   await until("the lead omp gone", async () => ((await paneInfo(lead())).agent ? undefined : true), 30_000);
-  const d = { herdr: herdrApi, model } as unknown as Deps;
+  const d = { runtimes: defaultRuntimes(herdrApi), model } as unknown as Deps;
   // herdr clears the pane's agent before it frees the agent's name: a start right after the exit can get
   // agent_name_taken for a few seconds.
   for (let attempt = 1; ; attempt++) {
