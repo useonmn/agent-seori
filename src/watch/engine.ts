@@ -596,9 +596,21 @@ function fileRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "file" }>,
   let timer: Timer | undefined;
   let stopped = false;
 
+  /** Notes a change since `last`; true when there was one. */
+  const note = (cur: Checkpoint): boolean => {
+    if (last!.exists === cur.exists && last!.mtimeMs === cur.mtimeMs && last!.size === cur.size && last!.count === cur.count) return false;
+    const kind = !last!.exists ? "created" : !cur.exists ? "deleted" : "modified";
+    if (kinds.at(-1) !== kind) kinds.push(kind);
+    last = cur;
+    return true;
+  };
+
   const flush = async (): Promise<void> => {
     timer = undefined;
     if (stopped) return;
+    // The window is as long as the poll interval, and the poll after the one that opened it runs just after this:
+    // a change made since then is part of the same burst, so look once more instead of leaving it a second event.
+    note(snapshot(src.path));
     const text = `${kinds.join(", ")} ${src.path}`;
     kinds = [];
     const cp = last;
@@ -613,10 +625,7 @@ function fileRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "file" }>,
       await ctx.update((w) => ({ ...w, checkpoint: cur }));
       return false;
     }
-    if (last.exists === cur.exists && last.mtimeMs === cur.mtimeMs && last.size === cur.size && last.count === cur.count) return false;
-    const kind = !last.exists ? "created" : !cur.exists ? "deleted" : "modified";
-    if (kinds.at(-1) !== kind) kinds.push(kind);
-    last = cur;
+    if (!note(cur)) return false;
     timer ??= setTimeout(() => void flush(), ctx.timing.fileCoalesceMs);
     return false;
   });
