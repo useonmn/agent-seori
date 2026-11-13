@@ -114,14 +114,13 @@ export function defaultSeoriCmd(home: string, env: Record<string, string | undef
 export class Refusal extends Error {}
 
 /**
- * A ulw-plan lane started without ceiling flags: the configured defaults, with supervision.ulwPlan filling the token and
- * wall-clock ceilings they leave off (its review rounds have no cap of their own). Undefined when nothing changes.
+ * A ulw-plan lane started without ceiling flags: the configured defaults, with supervision.ulwPlan filling the wall-clock
+ * ceiling they leave off (its review rounds have no cap of their own). Undefined when nothing changes.
  */
 export function ulwPlanCeilings(config: SeoriConfig): Ceilings | undefined {
   const defs = config.supervision.defaults;
-  const plan = config.supervision.ulwPlan;
-  const c: Ceilings = { wallMinutes: defs.wallMinutes ?? plan.wallMinutes, tokens: defs.tokens ?? plan.tokens, costUsd: defs.costUsd };
-  return c.wallMinutes === defs.wallMinutes && c.tokens === defs.tokens ? undefined : c;
+  const c: Ceilings = { wallMinutes: defs.wallMinutes ?? config.supervision.ulwPlan.wallMinutes, tokens: defs.tokens, costUsd: defs.costUsd };
+  return c.wallMinutes === defs.wallMinutes ? undefined : c;
 }
 
 /**

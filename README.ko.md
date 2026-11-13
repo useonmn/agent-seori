@@ -494,7 +494,7 @@ seori watch stop dev
 
 키워드는 그 워크플로 자체 명령(`/mass-ulw` 등)이 켜는 omp 모드를 켭니다. seori는 그 명령을 보내지 않습니다. 그 명령은 omp 목표 없이 돌아서 seori가 레인을 따라갈 수 없기 때문입니다. 워크플로마다 자기 상태 파일을 두고, 그 파일이 끝났다고 할 때 목표를 닫습니다.
 
-예외는 `ulw-plan`입니다. 검토를 마친 계획을 쓰면, 계획이 아직 주인 승인을 기다리는 상태여도 목표를 닫습니다. 그래서 이 레인의 READY는 "계획이 나왔고 승인이 필요하다"는 뜻입니다. 리드는 계획을 주인에게 보여 주고, `ulw-execute`로 넘어가기 전에 물어봅니다. 검토 횟수에 자체 상한이 없으므로, 한도 옵션 없이 시작한 ulw-plan 레인은 `supervision.ulwPlan` 한도(기본 토큰 300000, 60분. `supervision.defaults`가 있으면 그쪽이 우선)를 받고, 한도에 닿으면 seori가 `[BLOCKED <key>]`를 알립니다. hc는 아직 토큰 합계를 알려 주지 않으므로 시간 한도가 적용됩니다.
+예외는 `ulw-plan`입니다. 검토를 마친 계획을 쓰면, 계획이 아직 주인 승인을 기다리는 상태여도 목표를 닫습니다. 그래서 이 레인의 READY는 "계획이 나왔고 승인이 필요하다"는 뜻입니다. 리드는 계획을 주인에게 보여 주고, `ulw-execute`로 넘어가기 전에 물어봅니다. 검토 횟수에 자체 상한이 없으므로, 한도 옵션 없이 시작한 ulw-plan 레인은 `supervision.ulwPlan` 시간 한도(기본 60분. `supervision.defaults.wallMinutes`가 있으면 그쪽이 우선)를 받고, 한도에 닿으면 seori가 `[BLOCKED <key>]`를 알립니다.
 
 `seori start`는 창을 열기 전에 `omp plugin list --json`을 확인하고, omp-ulw가 켜져 있지 않으면 `--workflow`를 거부합니다. 그래서 아무도 알아듣지 못하는 단어로 시작하는 목표가 레인에 가지 않습니다. omp-ulw는 따로 설치하는 확장이고, seori가 함께 넣거나 설치하지 않습니다. seori-mode 스킬의 `references/setup.md`를 보세요.
 
@@ -510,7 +510,7 @@ seori watch stop dev
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
   "startupWaitSeconds": 180,
-  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [], "ulwPlan": { "tokens": 300000, "wallMinutes": 60 } },
+  "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [], "ulwPlan": { "wallMinutes": 60 } },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
 }
@@ -532,7 +532,6 @@ seori watch stop dev
 | `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔 |
 | `supervision.hungAfterMin` | `20` | 보고도 파일 변경도 없이 몇 분 지나면 working 레인을 멈춘 것으로 알리는지 |
 | `supervision.activityPaths` | `[]` | 바뀌면 모든 레인의 진행으로 치는 파일이나 폴더(각 레인 폴더 기준, 폴더는 항목이 생기거나 지워지거나 이름이 바뀔 때) |
-| `supervision.ulwPlan.tokens` | `300000` | 한도 플래그 없이 시작한 ulw-plan 레인의 토큰 한도. `supervision.defaults.tokens`가 있으면 그것을 씀. `null`은 끔 |
 | `supervision.ulwPlan.wallMinutes` | `60` | 한도 플래그 없이 시작한 ulw-plan 레인의 시간 한도(분). `supervision.defaults.wallMinutes`가 있으면 그것을 씀. `null`은 끔 |
 | `guard.loadAlertPct` | `150` | 코어당 1분 부하(%)가 이보다 높으면 알림 |
 | `guard.loadOkPct` | `80` | 알림을 풀려면 부하(%)가 이보다 낮아져야 함 |
