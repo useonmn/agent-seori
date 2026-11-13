@@ -20,11 +20,11 @@ export function terminal(over: Partial<FakeTerminal> = {}): FakeTerminal {
   return {
     state: "live",
     pid: 900,
-    title: "omo lane",
+    title: "omp lane",
     cwd: "/w",
-    status: { state: "idle", app: "omo" },
+    status: { state: "idle", app: "omp" },
     turn: 3,
-    foreground: { name: "omo", argv: ["omo"], pid: 4242 },
+    foreground: { name: "omp", argv: ["omp"], pid: 4242 },
     labels: {},
     ...over,
   };

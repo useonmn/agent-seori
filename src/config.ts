@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceilings } from "./store.ts";
 
-// `$SEORI_HOME/config.json`: optional settings for the done flow, PR rules, supervision, the host guard and heavy slots.
+// `$SEORI_HOME/config.json`: optional settings for the agent and runtime choice (read by src/agent/profile.ts and
+// src/runtime/select.ts), the done flow, PR rules, supervision, the host guard and heavy slots.
 // Every field is optional; a missing file means all defaults. A malformed field is an error naming it, never a silent
 // default, so a typo (`toknes`) cannot switch a ceiling off without anyone noticing.
 
@@ -97,7 +98,7 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["name", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy"], path);
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;

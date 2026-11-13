@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { ompProfile } from "../src/agent/profile.ts";
 import type { Deps } from "../src/harness.ts";
 import type { Exec } from "../src/runtime/exec.ts";
 import { Herdr } from "../src/runtime/herdr/client.ts";
@@ -193,6 +194,7 @@ export class World {
       runtimes: defaultRuntimes(new Herdr(this.exec, "", join(root, "messages"))),
       exec: this.exec,
       now: () => this.clock,
+      agent: ompProfile,
       agentCmd: "omp",
       seoriCmd: "seori",
       host: () => this.host,
