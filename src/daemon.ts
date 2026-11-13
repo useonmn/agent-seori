@@ -36,6 +36,9 @@ export const healthPath = (root: string, source: string): string => join(daemonD
 /** `config` is the messengers.json stamp the failures happened under: a new config starts a fresh attempt. */
 export type MessengerHealth = { readonly failingSince: number; readonly lastAt: number; readonly error: string; readonly failures: number; readonly config?: string };
 
+/** One conversation for the agent-loop guard; JSON, so ids containing ":" never run two conversations together. */
+const conversationKey = (chat: string, thread: string | undefined): string => JSON.stringify([chat, thread ?? null]);
+
 /** How many conversations the agent-loop guard remembers per messenger; the least recently active is forgotten first. */
 export const AGENT_RUNS_KEPT = 1_000;
 
@@ -253,7 +256,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     }
 
     const runOne = async (config: MessengerConfig): Promise<void> => {
-      // Agent messages stored in a row per conversation (`<chat>:<thread>`) since the last human one, rebuilt from the
+      // Agent messages stored in a row per conversation (chat and thread) since the last human one, rebuilt from the
       // lead channel at start so a restart (every config.json change is one) does not let a stopped loop run on. A
       // replayed message (duplicate) neither counts nor resets. Only the most recent AGENT_RUNS_KEPT conversations are
       // remembered.
@@ -265,8 +268,8 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
       };
       for (const r of channel.inbound()) {
         if (r.kind !== "messenger" || r.source !== config.source) continue;
-        const conversation = `${r.chat}:${r.thread ?? ""}`;
-        if (r.sender?.kind === "agent") remember(conversation, r.loopStopped !== undefined ? r.loopStopped + 1 : (agentRun.get(conversation) ?? 0) + 1);
+        const conversation = conversationKey(r.chat, r.thread);
+        if (r.agent === true || r.sender?.kind === "agent") remember(conversation, r.loopStopped !== undefined ? r.loopStopped + 1 : (agentRun.get(conversation) ?? 0) + 1);
         else agentRun.delete(conversation);
       }
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.
@@ -285,7 +288,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
               : m.sender;
         // A trusted bot is still a bot: its messages count toward the agent-loop guard.
         const agent = m.sender.kind === "agent";
-        const conversation = `${m.chat}:${m.thread ?? ""}`;
+        const conversation = conversationKey(m.chat, m.thread);
         let loopStopped: number | undefined;
         const run = (agentRun.get(conversation) ?? 0) + 1;
         if (agent && run > talk.agentTurnLimit + 1) return emit({ ev: "dropped", id: m.id, from: m.from });
@@ -303,6 +306,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
             ? m.text
             : `agent loop stopped: ${loopStopped} agent messages in a row here with no human message between; this one and further agent messages in this conversation are not delivered until a person writes`,
           ...(m.replyTo !== undefined ? { replyTo: m.replyTo } : {}),
+          ...(agent ? { agent: true as const } : {}),
           ...(loopStopped !== undefined ? { loopStopped } : {}),
         };
         const stored = channel.appendInbound(row);

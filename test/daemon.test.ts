@@ -547,6 +547,39 @@ describe("talking with people and agents other than the owner", () => {
     expect((new Channel(root).inbound() as MessengerRow[]).map((r) => [r.id, r.loopStopped])).toEqual([["x:c:a1", undefined], ["x:c:a2", 1]]);
   });
 
+  test("a trusted bot still counts after a restart, and conversations whose ids contain colons do not share a count", async () => {
+    const root = home([{ source: "x", owner: "u1" }]);
+    writeFileSync(join(root, "config.json"), JSON.stringify({ agentTurnLimit: 1, trusted: [{ source: "x", id: "b1", name: "Ci" }] }));
+    const bot = (id: string, chat: string, thread?: string): InboundMessage => ({ ...msg(id, "b1"), chat, ...(thread !== undefined ? { thread } : {}), sender: { kind: "agent", id: "b1" } });
+    // Before the restart: one message in conversation ("a:b", no thread); after it, one in ("a", "b:") then ("a:b") again.
+    const first: MessengerAdapter = {
+      ...noActions,
+      source: "x",
+      async receive(signal, onMessage) {
+        await onMessage(bot("x:a:b:1", "a:b"));
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
+    };
+    const d1 = start(root, { adapterFor: () => first });
+    await until("first", () => d1.events.some((e) => e.ev === "stored"));
+    await d1.stop();
+    const second: MessengerAdapter = {
+      ...first,
+      async receive(signal, onMessage) {
+        await onMessage(bot("x:a:2", "a", "b:"));
+        await onMessage(bot("x:a:b:3", "a:b"));
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+    };
+    const d2 = start(root, { adapterFor: () => second });
+    await until("third", () => d2.events.some((e) => e.ev === "stored" && e.id === "x:a:b:3"));
+    await d2.stop();
+    const rows = new Channel(root).inbound() as MessengerRow[];
+    expect(rows.map((r) => [r.id, r.sender?.kind, r.loopStopped])).toEqual([["x:a:b:1", "trusted", undefined], ["x:a:2", "trusted", undefined], ["x:a:b:3", "trusted", 1]]);
+  });
+
   test("a config.json that does not load keeps the daemon owner-only and is reported", async () => {
     const root = fakeConfig({ talkWithOthers: "yes" });
     const { d, rows } = await run(root, [
