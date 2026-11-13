@@ -37,6 +37,7 @@ SOFTWARE.
 These files contain portions of dori-superagent code licensed under the Sustainable Use License (https://github.com/sisyphuslabs/dori-superagent/blob/main/LICENSE):
 
 - .github/workflows/ci.yml
+- src/adopt-sync.ts
 - src/boot-checks.ts
 - src/cli.ts
 - src/refs.ts
@@ -48,6 +49,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/runtime/select.ts
 - src/store.ts
 - src/target.ts
+- test/adopt-sync.test.ts
 - test/boot-drift.test.ts
 - test/e2e-hc-cli.test.ts
 - test/e2e-hc-setup.ts

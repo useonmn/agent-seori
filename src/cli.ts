@@ -30,6 +30,7 @@ import { ConfigError, configPath, loadConfig } from "./config.ts";
 import { formatCheckpoints, formatCheckpointWrite, listCheckpoints, recordCheckpoint } from "./checkpoints.ts";
 import { addLesson, formatLessonAdded, formatLessonMarked, formatLessons, isLessonMark, listLessons, markLesson } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
+import { adoptLane, syncRegistry } from "./adopt-sync.ts";
 import { ownerText, WATCH_USAGE, watchAdd, watchList, watchLog, watchRearm, watchStop } from "./watch/cli.ts";
 import { WatchRefusal } from "./watch/store.ts";
 import { refText } from "./refs.ts";
@@ -47,6 +48,10 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
                                               Done line read back live before close; ID = lead channel id for progress posts;
                                               ceilings block (report to lead); exits 4 with HOLD when the host is full
+  seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
+                                              register an already-running session as a lane (types nothing into it)
+  seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
+                                              vanished lane is marked lost (no session is ever closed)
   seori report <key> --text T [--status working|waiting]
   seori ready <key> --text T --evidence LINK [--evidence LINK ...]
   seori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane's agent is idle
@@ -783,6 +788,15 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         } : {}),
       });
       console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);
+      return 0;
+    }
+    case "adopt": {
+      const lane = await adoptLane(d, need(x, "lane key"), need(one(a, "ref"), "--ref"), { brief: one(a, "brief"), cwd: one(a, "cwd") });
+      console.log(`ADOPTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);
+      return 0;
+    }
+    case "sync": {
+      console.log((await syncRegistry(d, one(a, "write") === "true")).lines.join("\n"));
       return 0;
     }
     case "report": {
