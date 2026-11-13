@@ -22,12 +22,13 @@ const isOpen = (l: Lane): boolean => l.status !== "done" && l.status !== "lost";
 
 /**
  * Opens a session on `rt` and starts omp in it with `args`: on hc a terminal labelled with this home's group, on herdr
- * the root pane of a new workspace. `kickoff`, when given, is delivered once omp is up. Closes the session and throws
- * when omp does not start or does not take the kickoff.
+ * the root pane of a new workspace. `created` runs as soon as the session exists, before omp is started in it.
+ * `kickoff`, when given, is delivered once omp is up. Closes the session and throws when omp does not start or does not
+ * take the kickoff.
  */
 async function openOn(
-  d: Deps, rt: SessionRuntime, spec: Omit<CreateSpec, "container" | "group">, label: string, args: readonly string[], kickoff?: string,
-  model = d.model,
+  d: Deps, rt: SessionRuntime, spec: Omit<CreateSpec, "container" | "group">, label: string, args: readonly string[],
+  created: (ref: SessionRef) => void, kickoff?: string, model = d.model,
 ): Promise<SessionRef> {
   const ref = await rt.create(
     rt.kind === "hc"
@@ -35,6 +36,7 @@ async function openOn(
       : { ...spec, container: "workspace-root" },
   );
   try {
+    created(ref);
     await startAgent(d, label, ref, args, model);
     if (kickoff !== undefined) {
       await agentSessionReported(d, ref);
@@ -49,6 +51,17 @@ async function openOn(
 
 const resumeArgs = (resume: string | undefined): string[] => (resume === undefined ? [] : ["--resume", resume]);
 
+/**
+ * Journals the replacement the moment it exists (phase `creating`), before omp starts in it: a run that dies while omp
+ * starts or takes its kickoff leaves a journal naming the session, which the next run closes instead of orphaning it.
+ */
+const recordCreated =
+  (d: Deps, name: string) =>
+  (ref: SessionRef): void => {
+    const j = readJournal(d.store.root, name);
+    if (j !== undefined) writeJournal(d.store.root, { ...j, phase: "creating", newRef: ref });
+  };
+
 function laneSubject(d: Deps, key: string): Subject {
   const lane = d.store.lane(key);
   if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
@@ -62,7 +75,7 @@ function laneSubject(d: Deps, key: string): Subject {
     open: (rt, briefPath, resume) => {
       const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
       const kickoff = resume === undefined ? d.agent.kickoff(briefPath, key, lane.workflow === undefined ? undefined : workflowPrefix(lane.workflow)) : undefined;
-      return openOn(d, rt, { name: key, cwd: lane.cwd, env, role: "lane" }, key, resumeArgs(resume), kickoff, lane.model ?? d.model);
+      return openOn(d, rt, { name: key, cwd: lane.cwd, env, role: "lane" }, key, resumeArgs(resume), recordCreated(d, key), kickoff, lane.model ?? d.model);
     },
     setHold: (on) => save(({ migration: _, ...l }) => (on ? { ...l, migration: true } : l)),
     // A run resumed after a crash between the switch and the journal write switches again: the record stays as it is.
@@ -93,10 +106,11 @@ function roleSubject(d: Deps, role: Role, from: SessionRef, leadExtension: strin
       if (role === "lead") {
         const leadEnv = { SEORI_HOME: root, SEORI_CMD: d.seoriCmd, ...env, ...d.agent.leadEnv(root) };
         const args = ["-e", leadExtension, "--append-system-prompt", briefPath, ...resumeArgs(resume)];
-        return openOn(d, rt, { name, cwd, env: leadEnv, role: "lead" }, "lead", args);
+        return openOn(d, rt, { name, cwd, env: leadEnv, role: "lead" }, "lead", args, recordCreated(d, role));
       }
       const dutyEnv = { ...env, ...d.agent.agentEnv(root) };
-      return openOn(d, rt, { name: `${name}-duty`, cwd, env: dutyEnv, role: "duty" }, "duty", ["--append-system-prompt", briefPath, ...resumeArgs(resume)]);
+      const args = ["--append-system-prompt", briefPath, ...resumeArgs(resume)];
+      return openOn(d, rt, { name: `${name}-duty`, cwd, env: dutyEnv, role: "duty" }, "duty", args, recordCreated(d, role));
     },
     // A role has no record to mark: the journal alone holds its inbox (see migrating()).
     setHold: () => {},

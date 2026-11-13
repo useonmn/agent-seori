@@ -8,12 +8,13 @@ import { lockFile } from "./store.ts";
 /**
  * The durable record of one `seori migrate` of a lane or role (`SEORI_HOME/migrate/<name>.json`), rewritten tmp+rename
  * before each phase so a cut-short run resumes where it stopped. `hold`: the session is held (no flush, no nudge);
- * `opened`: the replacement `newRef` exists; `switched`: the record points at it and only the old close is left.
+ * `creating`: the replacement `newRef` exists but omp may not be started in it yet (a resumed run closes it and opens
+ * again); `opened`: the replacement `newRef` is up; `switched`: the record points at it and only the old close is left.
  */
 export type MigrateJournal = {
   readonly name: string;
   readonly kind: "lane" | "role";
-  readonly phase: "hold" | "opened" | "switched";
+  readonly phase: "hold" | "creating" | "opened" | "switched";
   readonly from: SessionRef;
   readonly to: RuntimeKind;
   readonly newRef?: SessionRef;
