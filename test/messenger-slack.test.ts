@@ -759,6 +759,18 @@ describe("SlackAdapter send", () => {
   });
 });
 
+describe("SlackAdapter removed user-token mode", () => {
+  test("options.mode user, or secrets.json with userToken or cookie and no botToken, is refused naming the bot app", () => {
+    const removed = /Slack user-token mode was removed; create a Slack bot app/;
+    expect(() => new SlackAdapter({ source: "slack", owner: OWNER, options: { mode: "user" } }, home(), { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } })).toThrow(removed);
+    const root = home();
+    writeFileSync(join(root, "secrets.json"), JSON.stringify({ slack: { userToken: "xoxc-1", cookie: "xoxd-1" } }), { mode: 0o600 });
+    expect(() => new SlackAdapter({ source: "slack", owner: OWNER }, root, { env: {} })).toThrow(removed);
+    // A bot token alongside leftover user-mode keys runs as the bot.
+    expect(() => new SlackAdapter({ source: "slack", owner: OWNER }, root, { env: { SEORI_SLACK_BOT_TOKEN: "xoxb-1" } })).not.toThrow();
+  });
+});
+
 describe("SlackAdapter check", () => {
   test("reports the bot and team; a bad token is a clear error", async () => {
     const mock = startMock();

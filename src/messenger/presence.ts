@@ -20,7 +20,6 @@ export const HELLO_TIMEOUT_MS = 30_000;
 export const DISCORD_INTENTS_GUILD_MESSAGES = 1 << 9;
 const DISCORD_GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json";
 
-export type Platform = "discord";
 export type Timers = { setInterval(cb: () => void, ms: number): unknown; clearInterval(handle: unknown): void };
 export type GatewaySocket = { send(data: string): void; close(): void; onMessage(cb: (data: string) => void): void; onClose(cb: (code: number) => void): void };
 
@@ -209,7 +208,7 @@ function token(root: string, source: string, key: string, envName: string | unde
 }
 
 /** `seori presence discord`: the Discord bot token. */
-export async function runPresence(root: string, _platform: Platform, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
+export async function runPresence(root: string, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
   const env = deps.env ?? process.env;
   const bot = token(root, "discord", "token", "SEORI_DISCORD_TOKEN", env);
   return holdDiscord(bot, join(root, "presence", "discord-identify.json"), deps, signal);

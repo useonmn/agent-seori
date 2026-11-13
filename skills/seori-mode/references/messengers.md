@@ -27,7 +27,7 @@ One program per bot token: two programs reading the same bot make Telegram answe
 
 ### Slack
 
-seori is a Slack app with a bot token. It only sees DMs with the bot and channels it is invited to, within the app's scopes (invite it where the real work happens). The bot app runs in Socket Mode, so no public URL is needed:
+seori is a Slack app with a bot token (an entry left from the removed user-token mode is refused with a message saying so). It only sees DMs with the bot and channels it is invited to, within the app's scopes (invite it where the real work happens). The bot app runs in Socket Mode, so no public URL is needed:
 
 1. https://api.slack.com/apps → Create New App → From a manifest → pick the workspace → paste:
 

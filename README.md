@@ -749,7 +749,7 @@ None. seori sends nothing anywhere.
 - A repository with no `repoIdentities` entry has its commit identities skipped, and the output says so; it is not a failure.
 - A host figure that cannot be read (disk, sessions) holds no lane and raises no alert.
 - The owner is paired with `seori msg pair`, from the sender of the next direct message to the bot.
-- Slack runs as a bot app in Socket Mode (bot token only).
+- Slack runs as a bot app in Socket Mode (bot token only); an entry left from the removed user-token mode (`options.mode: "user"`, or `userToken`/`cookie` in `secrets.json` with no `botToken`) is refused with a message saying so.
 - Voice: Telegram voice notes are transcribed only when you set `hooks.transcribe`.
 - The seori mode skill (`skills/seori-mode`) takes the place of Dori mode.
 
