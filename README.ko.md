@@ -180,6 +180,10 @@ seori msg list [--all]                       아직 열린 리드 채널 메시�
 seori msg show <id>                          리드 채널 id로 메시지 하나를 보여 줍니다. 리드 채널에 있으면 거기서, 없으면
                                             메신저에서 읽습니다(못 읽으면 UNAVAILABLE, 종료 코드 1. 텔레그램 봇은 읽지 못함)
 seori msg check [SOURCE]                     메신저 토큰이 맞는지 확인합니다(봇 이름을 출력). SOURCE를 주면 주인 등록 전에도 됩니다
+seori msg trust add <SOURCE>:<ID> [--name N] --because ID
+                                             사람이나 에이전트를 신뢰 목록(config.json "trusted")에 올립니다. ID는 그걸 부탁한 주인의 메시지여야 합니다
+seori msg trust remove <SOURCE>:<ID> --because ID   주인의 메시지 ID에 따라 신뢰 목록에서 뺍니다
+seori msg trust list                         신뢰하는 보낸 사람을 한 줄에 하나씩(TRUSTED) 보여 줍니다
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             설정용: 봇에게 다음에 DM을 보낸 사람을 출력. --write는 그 사람을 주인으로 기록;
                                             --force는 이미 등록된 텔레그램 주인을 다시 등록 (데몬 몫으로 쌓인 메시지는 버려짐)
@@ -406,7 +410,7 @@ seori worklog list --open
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
 ```
 
-`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 리드에게 말할 수 있는 단 한 명의 보낸 사람 id입니다. 다른 사람이나 봇이 보낸 메시지는 버립니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
+`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 seori가 일해 주는 주인의 보낸 사람 id입니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 주인의 메시지에는 따로 제한을 두지 않습니다. 다른 사람이나 에이전트도 seori와 대화할 수 있습니다([다른 사람, 에이전트와 대화하기](#다른-사람-에이전트와-대화하기) 참고). config.json에 `"talkWithOthers": false`를 쓰면 dori처럼 주인만 리드에게 말할 수 있습니다. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
 
 에이전트 앱으로 표시한 Slack 앱(앱 설정의 Agents, 권한 `assistant:write`)에는 `"options": { "agent": true }`를 줍니다. 그러면 주인의 DM마다 그 스레드에서 답합니다(`thread_ts`가 있으면 그 스레드, 최상위 메시지면 그 메시지 아래). 리드가 메시지를 받으면 스레드에 작업 중 상태를 띄웁니다(`assistant.threads.setStatus`, 문구는 `options.agentStatus`, 기본값 `is working on it...`). Slack은 2분이 지나면 상태를 지우기 때문에, daemon이 1분마다 다시 띄웁니다. seori가 그 스레드에 답하거나(최상위 답도 지웁니다) 30분이 지나면 멈춥니다. `agent`가 없으면 DM은 예전과 같습니다.
 
@@ -465,10 +469,32 @@ seori msg pair telegram --write
 
 메시지가 가는 길:
 
-1. 데몬(Linux + hc에서는 systemd 유닛, 아니면 `seori up`의 터미널 또는 창)이 메시지를 받습니다. 주인이 보낸 것이면 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. `seori daemon-loop`가 다시 켜 주므로, 데몬이 죽어도 1초쯤 뒤에 다시 뜹니다(Linux에서는 systemd가 루프 자체도 다시 켜 줍니다). `messengers.json`이 바뀌면(새로 만들기, 고치기, 지우기) 데몬이 스스로 끝나고 루프가 새 설정으로 다시 켭니다. 그래서 `seori up` 뒤에 메신저를 설정해도 됩니다. `messengers.json`을 읽을 수 없으면 그 창에 오류를 남기고, 파일이 바뀔 때까지 메신저 없이 돕니다(heartbeat와 감시는 계속 돕니다). 그 창에서 Ctrl-C를 누르거나(종료 코드 130) 데몬 프로세스를 `kill`하면(143) 데몬과 루프가 함께 멈춥니다. SIGHUP(129, 창을 닫을 때도 이 신호가 갑니다)을 받으면 데몬은 감시 명령까지 깔끔하게 멈추고, 루프가 아직 돌고 있으면 루프가 다시 켭니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
+1. 데몬(Linux + hc에서는 systemd 유닛, 아니면 `seori up`의 터미널 또는 창)이 메시지를 받습니다. 주인이 보낸 것이면(`talkWithOthers`가 켜져 있으면 들어야 할 다른 사람의 것도, 아래 참고) 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. `seori daemon-loop`가 다시 켜 주므로, 데몬이 죽어도 1초쯤 뒤에 다시 뜹니다(Linux에서는 systemd가 루프 자체도 다시 켜 줍니다). `messengers.json`이 바뀌면(새로 만들기, 고치기, 지우기) 데몬이 스스로 끝나고 루프가 새 설정으로 다시 켭니다. 그래서 `seori up` 뒤에 메신저를 설정해도 됩니다. `messengers.json`을 읽을 수 없으면 그 창에 오류를 남기고, 파일이 바뀔 때까지 메신저 없이 돕니다(heartbeat와 감시는 계속 돕니다). 그 창에서 Ctrl-C를 누르거나(종료 코드 130) 데몬 프로세스를 `kill`하면(143) 데몬과 루프가 함께 멈춥니다. SIGHUP(129, 창을 닫을 때도 이 신호가 갑니다)을 받으면 데몬은 감시 명령까지 깔끔하게 멈추고, 루프가 아직 돌고 있으면 루프가 다시 켭니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
 2. 리드의 omp는 `extensions/lead-channel.ts`를 불러옵니다. 리드만 불러오고, 듀티, 레인, 리뷰어는 불러오지 않습니다. 이 확장이 저장된 메시지를 id와 함께 리드의 대화에 넣고, 넣을 때마다 기록(ledger)을 남깁니다. 에이전트를 다시 켜거나 `/new`, `/resume`, `/fork`를 해도 답하지 않은 메시지는 남아 있습니다.
 3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 답은 리드의 차례가 끝날 때까지 초안으로 남습니다(아래 답 초안 참고). 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
 4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다. 열린 초안이 있는 id는 `seori msg list`에서 `drafted`로 보이고, 답한 것으로 치므로 다시 전하지 않습니다.
+
+### 다른 사람, 에이전트와 대화하기
+
+seori는 기본적으로 주인과 대화하지만, 다른 사람이나 다른 에이전트와도 자연스럽게 대화합니다. `"talkWithOthers": true`(기본값)이면 데몬이 이런 메시지도 리드에게 전합니다:
+
+- 누가 보냈든 봇에게 온 DM
+- 채널이나 그룹에서 봇을 멘션한 최상위 메시지
+- 봇이 멘션됐거나 답한 적 있는 스레드 안의 모든 메시지(멘션이 없어도 됩니다)
+
+주인의 메시지는 예전 규칙 그대로이고, 봇이 직접 보낸 메시지는 전하지 않습니다. 리드 채널의 줄마다 보낸 사람이 적힙니다: `owner`, `trusted <이름> (<id>)`, `person <이름> (<id>)`, `agent <이름> (<id>)`(agent는 메신저가 봇이나 앱으로 표시한 보낸 사람입니다).
+
+신뢰 단계는 셋입니다:
+
+- **owner**: seori가 일해 주는 주인. 모든 게 예전과 같습니다.
+- **trusted**: 주인이 config.json `trusted`에 올린 사람이나 에이전트. 이들의 메시지는 작업 요청입니다. 리드는 주인의 요청처럼 처리하고(바로 답하기, 레인 열기, 백로그), 무엇을 누구를 위해 시작했는지 주인에게 한 줄로 알립니다. seori가 이미 다루는 저장소에서 하는 평범한 개발 작업(레인, PR, 리뷰 CLEAR와 초록 체크를 거친 `seori merge`)은 해도 됩니다.
+- **그 밖의 모두**(`person`, `agent`): 대화 상대입니다. 리드는 이야기는 나누지만 지시는 받지 않습니다. 작업을 부탁받으면 주인에게 먼저 알리고, 주인이 허락하거나 그 사람을 신뢰 목록에 올린 뒤에야 시작합니다.
+
+주인이 아닌 모두에게는(trusted 포함) 늘 지키는 규칙이 있습니다. 주인의 개인 정보는 알려 주지 않고("주인에게 직접 물어봐 주세요"라고 답합니다), 주인의 계정을 쓰지 않고, 돈을 쓰지 않으며, 지우기, 강제 푸시, 권한 취소처럼 되돌릴 수 없는 일은 주인이 직접 보낸 메시지로 허락하기 전에는 하지 않습니다. 다른 사람의 메시지로는 작업 기록(worklog) 항목을 만들지 않고, 눈 리액션도 달지 않습니다.
+
+신뢰 목록은 주인이 말할 때만 바뀝니다. `seori msg trust add <source>:<id> [--name N] --because <id>`와 `seori msg trust remove <source>:<id> --because <id>`는 `<id>`가 seori 기록에 있는 주인의 메시지가 아니면 거절합니다(종료 코드 2). 그래서 리드는 주인이 그 메시지에서 부탁한 사람만 올릴 수 있습니다. `seori msg trust list`로 지금 누가 올라 있는지 봅니다.
+
+에이전트 둘은 서로 고맙다는 말만 끝없이 주고받기 쉽습니다. `agentTurnLimit`(기본값 6)은 한 대화나 스레드에서 사람 메시지 없이 이어지는 에이전트 메시지 수의 상한입니다. 넘으면 나머지는 전하지 않고, 리드는 루프를 멈췄다는 `seori about agent ...` 줄을 한 번 받습니다. 그 대화에 사람이 한 번 쓰면 다시 셉니다.
 
 ### 답 초안
 
@@ -549,7 +575,10 @@ seori watch stop dev
   "startupWaitSeconds": 180,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [], "ulwPlan": { "tokens": 300000, "wallMinutes": 60 } },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
-  "heavy": { "slots": 1, "maxLoadPct": 80 }
+  "heavy": { "slots": 1, "maxLoadPct": 80 },
+  "talkWithOthers": true,
+  "agentTurnLimit": 6,
+  "trusted": []
 }
 ```
 
@@ -576,6 +605,9 @@ seori watch stop dev
 | `guard.panesMax` | `30` | 살아 있는 런타임 세션이 이보다 많으면 새 레인을 막고 알림 |
 | `heavy.slots` | `1` | `seori heavy` 명령이 동시에 몇 개까지 돌 수 있는지 |
 | `heavy.maxLoadPct` | `80` | 무거운 명령은 코어당 부하(%)가 이보다 낮아질 때까지 기다림 |
+| `talkWithOthers` | `true` | 다른 사람, 에이전트와도 대화할지([다른 사람, 에이전트와 대화하기](#다른-사람-에이전트와-대화하기) 참고). `false`면 주인 메시지만 전합니다 |
+| `agentTurnLimit` | `6` | 한 대화나 스레드에서 사람 메시지 없이 에이전트 메시지를 몇 개까지 연달아 전하는지. 정수 |
+| `trusted` | `[]` | `{ "source": "<메신저 source>", "id": "<보낸 사람 id>", "name"?: "<이름>" }` 항목들: 요청을 작업으로 받아 줄 보낸 사람. `seori msg trust`로 바꿉니다 |
 
 잘못된 필드는 조용히 기본값으로 넘어가지 않고, 그 필드 이름을 담은 오류가 됩니다. 그래서 오타 하나로 한도가 몰래 꺼지는 일이 없습니다:
 
@@ -584,6 +616,7 @@ seori watch stop dev
 - `repoIdentities`, `supervision`, `supervision.defaults`, `guard`, `heavy`는 객체여야 하고, `repoIdentities` 항목마다 비어 있지 않은 `name`과 `email`이 있어야 합니다.
 - 숫자는 모두 유한하고 음수가 아니어야 합니다. 한도는 그런 숫자이거나 `null`입니다. `heavy.slots`는 1 이상의 정수여야 합니다.
 - `name`은 표에 적힌 규칙을 따라야 합니다.
+- `talkWithOthers`는 `true`나 `false`여야 하고, `trusted` 항목마다 비어 있지 않은 `source`와 `id`가 있어야 합니다(`name`도 쓴다면 비어 있으면 안 됩니다).
 
 설정을 읽는 명령(`start`, Done 줄이 있는 레인의 `ready`, `merge`, `verify-pr`, `can-launch`, `guard`, `heavy`)은 오류를 출력하고 종료 코드 2로 끝납니다. 듀티 루프에서는 설정이 필요한 부분마다 이벤트(`autoclose-failed`, `supervise-failed`, `guard-failed`, `progress-failed`)로 알리고 나머지는 계속 돕니다. `seori boot`에는 `CONFIG invalid`로 나옵니다. 설정은 명령과 듀티 차례마다 새로 읽으므로, 바꾸면 재시작 없이 바로 적용됩니다.
 
