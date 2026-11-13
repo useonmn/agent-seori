@@ -219,12 +219,14 @@ A lesson is a one-line rule a lane leaves for the next lane in the same reposito
 seori done fix-flaky-login --lesson 'run the login tests 20 times before calling a flake fixed'
 seori lesson add fix-flaky-login --rule '...' --evidence https://github.com/owner/repo/pull/12
 seori lesson add --cwd ~/src/app --rule '...' --evidence '...'
+seori lesson add --global --rule '...' --evidence '...'
 seori lesson list [--cwd DIR]
 seori lesson mark <id> --outcome helped|no-effect|harmful|encoded
 ```
 
 - A lesson belongs to one directory: the lane's cwd (`lesson add <key>`, `done --lesson`), or `--cwd DIR` (recorded with lane `lead`). The path is resolved to its real path and matched exactly.
 - `seori start` puts up to 8 of the newest `pending` or `helped` lessons for the lane's cwd at the top of the brief, under `## Lessons for this repo`.
+- A `--global` lesson is the lead's standing rule for every lane, whatever its repo: it has no cwd and is recorded with lane `lead`. `seori start` puts up to 4 of the newest pending or helped global lessons above the repo's, under `## Lessons for every lane`; the cap is separate, so global rules never push repo lessons out. `--global` and `lesson mark` on a global lesson are refused from a lane's terminal (the terminal of an open lane, found from `HC_TERMINAL_ID` / `HERDR_PANE_ID`). That check is a convenience against accidents, not a security boundary.
 - A new lesson is `pending`; `lesson mark` records its outcome. Lessons marked `no-effect`, `harmful` or `encoded` no longer go into briefs.
 - `done --lesson` never blocks the close. Its evidence is `--evidence`, else the lane's READY evidence, else its Done line. A lesson that is refused prints `LESSON_WARNING <why>` after `DONE`.
 - The rule is one line of at most 400 characters, the evidence one line of at most 2000.

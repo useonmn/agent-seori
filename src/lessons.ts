@@ -20,15 +20,19 @@ export type Lesson = {
   readonly at: string;
   /** The lane that learned it, or "lead" for a lesson the lead added by directory. */
   readonly lane: string;
-  /** Canonical (realpath) directory the lesson applies to. */
-  readonly cwd: string;
+  /** Canonical (realpath) directory the lesson applies to; a global lesson has none and reaches every lane. */
+  readonly cwd?: string;
+  /** "global": the lead's standing rule for every lane, whatever its repo. Absent on a repo lesson. */
+  readonly scope?: "global";
   readonly rule: string;
   readonly evidence: string;
   readonly outcome: LessonOutcome;
   /** ISO time of the last mark; absent while the lesson was never marked. */
   readonly marked?: string;
 };
-export type LessonInput = { readonly cwd: string; readonly rule: string; readonly evidence: string; readonly lane?: string };
+export type LessonInput =
+  | { readonly cwd: string; readonly global?: undefined; readonly rule: string; readonly evidence: string; readonly lane?: string }
+  | { readonly global: true; readonly cwd?: undefined; readonly rule: string; readonly evidence: string; readonly lane?: string };
 /** Valid lessons, newest first, and one `<path>:<line>: <reason>` problem per damaged line. */
 export type LessonRead = { readonly lessons: Lesson[]; readonly problems: string[] };
 
@@ -42,7 +46,10 @@ export const isLessonMark = (value: unknown): value is LessonMark => (MARKS as r
 
 /** At most this many lessons go into a brief, so old lessons cannot crowd out the task. */
 export const BRIEF_LESSONS = 8;
+/** Global lessons have their own cap, so they never push a repo's lessons out of a brief. */
+export const GLOBAL_LESSONS = 4;
 export const LESSONS_HEADING = "## Lessons for this repo";
+export const GLOBAL_LESSONS_HEADING = "## Lessons for every lane";
 /** Lane recorded for a lesson added by directory rather than from a lane. */
 export const LEAD_LANE = "lead";
 
@@ -51,13 +58,14 @@ const singleLine = (value: unknown, max: number): value is string =>
 // Only the form toISOString writes: Date.parse also takes "0" or an RFC 2822 date, which must not reach a brief.
 const isoTime = (v: unknown): boolean => typeof v === "string" && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v;
 
-const FIELDS = ["id", "at", "lane", "cwd", "rule", "evidence", "outcome", "marked"] as const;
-const IMMUTABLE = ["at", "lane", "cwd", "rule", "evidence"] as const;
+const FIELDS = ["id", "at", "lane", "cwd", "scope", "rule", "evidence", "outcome", "marked"] as const;
+const IMMUTABLE = ["at", "lane", "cwd", "scope", "rule", "evidence"] as const;
 const checks: Record<(typeof FIELDS)[number], [(value: unknown) => boolean, string]> = {
   id: [(v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v), "must be a lowercase UUID"],
   at: [isoTime, "must be an ISO time as toISOString writes it"],
   lane: [(v) => typeof v === "string" && KEY_RE.test(v), `must match ${KEY_RE}`],
   cwd: [(v) => singleLine(v, 4096) && isAbsolute(v), "must be an absolute single-line path"],
+  scope: [(v) => v === "global", 'must be "global" or absent'],
   rule: [(v) => singleLine(v, 400), "must be one nonempty line of at most 400 characters"],
   evidence: [(v) => singleLine(v, 2000), "must be one nonempty line of at most 2000 characters"],
   outcome: [isLessonOutcome, `must be one of ${OUTCOMES.join(", ")}`],
@@ -70,7 +78,12 @@ const problemOf = (value: unknown): string | undefined => {
   const record = value as Record<string, unknown>;
   const unknown = Object.keys(record).find((name) => !(FIELDS as readonly string[]).includes(name));
   if (unknown !== undefined) return `unknown lesson field "${unknown}"`;
+  // A repo lesson has a cwd and no scope; a global lesson has scope "global" and no cwd.
+  const global = record["scope"] === "global";
+  if (global && "cwd" in record) return 'a global lesson has no field "cwd"';
+  const absent = global ? "cwd" : "scope";
   for (const name of FIELDS) {
+    if (name === absent && !(name in record)) continue;
     const [ok, rule] = checks[name];
     if (!ok(record[name])) return `lesson field "${name}" ${rule}`;
   }
@@ -134,15 +147,16 @@ export function listLessons(root: string, cwd?: string): LessonRead {
   const target = cwd === undefined ? undefined : scope(cwd);
   // Reverse first so that among lessons added in the same millisecond the later one still sorts first.
   const lessons = [...latest.values()].reverse()
-    .filter((l) => target === undefined || l.cwd === target)
+    .filter((l) => target === undefined || l.scope === "global" || l.cwd === target)
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   return { lessons, problems };
 }
 
-/** Appends a new pending lesson for realpath(cwd). Refuses a rule or evidence that is not one short line, or a bad lane key. */
+/** Appends a new pending lesson for realpath(cwd), or a global one (`global: true`, no cwd). Refuses a rule or evidence that is not one short line, or a bad lane key. */
 export function addLesson(root: string, input: LessonInput, now: number): Lesson {
+  const where = input.global ? { scope: "global" as const } : { cwd: scope(input.cwd) };
   const lesson = {
-    id: randomUUID(), at: new Date(now).toISOString(), lane: input.lane ?? LEAD_LANE, cwd: scope(input.cwd),
+    id: randomUUID(), at: new Date(now).toISOString(), lane: input.lane ?? LEAD_LANE, ...where,
     rule: input.rule, evidence: input.evidence, outcome: "pending" as const,
   };
   const problem = problemOf(lesson);
@@ -161,27 +175,37 @@ export function markLesson(root: string, id: string, outcome: LessonMark, now: n
   return updated;
 }
 
-/** The lessons a new lane in cwd gets: up to BRIEF_LESSONS newest pending or helped ones, and the read's problems. */
+/**
+ * The lessons a new lane in cwd gets, newest first: up to GLOBAL_LESSONS global ones, then up to BRIEF_LESSONS pending
+ * or helped ones for the repo, and the read's problems.
+ */
 export function lessonsForRepo(root: string, cwd: string): LessonRead {
   const { lessons, problems } = listLessons(root, cwd);
-  return { lessons: lessons.filter((l) => l.outcome === "pending" || l.outcome === "helped").slice(0, BRIEF_LESSONS), problems };
+  const current = lessons.filter((l) => l.outcome === "pending" || l.outcome === "helped");
+  const global = current.filter((l) => l.scope === "global").slice(0, GLOBAL_LESSONS);
+  const repo = current.filter((l) => l.scope !== "global").slice(0, BRIEF_LESSONS);
+  return { lessons: [...global, ...repo], problems };
 }
 
-/** Markdown for the brief: the lessons for this repo under LESSONS_HEADING, ending in a blank line; "" when none. */
+/** Markdown for the brief: global lessons under GLOBAL_LESSONS_HEADING, then the repo's under LESSONS_HEADING; "" when none. */
 export function lessonsBlock(root: string, cwd: string): string {
   return renderLessons(lessonsForRepo(root, cwd).lessons);
 }
 
 /** The markdown lessonsBlock writes for a given list. */
-export const renderLessons = (lessons: readonly Lesson[]): string => lessons.length
-  ? `${LESSONS_HEADING}\n${lessons.map((l) => `- [${l.outcome}; ${l.lane}] ${l.rule}`).join("\n")}\n\n`
+const section = (heading: string, lessons: readonly Lesson[]): string => lessons.length
+  ? `${heading}\n${lessons.map((l) => `- [${l.outcome}; ${l.lane}] ${l.rule}`).join("\n")}\n\n`
   : "";
+
+export const renderLessons = (lessons: readonly Lesson[]): string =>
+  section(GLOBAL_LESSONS_HEADING, lessons.filter((l) => l.scope === "global")) +
+  section(LESSONS_HEADING, lessons.filter((l) => l.scope !== "global"));
 
 /** `LESSON_WARNING <path>:<line>: <reason>` for each damaged record. */
 export const lessonWarnings = (problems: readonly string[]): string[] => problems.map((p) => `LESSON_WARNING ${p}`);
 
 /** The line `lesson add` prints. */
-export const formatLessonAdded = (l: Lesson): string => `LESSON ${l.id} pending ${l.lane} ${l.cwd}`;
+export const formatLessonAdded = (l: Lesson): string => `LESSON ${l.id} pending ${l.lane} ${l.cwd ?? "global"}`;
 
 /** The line `lesson mark` prints. */
 export const formatLessonMarked = (l: Lesson): string => `MARKED ${l.id} ${l.outcome}`;
@@ -194,7 +218,7 @@ export function formatLessons(read: LessonRead): string[] {
   const lines = lessonWarnings(read.problems);
   if (read.lessons.length === 0) return [...lines, "EMPTY"];
   for (const l of read.lessons) {
-    lines.push(`${l.id} ${l.outcome}${l.marked ? ` (marked ${l.marked})` : ""} ${l.at} ${l.lane} ${l.cwd}`);
+    lines.push(`${l.id} ${l.outcome}${l.marked ? ` (marked ${l.marked})` : ""} ${l.at} ${l.lane} ${l.cwd ?? "global"}`);
     lines.push(`  rule: ${l.rule}`, `  evidence: ${l.evidence}`);
   }
   return lines;
