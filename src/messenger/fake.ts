@@ -114,10 +114,18 @@ export class FakeAdapter implements MessengerAdapter {
   }
 
   async receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
+    // Threads the bot was mentioned in, from the rows read so far: built once, then grown row by row.
+    let mentioned: Set<string> | undefined;
     while (!signal.aborted) {
       const lines = this.lines();
-      for (let i = this.offset(); i < lines.length && !signal.aborted; i++) {
-        const m = this.parse(lines[i]!, lines, i);
+      const start = this.offset();
+      if (!mentioned) mentioned = new Set(lines.slice(0, start).flatMap((l) => mentionedThread(row(l))));
+      // Threads the bot replied in, read once per poll.
+      const replied = new Set(this.sent().flatMap((s) => (s.thread !== undefined ? [threadKey(s.chat, s.thread)] : [])));
+      for (let i = start; i < lines.length && !signal.aborted; i++) {
+        const r = row(lines[i]!);
+        const m = this.parse(r, (chat, thread) => replied.has(threadKey(chat, thread)) || mentioned!.has(threadKey(chat, thread)));
+        for (const key of mentionedThread(r)) mentioned.add(key);
         // A rejection propagates before the commit, so the message is offered again when receive restarts.
         if (m) await onMessage(m);
         this.commit(i + 1);
@@ -127,12 +135,11 @@ export class FakeAdapter implements MessengerAdapter {
   }
 
   /** Blank or malformed lines are consumed without a message; they can never become valid, so waiting on them would stall the queue. */
-  private parse(line: string, lines: readonly string[], index: number): InboundMessage | undefined {
-    const r = row(line);
+  private parse(r: FakeInboundRow | undefined, joined: (chat: string, thread: string) => boolean): InboundMessage | undefined {
     if (!r) return undefined;
     if (r.from === FAKE_BOT_ID) return undefined;
     const kind = r.bot === true ? "agent" : r.from === this.owner ? "owner" : "person";
-    if (this.owner !== undefined && kind !== "owner" && !r.dm && !r.mentions && !(r.thread !== undefined && this.joined(r.chat, r.thread, lines, index))) return undefined;
+    if (this.owner !== undefined && kind !== "owner" && !r.dm && !r.mentions && !(r.thread !== undefined && joined(r.chat, r.thread))) return undefined;
     return {
       id: `fake:${r.chat}:${r.msgId}`,
       source: this.source,
@@ -144,15 +151,6 @@ export class FakeAdapter implements MessengerAdapter {
       text: r.text,
       ...(r.replyTo && typeof r.replyTo.id === "string" ? { replyTo: r.replyTo } : {}),
     };
-  }
-
-  /** The bot replied in the thread (out.jsonl), or was mentioned in it or in its first message, before row `index`. */
-  private joined(chat: string, thread: string, lines: readonly string[], index: number): boolean {
-    if (this.sent().some((s) => s.chat === chat && s.thread === thread)) return true;
-    return lines.slice(0, index).some((l) => {
-      const r = row(l);
-      return r !== undefined && r.chat === chat && r.mentions === true && (r.thread === thread || (r.thread === undefined && r.msgId === thread));
-    });
   }
 
   sendMode(): FakeSendMode {
@@ -242,6 +240,11 @@ export class FakeAdapter implements MessengerAdapter {
     return { messageId };
   }
 }
+
+const threadKey = (chat: string, thread: string): string => JSON.stringify([chat, thread]);
+
+/** The thread a row that mentions the bot puts the bot in: its own thread, or the one it starts as a top-level message. */
+const mentionedThread = (r: FakeInboundRow | undefined): string[] => (r?.mentions === true ? [threadKey(r.chat, r.thread ?? r.msgId)] : []);
 
 /** One valid row of in.jsonl; blank or malformed lines are undefined. */
 function row(line: string): FakeInboundRow | undefined {
