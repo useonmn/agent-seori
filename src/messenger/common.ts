@@ -16,13 +16,13 @@ export function secretsPath(root: string): string {
 /**
  * One secret for one messenger: the environment variable wins (tests, one-off runs), then secrets.json. Missing is a
  * configuration error naming both places. A secrets.json readable by group or others is refused, so tokens never sit
- * world-readable without the owner noticing.
+ * world-readable without the owner noticing. `envName` undefined: secrets.json only.
  */
 export function secret(
-  root: string, source: string, key: string, envName: string, env: Record<string, string | undefined> = process.env,
+  root: string, source: string, key: string, envName: string | undefined, env: Record<string, string | undefined> = process.env,
   othersCanRead: (path: string) => string | undefined = readableByOthers,
 ): string {
-  const fromEnv = env[envName];
+  const fromEnv = envName === undefined ? undefined : env[envName];
   if (fromEnv) return fromEnv;
   const path = secretsPath(root);
   if (existsSync(path)) {
@@ -32,7 +32,7 @@ export function secret(
     const value = all[source]?.[key];
     if (value) return value;
   }
-  throw new Error(`no ${source} ${key}: set ${envName} or "${source}": { "${key}": "..." } in ${path}`);
+  throw new Error(`no ${source} ${key}: set ${envName === undefined ? "" : `${envName} or `}"${source}": { "${key}": "..." } in ${path}`);
 }
 
 /** A small JSON file an adapter keeps its receive cursor in, under `$SEORI_HOME/messenger/<source>/`. */

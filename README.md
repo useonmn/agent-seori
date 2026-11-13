@@ -165,6 +165,7 @@ seori msg check [SOURCE]                     verify messengers' tokens (prints w
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             setup: print the sender of the next DM to the bot; --write makes them the owner;
                                             --force re-pairs a configured Telegram owner (drops updates queued for the daemon)
+seori presence <slack|discord> [--user]      keep the bot shown online until stopped, reconnecting with backoff (see Presence)
 seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                  | --pane PANE --status idle|working|blocked|gone)
                  [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
@@ -406,6 +407,14 @@ seori msg pair telegram --write
 - Pairing is refused while the daemon is running (a heartbeat under 30 seconds old) and the source is already in `messengers.json`, because two readers on one bot conflict (Telegram answers 409): pair before adding the entry, or stop the daemon first.
 - A `telegram` entry that already names an owner is refused unless `--force`. Telegram confirms updates on its server once a later one is read, so pairing would drop the messages queued for the daemon (sent while it was stopped). Let the daemon deliver them first, or pass `--force` to pair anyway.
 - No message within the window is a refusal (exit 2). Ctrl-C ends the wait early.
+
+### Presence
+
+`seori presence discord` and `seori presence slack` keep the configured account shown online until Ctrl-C or SIGTERM (exit 0). The tokens are the messenger's own (`secrets.json`, or `SEORI_DISCORD_TOKEN` / `SEORI_SLACK_BOT_TOKEN`); a missing one is a refusal (exit 2) naming the `secrets.json` key. It prints `PRESENCE_READY <platform>` once the first session is up. When a session ends (the socket closed, Discord asked for a reconnect with op 7 or invalidated the session with op 9, a heartbeat went unacknowledged, a Slack call failed), it prints `PRESENCE_RECONNECT <platform> code=<why> retry_in=<n>s` and opens a new one after a backoff that starts at 5 s, doubles per fast failure up to 300 s, and is back at 5 s once a session held for a minute. A rejected token (Discord close 4004, Slack `invalid_auth` and the like) or a refused intent (Discord close 4014) prints `PRESENCE_FAILED <platform>: <why>` and exits 1 instead of retrying.
+
+- Discord: a gateway session that identifies with status online and asks for no intents.
+- Slack, default: Slack shows a Socket Mode bot as active only through the app setting "Always Show My Bot as Online" (App Home, or `always_online` in the manifest); no API call can make a bot active, and a Socket Mode connection does not count ([user presence and status](https://docs.slack.dev/apis/web-api/user-presence-and-status)). So turn that setting on; `seori presence slack` then calls `users.setPresence` `auto` with the bot token (scope `users:write`), which lifts a manual away, repeats it every 10 minutes, and sets `away` when stopped. It opens no Socket Mode connection of its own, because Slack spreads events across all of an app's connections and a second one would take messages from the daemon.
+- Slack, `--user`: for a regular Slack user account. It holds a web-client socket (`client.getWebSocketURL`) and sends a tickle every minute, so the account stays active, and sets `away` when stopped. It needs that account's client token and its `d` cookie in `secrets.json` as `"slack": { "userToken": "xoxc-...", "cookie": "..." }` (no environment variables). A change of presence the account's owner makes by hand is left as it is.
 
 ### Receiving
 

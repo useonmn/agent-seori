@@ -152,6 +152,7 @@ seori msg check [SOURCE]                     메신저 토큰이 맞는지 확�
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             설정용: 봇에게 다음에 DM을 보낸 사람을 출력. --write는 그 사람을 주인으로 기록;
                                             --force는 이미 등록된 텔레그램 주인을 다시 등록 (데몬 몫으로 쌓인 메시지는 버려짐)
+seori presence <slack|discord> [--user]      멈출 때까지 봇을 온라인으로 보이게 둡니다. 끊기면 간격을 두고 다시 연결 (온라인 표시 참고)
 seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                  | --pane PANE --status idle|working|blocked|gone)
                  [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
@@ -385,6 +386,14 @@ seori msg pair telegram --write
 - 데몬이 돌고 있고(heartbeat가 30초 이내) 그 source가 이미 `messengers.json`에 있으면 거절합니다. 봇 하나를 둘이 읽으면 부딪치기 때문입니다(텔레그램은 409로 답함). 항목을 넣기 전에 등록하거나, 데몬을 먼저 멈추세요.
 - 이미 주인이 적힌 `telegram` 항목은 `--force` 없이는 거절합니다. 텔레그램은 다음 메시지를 읽으면 그 앞 메시지를 서버에서 처리 끝으로 표시하므로, 등록하면 데몬 몫으로 쌓여 있던 메시지(데몬이 멈춘 동안 온 것)가 버려지기 때문입니다. 데몬이 먼저 전하게 두거나, 그래도 등록하려면 `--force`를 붙이세요.
 - 기다리는 시간 안에 메시지가 없으면 거절입니다(종료 코드 2). Ctrl-C로 일찍 끝낼 수 있습니다.
+
+### 온라인 표시
+
+`seori presence discord`와 `seori presence slack`은 Ctrl-C나 SIGTERM을 받을 때까지(종료 코드 0) 설정된 계정을 온라인으로 보이게 둡니다. 토큰은 메신저가 쓰는 것을 그대로 씁니다(`secrets.json`, 또는 `SEORI_DISCORD_TOKEN` / `SEORI_SLACK_BOT_TOKEN`). 토큰이 없으면 `secrets.json`의 어느 키가 필요한지 알려 주고 거절합니다(종료 코드 2). 첫 연결이 되면 `PRESENCE_READY <platform>`을 한 번 출력합니다. 연결이 끝나면(소켓이 닫힘, 디스코드가 op 7로 다시 연결하라고 하거나 op 9로 세션을 무효로 함, 하트비트 응답이 없음, 슬랙 호출이 실패함) `PRESENCE_RECONNECT <platform> code=<이유> retry_in=<n>s`를 출력하고 기다렸다가 새로 연결합니다. 기다리는 시간은 5초에서 시작해 빨리 끊길 때마다 두 배로 늘어 300초까지 가고, 한 연결이 1분 넘게 버티면 다시 5초가 됩니다. 토큰을 거절당하거나(디스코드 close 4004, 슬랙 `invalid_auth` 등) 인텐트를 거절당하면(디스코드 close 4014) 다시 시도하지 않고 `PRESENCE_FAILED <platform>: <이유>`를 출력하고 종료 코드 1로 끝납니다.
+
+- 디스코드: 상태를 online으로 해서 identify하는 게이트웨이 연결 하나를 유지합니다. 인텐트는 요청하지 않습니다.
+- 슬랙 기본: 슬랙은 Socket Mode 봇을 앱 설정의 "Always Show My Bot as Online"(App Home, 매니페스트의 `always_online`)으로만 활성으로 보여 줍니다. 봇을 활성으로 만드는 API는 없고, Socket Mode 연결도 치지 않습니다([user presence and status](https://docs.slack.dev/apis/web-api/user-presence-and-status)). 그러니 그 설정을 켜 두세요. 그러면 `seori presence slack`은 봇 토큰(스코프 `users:write`)으로 `users.setPresence` `auto`를 불러 수동 자리 비움을 풀고, 10분마다 다시 부르며, 멈출 때 `away`로 둡니다. 따로 Socket Mode 연결은 열지 않습니다. 슬랙은 이벤트를 앱의 모든 연결에 나눠 보내므로, 연결을 하나 더 열면 데몬이 받을 메시지를 가져가 버리기 때문입니다.
+- 슬랙 `--user`: 일반 슬랙 사용자 계정용입니다. 웹 클라이언트 소켓(`client.getWebSocketURL`)을 열어 두고 1분마다 tickle을 보내 활성으로 유지하고, 멈출 때 `away`로 둡니다. 그 계정의 클라이언트 토큰과 `d` 쿠키가 `secrets.json`에 `"slack": { "userToken": "xoxc-...", "cookie": "..." }`로 있어야 합니다(환경 변수는 안 씁니다). 계정 주인이 손으로 바꾼 상태는 그대로 둡니다.
 
 ### 받기
 

@@ -40,6 +40,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/adopt-sync.ts
 - src/boot-checks.ts
 - src/cli.ts
+- src/messenger/presence.ts
 - src/refs.ts
 - src/runtime/hc/deliver.ts
 - src/runtime/hc/exec.ts
@@ -57,6 +58,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - test/fixtures/fake-omp.ts
 - test/helpers/fake-hc.ts
 - test/helpers/hc-rig.ts
+- test/messenger-presence.test.ts
 - test/records-upgrade.test.ts
 - test/runtime-select.test.ts
 - test/resolve-target.test.ts
