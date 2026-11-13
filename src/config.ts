@@ -1,3 +1,4 @@
+// Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ceilings } from "./store.ts";
@@ -35,6 +36,11 @@ export type SeoriConfig = {
   readonly progressEveryMin: number;
   /** A lane whose pane shows a dialog (herdr `blocked`) this long is told to the lead once as [BLOCKED-PROMPT]. */
   readonly blockedPromptMin: number;
+  /**
+   * How long `seori start` waits for a new lane to confirm its start (its first check 20 s after the kickoff, then every
+   * 10 s). A slow host can take minutes before omp's first turn runs.
+   */
+  readonly startupWaitSeconds: number;
   readonly supervision: {
     /** Ceilings for every lane; `seori start --wall-minutes/--token-limit/--cost-limit` override per lane. */
     readonly defaults: Ceilings;
@@ -59,6 +65,7 @@ export const DEFAULT_CONFIG: SeoriConfig = {
   closeAfterMin: 5,
   progressEveryMin: 15,
   blockedPromptMin: 10,
+  startupWaitSeconds: 180,
   supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20, activityPaths: [] },
   guard: { loadAlertPct: 150, loadOkPct: 80, memFreeMinPct: 10, diskFreeMinGb: 20, panesMax: 30 },
   heavy: { slots: 1, maxLoadPct: 80 },
@@ -100,7 +107,7 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) throw new ConfigError(`${path}: must be a JSON object`);
-  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "supervision", "guard", "heavy", "hooks"], path);
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;
@@ -146,6 +153,7 @@ export function loadConfig(root: string): SeoriConfig {
     closeAfterMin: num(raw, "closeAfterMin", path, D.closeAfterMin),
     progressEveryMin: num(raw, "progressEveryMin", path, D.progressEveryMin),
     blockedPromptMin: num(raw, "blockedPromptMin", path, D.blockedPromptMin),
+    startupWaitSeconds: num(raw, "startupWaitSeconds", path, D.startupWaitSeconds),
     supervision: {
       defaults: {
         wallMinutes: ceiling(defs["wallMinutes"], `${path} supervision.defaults.wallMinutes`, D.supervision.defaults.wallMinutes),

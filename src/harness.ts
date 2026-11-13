@@ -391,12 +391,22 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
  * is the lead channel id progress posts thread under; `ceilings` override the configured supervision defaults;
  * `activityPaths` are files or directories whose change counts as the lane's progress besides git status.
  */
-export async function startLane(
-  d: Deps,
-  key: string,
-  briefFile: string,
-  opts: { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[] } = {},
-): Promise<Lane> {
+export async function startLane(d: Deps, key: string, briefFile: string, opts: StartOptions = {}): Promise<Lane> {
+  const started = await openLaneSession(d, key, briefFile, opts);
+  if (!started.took) {
+    process.stderr.write(`seori: lane ${key}: ${d.agent.kind} in ${refText(started.lane.sessionRef)} has not started on the kickoff; check that pane\n`);
+  }
+  return started.lane;
+}
+
+export type StartOptions = { cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[] };
+
+/**
+ * What startLane does, without the warning for a kickoff omp has not started on: the saved lane, when the kickoff
+ * went in (`kickedAt`) and whether omp was seen starting on it (`took`). `seori start` goes on to its startup verdict
+ * (src/startup-verdict.ts) instead of warning.
+ */
+export async function openLaneSession(d: Deps, key: string, briefFile: string, opts: StartOptions = {}): Promise<{ lane: Lane; kickedAt: number; took: boolean }> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
@@ -424,16 +434,18 @@ export async function startLane(
   const rt = d.runtimes.default;
   const group = workspace ? workspace : await rt.createGroup(loadConfig(d.store.root).name, cwd);
   const ref = await rt.create({ name: key, cwd, env, role: "lane", container: "tab", group });
+  let kickedAt = 0;
+  let took = false;
   try {
     await startAgent(d, key, ref);
     await agentSessionReported(d, ref);
     if (!(await deliverOrThrow(rt, ref, d.agent.kickoff(briefPath, key)))) throw new Error(`${d.agent.kind} was not in front of the pane to take the kickoff`);
-    if (!(await kickoffTook(d, ref))) {
+    kickedAt = d.now();
+    took = await kickoffTook(d, ref);
+    if (!took) {
       // The kickoff can sit typed in the agent's input with its Enter lost (still loading under load): press only Enter.
       await rt.submitTyped(ref);
-      if (!(await kickoffTook(d, ref))) {
-        process.stderr.write(`seori: lane ${key}: ${d.agent.kind} in ${refText(ref)} has not started on the kickoff; check that pane\n`);
-      }
+      took = await kickoffTook(d, ref);
     }
   } catch (e) {
     await rt.close(ref).catch(() => undefined);
@@ -452,7 +464,7 @@ export async function startLane(
   };
   d.store.saveLane(lane);
   await tellLead(d, `[START ${key}] lane opened in ${refText(ref)}`, key);
-  return lane;
+  return { lane, kickedAt, took };
 }
 
 /** How long a lane start waits for omp's integration to report its session, then for omp to start on the kickoff. */

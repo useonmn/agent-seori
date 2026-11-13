@@ -68,6 +68,7 @@ Talk to the lead. It writes a brief and opens lanes itself, and you can do the s
 ```sh
 seori start fix-flaky-login --brief examples/brief.md
 # STARTED fix-flaky-login pane=hc:t3 brief=~/.seori/briefs/fix-flaky-login.md
+# STARTUP_OK fix-flaky-login hc:t3
 seori status
 ```
 
@@ -186,11 +187,20 @@ seori watch log <id|name> [-n N]             the watch's last events
 
 `seori start <key> --brief FILE` first checks that the host has room for a lane (see [Host guard](#host-guard-can-launch-and-heavy-slots); `--force` skips the room check) and refuses a Done line (`--done`) it cannot parse. It writes the lessons for the lane's directory (see [Lessons](#lessons)), the brief and the lane rules to `~/.seori/briefs/<key>.md` and opens a new terminal with a plain shell.
 
-On hc the terminal joins the instance's group (`seori.group=<name>`, with `seori.role` and `seori.name` labels). seori types the agent command into it and waits for the agent to report its first status. It then sends the kickoff: a `/goal` command whose objective points the agent at the brief and the lane key. seori then waits for omp to report `working` on the kickoff; if it does not, seori presses Enter once more and, failing that, prints a warning naming the terminal and leaves the lane open.
+On hc the terminal joins the instance's group (`seori.group=<name>`, with `seori.role` and `seori.name` labels). seori types the agent command into it and waits for the agent to report its first status. It then sends the kickoff: a `/goal` command whose objective points the agent at the brief and the lane key. seori then waits for omp to report `working` on the kickoff; if it does not, seori presses Enter once more (see the startup verdict below for what happens next).
 
 On herdr seori first checks herdr's omp integration, opens a new tab and runs `herdr agent start --kind omp`, which returns once omp is ready for input, then sends the same `/goal` kickoff with `herdr agent prompt`.
 
 Either way the lane is recorded as `working` (with its Done line, `--thread` and ceilings, when given) and the lead gets `[START <key>]`.
+
+`seori start` then prints `STARTED <key> pane=<ref> brief=<path>` and watches the new lane before it returns. It reads the lane's screen (unwrapped: a line the terminal wrapped over several rows reads as one) and its status 20 s after the kickoff, then every 10 s for up to `startupWaitSeconds` (default 180; a slow host can take minutes before omp's first turn runs), and prints one more line:
+
+- `STARTUP_ERROR <key> <ref>: <phrase>` (exit 3): a known failure is on the screen, such as `No API key`, `429 Too Many Requests`, `Rate limit reached` or `exceeded your current quota`. After the first check, the screen is checked only while omp is not working, since a working lane's own output may quote such a line.
+- `STARTUP_UNCONFIRMED <key> <ref>: <why>; last lines: ...` (exit 3): omp reported no ready status in time, is behind a dialog, left a shell in front or is gone, a status or screen read failed, or omp never started on the kickoff (it never reported working).
+- `STARTUP_DONE <key>` (exit 0): the lane sent READY during the wait.
+- `STARTUP_OK <key> <ref>` (exit 0): omp started on the kickoff and is running, with no failure on its screen.
+
+On exit 3 the lane record and its terminal stay, so the lead can look at the pane, fix the cause and send the lane on. Lanes the hourly loop starts from the backlog skip this wait; for them a kickoff omp has not started on is only a warning on stderr.
 
 The lane rules tell the agent to restate the deliverable and the exit condition in its first reply, and never to mark the goal complete before `seori ready` has succeeded. From there the lane sends `[REPORT <key>]` (or `[REPORT <key> WAITING]` when it is blocked outside its own terminal) and ends with `[READY <key>]` plus its evidence links. The rules also tell it to record a checkpoint after each completed step and read them back with `seori checkpoints <key>` after a restart or compaction, to start nothing while the owner has paused it, and who closes the lane: the lead by hand or, for a lane with a Done line, seori after the close window.
 
@@ -496,6 +506,7 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
   "closeAfterMin": 5,
   "progressEveryMin": 15,
   "blockedPromptMin": 10,
+  "startupWaitSeconds": 180,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
   "heavy": { "slots": 1, "maxLoadPct": 80 }
@@ -515,6 +526,7 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
 | `closeAfterMin` | `5` | minutes after READY that a lane with a Done line closes on its own, unless the lead objects |
 | `progressEveryMin` | `15` | a lane with `--thread` gets its newest report posted at most this often (minutes) |
 | `blockedPromptMin` | `10` | minutes a lane's pane may show a dialog (`blocked`) before the lead gets one `[BLOCKED-PROMPT <key>]`; fractions work (`0.5` is 30 s) |
+| `startupWaitSeconds` | `180` | how long `seori start` watches a new lane for a startup verdict (first check 20 s after the kickoff, then every 10 s); see [How a lane starts](#how-a-lane-starts) |
 | `supervision.defaults.wallMinutes` | `null` | wall-clock ceiling per lane, in minutes; `null` is off |
 | `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off |
 | `supervision.defaults.costUsd` | `null` | cost ceiling per lane, in US dollars; `null` is off |
