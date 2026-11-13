@@ -69,12 +69,11 @@ describe("runHeavy", () => {
     expect(await runHeavy(root, "t", [process.execPath, "-e", ""], { config: config(1), load: () => 0 })).toBe(0);
   });
 
-  // Windows has no signals to die of: a process.kill there terminates with status 1.
-  test.if(process.platform !== "win32")("a command killed by a signal reports 128 + the signal number", async () => {
+  test("a command killed by a signal reports 128 + the signal number", async () => {
     expect(await runHeavy(home(), "t", [process.execPath, "-e", 'process.kill(process.pid, "SIGTERM")'], { config: config(1), load: () => 0 })).toBe(143);
   });
 
-  test("an unknown load (Windows has no load average) holds nothing: only the slots limit heavy commands", async () => {
+  test("an unknown load holds nothing: only the slots limit heavy commands", async () => {
     const root = home();
     const lines: string[] = [];
     const slot = await acquireHeavySlot(root, "build", { config: config(1), load: () => undefined, onWait: (l) => lines.push(l), sleep: async () => {} });

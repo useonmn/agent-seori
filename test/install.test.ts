@@ -7,7 +7,7 @@ import { COPY_MARK, installSkill, SEORI_SRC, uninstall } from "../src/install.ts
 const dir = () => mkdtempSync(join(tmpdir(), "seori-install-"));
 const skill = (skills: string) => join(skills, "seori-mode");
 
-describe("installSkill (I7: a link on every platform, a junction on Windows)", () => {
+describe("installSkill (I7: a symlink to the checkout)", () => {
   test("links the checkout's skill; a reinstall replaces the link and the skill reads the checkout's current file", () => {
     const skills = dir();
     expect(installSkill(SEORI_SRC, skills).ok).toBe(true);
@@ -17,7 +17,7 @@ describe("installSkill (I7: a link on every platform, a junction on Windows)", (
     expect(readFileSync(join(skill(skills), "SKILL.md"), "utf8")).toBe(readFileSync(join(SEORI_SRC, "skills", "seori-mode", "SKILL.md"), "utf8"));
   });
 
-  test("an old seori copy (Git Bash ln makes copies) is refreshed into a link; the owner's own directory is left alone", () => {
+  test("an old seori copy (a copy made where no link could be) is refreshed into a link; the owner's own directory is left alone", () => {
     const skills = dir();
     mkdirSync(skill(skills));
     writeFileSync(join(skill(skills), "SKILL.md"), "old");

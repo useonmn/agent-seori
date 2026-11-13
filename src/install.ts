@@ -2,7 +2,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readlinkSync, rmdirSync, rmSy
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-// The skill half of install.sh / install.ps1, and `seori uninstall`, in bun so macOS, Linux and Windows share it.
+// The skill half of install.sh, and `seori uninstall`, in bun so Linux and macOS share it.
 
 /** Where omp loads user skills: SKILLS_DIR, else ~/.omp/agent/skills. */
 export const defaultSkillsDir = (env: Record<string, string | undefined> = process.env): string =>
@@ -16,7 +16,7 @@ export const COPY_MARK = ".seori-copy";
 
 const SKILL = "seori-mode";
 
-/** Removes a symlink or a Windows junction without touching what it points to (a junction is removed like a directory). */
+/** Removes a symlink without touching what it points to. */
 const removeLink = (path: string): void => {
   try {
     unlinkSync(path);
@@ -34,15 +34,13 @@ const isLink = (path: string): boolean => {
 };
 
 /**
- * Links `<src>/skills/seori-mode` into the skills directory: a symlink on macOS/Linux, a directory junction on Windows
- * (no admin rights or developer mode needed). An existing link or an earlier seori copy is replaced, so a reinstall
+ * Links `<src>/skills/seori-mode` into the skills directory: a symlink. An existing link or an earlier seori copy is replaced, so a reinstall
  * never leaves an old skill behind; any other directory there is the owner's and is left alone. If no link can be made,
  * the skill is copied with COPY_MARK, and the next install refreshes the copy.
  */
 export function installSkill(
   src: string = SEORI_SRC,
   skillsDir: string = defaultSkillsDir(),
-  platform: string = process.platform,
 ): { ok: boolean; note: string } {
   const target = join(resolve(src), "skills", SKILL);
   if (!existsSync(join(target, "SKILL.md"))) return { ok: false, note: `${target} has no SKILL.md; not a seori checkout` };
@@ -56,7 +54,7 @@ export function installSkill(
     else rmSync(link, { recursive: true, force: true });
   }
   try {
-    symlinkSync(target, link, platform === "win32" ? "junction" : "dir");
+    symlinkSync(target, link, "dir");
     return { ok: true, note: `${link} -> ${target}` };
   } catch (e) {
     cpSync(target, link, { recursive: true });

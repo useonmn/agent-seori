@@ -51,7 +51,7 @@ export const defaultDeps = (): Deps => {
     now: Date.now,
     agentCmd: process.env["SEORI_AGENT_CMD"] ?? "omp",
     seoriCmd: process.env["SEORI_CMD"] ?? defaultSeoriCmd(store.root, process.env),
-    host: () => ({ load1: process.platform === "win32" ? null : (loadavg()[0] ?? 0), cores: cpus().length, memFreePct: memFreePct() }),
+    host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
     sleep: (ms) => Bun.sleep(ms),
     model: process.env["SEORI_MODEL"] || undefined,
     notify: async (config, target, text) => {
@@ -80,8 +80,7 @@ export const AGENT_OMP_CONFIG = "startup:\n  setupWizard: false\n";
 /** The home seori uses when SEORI_HOME is unset: the first instance on a PC. */
 export const DEFAULT_HOME = join(homedir(), ".seori");
 
-const sameDir = (a: string, b: string): boolean =>
-  process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
+const sameDir = (a: string, b: string): boolean => resolve(a) === resolve(b);
 
 /** Where the agents of a home other than DEFAULT_HOME keep their omp memory (mnemopi's SQLite DB and its banks). */
 export const ompMemoryDb = (root: string): string => join(root, "omp", "memories", "mnemopi.db");
@@ -89,8 +88,7 @@ export const ompMemoryDb = (root: string): string => join(root, "omp", "memories
 /**
  * agent-omp.yml for a home. omp's mnemopi memory is one DB for every omp on the PC (its banks sit next to that DB), so
  * two seori instances would recall each other's memories. Every home but DEFAULT_HOME points `mnemopi.dbPath` into
- * itself; DEFAULT_HOME keeps omp's own DB, so the first instance keeps the memory it has. JSON quoting is valid YAML
- * and keeps a Windows path's backslashes.
+ * itself; DEFAULT_HOME keeps omp's own DB, so the first instance keeps the memory it has. JSON quoting is valid YAML.
  */
 export function agentOmpConfig(root: string, defaultHome: string = DEFAULT_HOME): string {
   if (sameDir(root, defaultHome)) return AGENT_OMP_CONFIG;
@@ -112,13 +110,10 @@ export function agentOmpConfigFiles(root: string, extra: readonly string[] = [],
 }
 
 /**
- * How agents and loop panes call seori. On macOS/Linux the command carries seoriVars as an env prefix, so it also works
- * in a shell seori did not open (a lead started by hand). Windows pane shells (PowerShell, cmd) have no env-prefix
- * syntax: there the command is plain `bun "<cli>"` (forward slashes, double quotes: valid in PowerShell, cmd and Git
- * Bash) and the variables come from the pane environment (paneEnv).
+ * How agents and loop panes call seori. The command carries seoriVars as an env prefix, so it also works in a shell
+ * seori did not open (a lead started by hand).
  */
-export function defaultSeoriCmd(home: string, env: Record<string, string | undefined>, platform: string = process.platform): string {
-  if (platform === "win32") return `bun "${CLI.replaceAll("\\", "/")}"`;
+export function defaultSeoriCmd(home: string, env: Record<string, string | undefined>): string {
   const prefix = seoriVars(home, env).map(([k, v]) => `${k}=${shq(v)}`).join(" ");
   return `${prefix} bun ${shq(CLI)}`;
 }
@@ -479,7 +474,7 @@ const KICKOFF_POLL_MS = 500;
 
 /**
  * `herdr agent start` returns once herdr sees omp's screen ready, but omp can still be loading: its integration reports
- * the session later (up to 16 s after start on a loaded Windows host), and a prompt typed before that can lose its
+ * the session later (up to 16 s after start on a loaded host), and a prompt typed before that can lose its
  * Enter. Waits for the session, at most AGENT_SESSION_WAIT_MS; the kickoff then goes in either way.
  */
 async function agentSessionReported(d: Deps, paneId: string): Promise<void> {

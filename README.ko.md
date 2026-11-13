@@ -12,8 +12,6 @@ seori의 설계는 [dori-superagent](https://github.com/sisyphuslabs/dori-supera
 curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 ```
 
-Windows라면 PowerShell에서 `irm https://raw.githubusercontent.com/useonmn/agent-seori/main/install.ps1 | iex`를 실행합니다([Windows](#windows) 참고).
-
 그다음 herdr를 켜고, 창 하나에서 omp를 실행해 `서리 모드`(또는 `seori mode`)라고 말하면 됩니다. 나머지는 seori-mode 스킬이 차례로 안내합니다. 사람이 고르거나 직접 해야 하는 단계에서는 멈추고 묻습니다. 순서는 이렇습니다: 봇 이름 정하기, herdr의 omp 연동, 설치, 메신저 고르기(텔레그램, 슬랙, 디스코드), 브라우저에서 함께 봇 만들기, `secrets.json`과 `seori msg check`, `seori msg pair`로 나를 주인으로 등록하기, 봇으로 첫인사 보내기, `seori up`, 그리고 온보딩. 온보딩에서는 내가 허락한 도구만 읽기 전용으로 살펴보고 omp 메모리에 기억해 둡니다. 설정이 끝난 뒤에 다시 `서리 모드`라고 하면 `seori boot`를 돌리고 그 결과를 알려 줍니다. 자세한 내용은 [서리 모드 스킬](#서리-모드-스킬)에 있습니다.
 
 ## seori가 하는 일
@@ -36,52 +34,7 @@ herdr는 워크스페이스, 탭, 창(pane)을 만들어 주고, 각 omp 세션�
 - omp (oh-my-pi). `omp` 명령이 PATH에 있어야 합니다.
 - GitHub CLI `gh`. PR 헤드 커밋, 체크, 리뷰, 머지에 씁니다.
 
-macOS, Linux, Windows를 지원합니다. Windows에서 다른 점은 아래에 있습니다.
-
-## Windows
-
-seori는 Windows 10/11에서 WSL 없이 그대로 돌아갑니다. herdr, omp, gh도 같은 것을 씁니다.
-
-위 준비물에 더해 필요한 것:
-
-- [Git for Windows](https://git-scm.com/download/win). 감시 명령(`seori watch add --command`)은 sh 문법으로 쓰고, Git for Windows의 `sh.exe`에서 실행됩니다. PATH에 Git의 `cmd` 폴더만 있어도 seori가 `git.exe` 옆에서 찾아 씁니다. 다른 sh를 쓰려면 `SEORI_SH`를 지정합니다.
-- 설치 스크립트용 PowerShell 5.1 또는 7.
-
-설치, 업데이트, 제거:
-
-```powershell
-irm https://raw.githubusercontent.com/useonmn/agent-seori/main/install.ps1 | iex   # 설치 또는 업데이트
-.\install.ps1 -Uninstall            # 스킬 링크와 seori 명령 제거 (~\.seori는 남김)
-.\install.ps1 -Uninstall -Purge     # ~\.seori까지 삭제
-```
-
-`install.ps1`은 `install.sh`와 같은 일을 합니다([서리 모드 스킬](#서리-모드-스킬) 참고). Windows에서 다른 점은 두 가지입니다. 스킬은 디렉터리 정션(junction)으로 링크하므로 관리자 권한이나 개발자 모드가 필요 없습니다. `~\.seori`는 권한 700 대신 `icacls`로 내 계정(과 SYSTEM)만 읽을 수 있게 막습니다. `SEORI_SRC`, `SEORI_HOME`, `SKILLS_DIR`, `SEORI_NO_PULL` 변수도 똑같이 쓰고, `-NoLink`를 주면 `bun link`를 건너뜁니다.
-
-herdr의 omp 연동도 PowerShell에서 똑같이 설치합니다:
-
-```powershell
-herdr integration install omp
-herdr integration status   # omp: 줄에 "not installed"가 없어야 합니다
-```
-
-PowerShell에서 쓰는 예:
-
-```powershell
-seori up
-seori start fix-flaky-login --brief examples\brief.md --cwd C:\src\app
-seori status
-seori watch add --command "bun test 2>&1" --filter "fail|error" --cwd C:\src\app
-$env:SEORI_HOME = "D:\seori-home"; seori status   # 다른 상태 폴더 쓰기
-```
-
-Windows에서 다른 점:
-
-- 창(pane). herdr 창의 셸은 PowerShell이나 cmd라서 `변수=값 명령` 문법이 없습니다. seori는 자기가 여는 모든 창에 `SEORI_HOME`, `SEORI_HERDR_SESSION`, `SEORI_MODEL`을 `herdr --env`로 넣어 주고, 에이전트와 루프 창은 그냥 `bun "<경로>/src/cli.ts"`로 seori를 부릅니다. 데몬 창은 sh 대신 bun으로 만든 재시작 루프 `seori daemon-loop`를 돌립니다.
-- `secrets.json`. Windows에는 파일 권한 비트가 없어서(모든 파일이 666으로 보임) seori가 파일의 ACL을 읽습니다. Everyone, Users, Authenticated Users, Guests, Anonymous가 읽을 수 있으면 거절합니다. 나만 읽게 하려면: `icacls "$env:USERPROFILE\.seori\secrets.json" /inheritance:r /grant:r "${env:USERNAME}:F"`
-- 멈추기. Windows에는 SIGTERM이 없습니다. 데몬, 듀티 루프, 시간 단위 루프는 `seori down`(셋 다, 또는 `seori down duty|loop|daemon`)으로 멈춥니다. 모든 OS에서, 어느 창이나 터미널에서든 똑같이 동작합니다. 데몬은 감시 명령을 끄고 잠금을 푼 뒤 끝나고, 다시 뜨지 않습니다. 그 창에서 Ctrl-C를 누르거나 창이나 herdr의 seori 워크스페이스를 닫아도 멈춥니다. 끝내지 않고 루프만 잠시 멈추려면 `seori duty stop`, `seori loop stop`을 씁니다. 밖에서 강제로 끈 데몬(작업 관리자, `taskkill`)은 죽은 것으로 보고 루프가 다시 띄웁니다.
-- 감시 명령은 sh에서 돌기 때문에, 그 안의 경로는 슬래시로 씁니다(`C:/src/app/log.txt`). sh는 역슬래시를 이스케이프로 읽습니다.
-- 감시 명령을 멈출 때는 프로세스 트리 전체를 끕니다(Windows에는 프로세스 그룹이 없습니다). 죽은 데몬이 남긴 명령은 프로세스 트리와 시작 시각으로 찾아서, 감시를 다시 시작하기 전에 끕니다.
-- 부하. Windows에는 load average가 없어서, 자원 감시는 부하를 "모름"으로 보여 주고 부하로는 알리지 않습니다. 무거운 작업 자리(`seori heavy`)는 빈자리만 기다립니다. `df`가 없으면 남은 디스크는 볼륨에서 직접 읽습니다.
+Linux와 macOS를 지원합니다(주 플랫폼은 Linux). Windows는 지원하지 않습니다.
 
 ## 직접 빠르게 시작하기
 
@@ -385,7 +338,7 @@ seori worklog list --open
 
 에이전트 앱으로 표시한 Slack 앱(앱 설정의 Agents, 권한 `assistant:write`)에는 `"options": { "agent": true }`를 줍니다. 그러면 주인의 DM마다 그 스레드에서 답합니다(`thread_ts`가 있으면 그 스레드, 최상위 메시지면 그 메시지 아래). 리드가 메시지를 받으면 스레드에 작업 중 상태를 띄웁니다(`assistant.threads.setStatus`, 문구는 `options.agentStatus`, 기본값 `is working on it...`). Slack은 2분이 지나면 상태를 지우기 때문에, daemon이 1분마다 다시 띄웁니다. seori가 그 스레드에 답하거나(최상위 답도 지웁니다) 30분이 지나면 멈춥니다. `agent`가 없으면 DM은 예전과 같습니다.
 
-토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다. Windows에서는 ACL을 봅니다. [Windows](#windows) 참고). 환경 변수가 있으면 그쪽이 먼저입니다:
+토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다). 환경 변수가 있으면 그쪽이 먼저입니다:
 
 ```json
 { "telegram": { "token": "123:abc" }, "slack": { "botToken": "xoxb-...", "appToken": "xapp-..." }, "discord": { "token": "..." } }
@@ -538,13 +491,13 @@ omo의 `monitor`와 비교하면: 지켜보는 대상의 종류, 알림 묶기, 
 
 - 저장소를 `~/.seori/src`에 받습니다(`SEORI_SRC`로 다른 곳 지정). 이미 있으면 fast-forward로 업데이트합니다. 그 폴더에 내 작업이 있으면 멈추고, 그대로 두는 방법(`SEORI_NO_PULL=1`이면 지금 상태 그대로 설치)과 버리는 방법을 알려 줍니다.
 - `bun install`과 `bun link`를 돌려, Bun의 전역 bin 폴더를 통해 `seori`를 PATH에 넣습니다.
-- `seori install-skill`로 스킬을 `~/.omp/agent/skills/seori-mode`에 링크합니다(`SKILLS_DIR`로 다른 곳 지정). 심볼릭 링크로, Windows에서는 디렉터리 정션으로 만듭니다. 예전 링크나 seori가 만든 복사본은 새로 바꾸고, 그 자리에 진짜 폴더가 있으면 건드리지 않고 경고만 합니다.
+- `seori install-skill`로 스킬을 `~/.omp/agent/skills/seori-mode`에 링크합니다(`SKILLS_DIR`로 다른 곳 지정). 심볼릭 링크로 만듭니다. 예전 링크나 seori가 만든 복사본은 새로 바꾸고, 그 자리에 진짜 폴더가 있으면 건드리지 않고 경고만 합니다.
 - `~/.seori`(또는 `$SEORI_HOME`)를 권한 700으로 만듭니다.
 - herdr, herdr의 omp 연동, omp, gh, PATH의 `seori`가 없으면 경고합니다.
 
-herdr, omp, gh를 설치하지는 않습니다. `secrets.json`, `messengers.json`, `config.json`은 절대 만들거나 덮어쓰지 않습니다. Windows에서는 `install.ps1`을 씁니다([Windows](#windows)).
+herdr, omp, gh를 설치하지는 않습니다. `secrets.json`, `messengers.json`, `config.json`은 절대 만들거나 덮어쓰지 않습니다.
 
-제거하려면 먼저 `seori up` 창들을 멈추고(듀티, 루프, 데몬 창에서 Ctrl-C, Windows는 그 창들을 닫기, 그다음 워크스페이스 닫기) `seori uninstall`을 실행합니다(또는 `bash install.sh --uninstall`, Windows는 `.\install.ps1 -Uninstall`). 스킬 링크(또는 seori가 만든 복사본)를 지우고 `bun unlink`로 `seori` 명령을 뺍니다. 비밀 정보와 기록이 든 `~/.seori`는 `--purge`를 줄 때만 지웁니다.
+제거하려면 먼저 `seori up` 창들을 멈추고(듀티, 루프, 데몬 창에서 Ctrl-C, 그다음 워크스페이스 닫기) `seori uninstall`을 실행합니다(또는 `bash install.sh --uninstall`). 스킬 링크(또는 seori가 만든 복사본)를 지우고 `bun unlink`로 `seori` 명령을 뺍니다. 비밀 정보와 기록이 든 `~/.seori`는 `--purge`를 줄 때만 지웁니다.
 
 ## 상태 저장 위치
 
@@ -558,30 +511,17 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
 - **omp 기억.** omp의 mnemopi 기억은 PC의 모든 omp가 같이 쓰는 DB 하나입니다. `~/.seori`가 아닌 홈에서는 seori가 그 홈의 `prompts/agent-omp.yml`에 `mnemopi.dbPath`를 `$SEORI_HOME/omp/memories/mnemopi.db`로 적어서, 그 인스턴스의 리드, 듀티, 레인이 자기가 배운 것만 기억하게 합니다. `~/.seori`는 omp 기본 DB(와 이미 쌓인 기억)를 그대로 씁니다.
 - **홈마다 한 번만.** 리드 창, 루프, 데몬 가운데 하나라도 이미 돌고 있는 홈에서 `seori up`을 실행하면 `ALREADY UP name=... home=...; nothing opened`를 출력하고 0으로 끝납니다. 그래서 자동 시작 스크립트는 로그온할 때마다 그냥 `seori up`을 부르면 됩니다. 한 인스턴스만 멈추려면 그 홈의 `SEORI_HOME`으로 `seori down`을 실행하세요. 다른 인스턴스는 계속 돕니다.
 
-두 번째 인스턴스를 더하는 방법(여기서는 `C:\seori-two`에 `seori-two`라는 이름. macOS/Linux는 `export SEORI_HOME=~/seori-two`):
+두 번째 인스턴스를 더하는 방법(여기서는 `~/seori-two`에 `seori-two`라는 이름):
 
 1. 홈을 만들고 이름을 줍니다:
-   ```powershell
-   $env:SEORI_HOME = "C:\seori-two"
-   New-Item -ItemType Directory $env:SEORI_HOME
-   '{ "name": "seori-two" }' | Set-Content "$env:SEORI_HOME\config.json"
+   ```sh
+   export SEORI_HOME=~/seori-two
+   mkdir -m 700 "$SEORI_HOME"
+   echo '{ "name": "seori-two" }' > "$SEORI_HOME/config.json"
    ```
-   Windows에서는 `install.ps1`이 `~\.seori`에 하듯 폴더를 내 계정 전용으로 만드세요: `icacls $env:SEORI_HOME /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"`.
-2. 봇을 따로 만듭니다. 새 봇이나 앱을 만들고([messengers.md](skills/seori-mode/references/messengers.md)), 봇 하나로 데몬 두 개를 섬길 수는 없습니다. 토큰은 `$env:SEORI_HOME\secrets.json`에 적고, 같은 셸에서 `seori msg check <source>`, `seori msg pair <source> --write`를 실행합니다. 계정 전체에 `SEORI_*_TOKEN` 변수를 두지 마세요. 모든 홈의 `secrets.json`보다 먼저 쓰입니다.
-3. 그 셸에서 `seori up --cwd C:\src`로 띄웁니다. `seori` 옆에 `seori-two` 워크스페이스가 열립니다.
-4. 자동 시작. 로그온할 때 herdr를 기다렸다가 홈을 정하고 `seori up`을 실행하는 스크립트를 돌립니다. 두 번 돌아도 괜찮습니다:
-   ```powershell
-   # C:\seori-two\autostart.ps1
-   $env:SEORI_HOME = "C:\seori-two"
-   for ($i = 0; $i -lt 90; $i++) { herdr workspace list *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 2 }
-   Set-Location C:\src
-   seori up --cwd C:\src *>> "$env:SEORI_HOME\autostart.log"
-   ```
-   ```powershell
-   Register-ScheduledTask -TaskName "seori-two Autostart" -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) `
-     -Action (New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\seori-two\autostart.ps1"')
-   ```
-   macOS/Linux에서는 herdr가 뜬 다음 로그인 항목이나 systemd 사용자 유닛에서 같은 두 줄(`export SEORI_HOME=...; seori up --cwd ...`)을 실행하세요.
+2. 봇을 따로 만듭니다. 새 봇이나 앱을 만들고([messengers.md](skills/seori-mode/references/messengers.md)), 봇 하나로 데몬 두 개를 섬길 수는 없습니다. 토큰은 `$SEORI_HOME/secrets.json`에 적고, 같은 셸에서 `seori msg check <source>`, `seori msg pair <source> --write`를 실행합니다. 계정 전체에 `SEORI_*_TOKEN` 변수를 두지 마세요. 모든 홈의 `secrets.json`보다 먼저 쓰입니다.
+3. 그 셸에서 `seori up --cwd ~/src`로 띄웁니다. `seori` 옆에 `seori-two` 워크스페이스가 열립니다.
+4. 자동 시작. herdr가 뜬 다음 systemd 사용자 유닛(Linux)이나 로그인 항목(macOS)에서 같은 두 줄(`export SEORI_HOME=...; seori up --cwd ...`)을 실행하세요. 두 번 돌아도 괜찮습니다.
 
 모든 `seori` 명령은 `SEORI_HOME`에 있는 홈을 대상으로 하니, 그 인스턴스용으로 쓰는 셸마다 설정하세요. seori가 연 창에는 이미 들어 있습니다.
 
@@ -592,8 +532,8 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
 | `SEORI_HOME` | 상태 폴더, 기본 `~/.seori`. 인스턴스마다 하나([한 PC에서 여러 인스턴스 돌리기](#한-pc에서-여러-인스턴스-돌리기)) |
 | `SEORI_AGENT_CMD` | 리뷰어용 omp 명령, 기본 `omp` (리드, 듀티, 레인은 항상 `herdr agent start --kind omp`로 시작) |
 | `SEORI_MODEL` | seori가 띄우는 모든 omp의 모델(`--model`)이자 리뷰어 기본 모델. 비우면 omp 기본 모델 |
-| `SEORI_CMD` | 에이전트와 루프 창이 seori를 부르는 방법, 기본 `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <경로>/src/cli.ts` (Windows는 `bun "<경로>/src/cli.ts"`, 변수는 창 환경으로) |
-| `SEORI_SH` | 감시 명령을 돌릴 sh, 기본 PATH의 `sh` (Windows는 Git for Windows의 `sh.exe`) |
+| `SEORI_CMD` | 에이전트와 루프 창이 seori를 부르는 방법, 기본 `SEORI_HOME=<home> [SEORI_HERDR_SESSION=…] [SEORI_MODEL=…] bun <경로>/src/cli.ts` |
+| `SEORI_SH` | 감시 명령을 돌릴 sh, 기본 PATH의 `sh` |
 | `SEORI_HERDR_SESSION` | 사용할 herdr 세션 이름 |
 | `SEORI_MAX_LANES` | `seori loop --max-lanes` 기본값 (3) |
 | `SEORI_MAX_STARTS` | `seori loop --max-starts` 기본값 (2) |
@@ -609,7 +549,7 @@ bun test         # 가짜 herdr와 gh로 도는 단위 테스트. 모델을 부�
 bun run typecheck
 ```
 
-GitHub Actions가 push와 PR마다 Ubuntu, macOS, Windows에서 둘 다 돌립니다(`.github/workflows/ci.yml`).
+GitHub Actions가 push와 PR마다 Ubuntu와 macOS에서 둘 다 돌립니다(`.github/workflows/ci.yml`).
 
 끝단 테스트 `test/e2e.test.ts`(레인과 시간 단위 루프), `test/e2e-channel.test.ts`(메신저 채널: 한가할 때, 바쁠 때, 몰아서, 리드 재시작, `/new`, 하위 에이전트, Esc, 모델 장애와 복구, 계속된 장애로 포기, 데몬 강제 종료와 설정 변경), `test/e2e-watch.test.ts`(감시: 명령 필터와 종료, 죽은 명령 다시 띄우기, 파일 변경, `/new`, 리드 재시작, 데몬 강제 종료, 깨우기 한도와 다시 켜기, 레인의 감시, 창 상태, 개수 제한, herdr가 꺼진 뒤 남은 명령 없음)는 진짜 herdr(omp 연동 설치), PATH의 omp, 그리고 `SEORI_E2E_OMP=1`이 필요합니다. 진짜 모델을 부르므로 비용이 들고, 조건이 없으면 건너뜁니다. 채널 테스트는 약 18분, 감시 테스트는 약 6분 걸립니다. `SEORI_E2E_ONLY=1,2,3`처럼 일부만 돌릴 수 있습니다(채널 8번 장애 시나리오만 약 9분).
 

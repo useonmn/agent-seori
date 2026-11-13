@@ -88,7 +88,7 @@ export type Item = {
   log: { at: number; kind: "add" | "start" | "reopen" | "done" | "drop" | "ask" | "remind" | "decide"; text: string }[];
 };
 
-/** `load1`: the 1-minute load average, null where the OS has none (Windows reports 0 always: unknown, not idle). */
+/** `load1`: the 1-minute load average, null when the host reports none. */
 export type HostLoad = { load1: number | null; cores: number; memFreePct: number };
 
 export type LoopRun = {

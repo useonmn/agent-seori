@@ -99,9 +99,9 @@ describe("seori up, once per home", () => {
 
 describe("omp memory per home", () => {
   test("every home but ~/.seori points mnemopi.dbPath into itself; ~/.seori keeps omp's own memory", () => {
-    const home = "C:\\Users\\me\\.seori";
+    const home = join(tmpdir(), "owner", ".seori");
     expect(agentOmpConfig(home, home)).toBe(AGENT_OMP_CONFIG);
-    const other = "C:\\Users\\me\\seori-two";
+    const other = join(tmpdir(), "owner", "seori-two");
     const parsed = Bun.YAML.parse(agentOmpConfig(other, home)) as { startup: { setupWizard: boolean }; mnemopi: { dbPath: string } };
     expect(parsed).toEqual({ startup: { setupWizard: false }, mnemopi: { dbPath: ompMemoryDb(other) } });
     expect(ompMemoryDb(other)).toStartWith(other);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
 import { SendUncertain } from "../src/messenger/adapter.ts";
@@ -33,8 +34,9 @@ function setup() {
 
 describe("scrubForOwner", () => {
   test("home becomes ~ and pane ids become <pane>", () => {
-    expect(scrubForOwner("edited /Users/me/dev/x.ts in w1:p12 (also /Users/me)", "/Users/me")).toBe("edited ~/dev/x.ts in <pane> (also ~)");
-    expect(progressText("k", "at /home/u/", "/home/u/")).toBe("[k] at ~/");
+    const h = join(tmpdir(), "owner-home");
+    expect(scrubForOwner(`edited ${h}/dev/x.ts in w1:p12 (also ${h})`, h)).toBe("edited ~/dev/x.ts in <pane> (also ~)");
+    expect(progressText("k", `at ${h}/`, `${h}/`)).toBe("[k] at ~/");
     expect(scrubForOwner("lane in wC:p1 and wE:p2b", "/x")).toBe("lane in <pane> and <pane>");
   });
 });

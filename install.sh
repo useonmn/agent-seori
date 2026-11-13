@@ -2,7 +2,6 @@
 # Installs seori (the `seori` CLI) and the seori-mode skill for omp.
 # Usage: curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 # Uninstall: bash install.sh --uninstall [--purge]   (or: seori uninstall [--purge]); --purge also deletes SEORI_HOME
-# Windows: use install.ps1 (PowerShell) instead.
 # Needs: git, bun 1.3+. Checks (never installs): herdr, herdr's omp integration, omp.
 # Optional env:
 #   SEORI_SRC     where the checkout lives (default ~/.seori/src)
@@ -74,8 +73,7 @@ warn() {
   warnings=$((warnings + 1))
 }
 
-# The skill link is made by seori itself (src/install.ts): a symlink here, a junction on Windows (Git Bash's ln would
-# copy), and an old link or seori copy is replaced so a reinstall never keeps a stale skill.
+# The skill link is made by seori itself (src/install.ts): a symlink, and an old link or seori copy is replaced so a reinstall never keeps a stale skill.
 if skill_out="$(bun "$src/src/cli.ts" install-skill --skills-dir "$skills")"; then
   skill_note="${skill_out#SKILL }"
 else

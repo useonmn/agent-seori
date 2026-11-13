@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, statfsSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type GuardThresholds, type SeoriConfig } from "./config.ts";
 import { tellLead, type Deps, type DutyEvent } from "./harness.ts";
@@ -10,8 +10,7 @@ import { DeliveryUncertain, HerdrError } from "./herdr.ts";
 /**
  * One reading of the host. `loadPct` is the 1-minute load per core in percent (100 = every core busy). Disk is the free
  * space on $SEORI_HOME's volume. A figure that could not be read is undefined, with the reason in `unreadable`; it is
- * never guessed as 0 or as fine. `loadPct` is undefined where the OS has no load average (Windows): shown as unknown,
- * it never alerts.
+ * never guessed as 0 or as fine. `loadPct` is undefined when the host reports no load average: shown as unknown, it never alerts.
  */
 export type HostSample = {
   readonly loadPct?: number;
@@ -55,7 +54,7 @@ export function parsePaneCount(stdout: string): number | undefined {
  * Reads the host: load and memory from Deps.host, free disk of $SEORI_HOME's volume from `df -k -P`, and the live pane
  * count from `herdr pane list` (in seori's herdr session when SEORI_HERDR_SESSION is set, as Herdr does).
  */
-export async function sampleHost(d: Deps, platform: string = process.platform): Promise<HostSample> {
+export async function sampleHost(d: Deps): Promise<HostSample> {
   const host = d.host();
   const unreadable: string[] = [];
 
@@ -63,15 +62,7 @@ export async function sampleHost(d: Deps, platform: string = process.platform): 
   const df = await d.exec("df", ["-k", "-P", d.store.root]).catch((e: unknown) => ({ code: 127, stdout: "", stderr: e instanceof Error ? e.message : String(e) }));
   const kb = df.code === 0 ? parseDfAvailableKb(df.stdout) : undefined;
   if (kb !== undefined) diskFreeGb = kb / KB_PER_GB;
-  else if (platform === "win32") {
-    // Windows usually has no df (Git for Windows ships one, not always on PATH): the volume's free space comes from statfs.
-    try {
-      const fs = statfsSync(d.store.root);
-      diskFreeGb = (fs.bavail * fs.bsize) / 1024 / KB_PER_GB;
-    } catch (e) {
-      unreadable.push(`disk free unreadable (statfs: ${e instanceof Error ? e.message : String(e)})`);
-    }
-  } else unreadable.push(`disk free unreadable (df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)})`);
+  else unreadable.push(`disk free unreadable (df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)})`);
 
   let panes: number | undefined;
   const session = process.env["SEORI_HERDR_SESSION"];

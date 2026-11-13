@@ -12,11 +12,10 @@ import { lockFile } from "./store.ts";
 export const HEAVY_POLL_MS = 15_000;
 
 /**
- * The 1-minute load per core in percent, the figure config.heavy.maxLoadPct is compared with. Undefined on Windows,
- * which has no load average: there only the slots limit heavy commands.
+ * The 1-minute load per core in percent, the figure config.heavy.maxLoadPct is compared with.
  */
 export const loadPctNow = (): number | undefined =>
-  process.platform === "win32" ? undefined : Math.round(((loadavg()[0] ?? 0) / Math.max(1, cpus().length)) * 100);
+  Math.round(((loadavg()[0] ?? 0) / Math.max(1, cpus().length)) * 100);
 
 export type HeavyOpts = {
   readonly config: SeoriConfig;
