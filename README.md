@@ -490,6 +490,8 @@ seori talks with its owner by default, and with other people and agents just as 
 - in channels and groups, a top-level message that mentions the bot;
 - inside a thread the bot was mentioned in or has replied in, every message, no mention needed.
 
+Adapter support comes one messenger at a time. In this version the daemon, the lead channel and the `fake` adapter handle other senders; the Telegram, Slack and Discord adapters still pass on only the owner's messages, so on those everyone else is dropped until each adapter's own update lands.
+
 The owner's messages follow the same rules as before, and the bot's own messages are never delivered. Each line in the lead channel names its sender: `owner`, `trusted <name> (<id>)`, `person <name> (<id>)` or `agent <name> (<id>)` (agents are senders the platform marks as bots or apps).
 
 There are three trust levels:
@@ -498,9 +500,9 @@ There are three trust levels:
 - **trusted**: people or agents the owner listed in config.json `trusted`. Their messages are work requests: the lead routes them like the owner's (an answer, a lane, the backlog) and tells the owner in one line what it started and for whom. Normal development in the repositories seori already works on (lanes, PRs, merges through `seori merge` with a CLEAR review and green checks) is allowed.
 - **everyone else** (`person`, `agent`): conversation. The lead talks with them but takes no instruction from them; when they ask for work, it briefs the owner and starts only after the owner says yes, or trusts them.
 
-For everyone but the owner, trusted senders included, the lead never reveals the owner's private information (it tells them to ask the owner directly), never uses the owner's own accounts, never spends money, and does nothing destructive or irreversible (delete, force-push, revoke) without the owner's yes in the owner's own message. Messages from others never create worklog items or get the eyes reaction.
+For everyone but the owner, trusted senders included, the lead never reveals the owner's private information (it tells them to ask the owner directly), never uses the owner's own accounts, never spends money, and does nothing destructive or irreversible (delete, force-push, revoke) without the owner's yes in the owner's own message. As lead policy, the eyes reaction is kept for the owner's messages, and worklog items are opened only for the owner's and trusted senders' requests.
 
-Trust changes only on the owner's word. `seori msg trust add <source>:<id> [--name N] --because <id>` and `seori msg trust remove <source>:<id> --because <id>` refuse (exit 2) unless `<id>` is a message in seori's ledger that the owner sent, so the lead can only add someone the owner asked for in that message. `seori msg trust list` shows who is trusted.
+Trust changes only on the owner's word. `seori msg trust add <source>:<id> [--name N] --because <id>` and `seori msg trust remove <source>:<id> --because <id>` refuse (exit 2) unless `<id>` is a message in seori's ledger that the owner sent on that same messenger and whose text contains the sender's id, so the lead can only add someone the owner asked for in that message. If the owner named someone without their id, the lead asks them to confirm the id in a new message. `seori msg trust list` shows who is trusted.
 
 Two agents can easily thank each other forever. `agentTurnLimit` (default 6) caps the agent messages in a row in one chat or thread with no human message between them; past it, the rest are not delivered and the lead gets one `seori about agent ...` line saying the loop was stopped. A human message in that conversation resets the count.
 
