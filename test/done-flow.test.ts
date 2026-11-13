@@ -189,6 +189,16 @@ describe("autoCloseTick", () => {
     expect(await autoCloseTick(d, noIo)).toEqual([]);
   });
 
+  test("a lane being migrated is not closed, however old its claim", async () => {
+    const { d, w, lane, state } = await claimed();
+    state.merged = true;
+    d.store.saveLane({ ...d.store.lane("fix-login")!, migration: true });
+    w.clock += 60 * 60_000;
+    expect(await autoCloseTick(d, noIo)).toEqual([]);
+    expect(w.panes.has(lane.paneId)).toBe(true);
+    expect(d.store.lane("fix-login")!.status).toBe("ready");
+  });
+
   test("a failed check objects to the claim with the reasons and tells the lead NOT-DONE", async () => {
     const { d, w, lead, pane } = await claimed();
     w.clock += 5 * 60_000;

@@ -12,7 +12,7 @@ import { swapAgent } from "./migrate-swap.ts";
 import { refText, sameSession } from "./refs.ts";
 import { deliverOrThrow } from "./runtime/index.ts";
 import { formatRef, type CreateSpec, type RuntimeKind, type SessionRef, type SessionRuntime } from "./runtime/types.ts";
-import type { Lane, Role } from "./store.ts";
+import { KEY_RE, type Lane, type Role } from "./store.ts";
 
 export type Target = { readonly lane?: string; readonly role?: Role; readonly all?: boolean };
 
@@ -187,6 +187,12 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtensi
     const lane = d.store.lane(key);
     if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
     if (isSelf(key, lane.sessionRef)) continue;
+    // The replacement starts on a kickoff, which would wake a lane only the owner may resume (seori pause).
+    if (lane.status === "paused" && readJournal(d.store.root, key) === undefined) {
+      if (!t.all) throw new Refusal(`lane ${key} is paused; resume it first (seori resume ${key})`);
+      opts.log(`SKIP ${key} paused`);
+      continue;
+    }
     code = Math.max(code, await migrateName(d, key, lane.sessionRef, opts, () => laneSubject(d, key)));
   }
   for (const role of roles) {
@@ -218,6 +224,7 @@ export async function runMigrate(d: Deps, flag: (name: string) => string | undef
   if (!(Number.isFinite(wait) && wait >= 0)) throw new Refusal("--wait-minutes must be a number of minutes, 0 or more");
   const lane = flag("lane");
   if (lane === "") throw new Refusal("--lane needs a lane key");
+  if (lane !== undefined && !KEY_RE.test(lane)) throw new Refusal(`--lane ${JSON.stringify(lane)} is not a lane key`);
   const self = d.runtimes.selfAny(process.env);
   return migrate(
     d,

@@ -359,6 +359,18 @@ describe("seori migrate: roles, --all and --resume", () => {
     const { d } = migrateWorld();
     await expect(main(["migrate", "--role", "duty-loop"], d)).rejects.toThrow(/--role must be lead or duty/);
     await expect(main(["migrate"], d)).rejects.toThrow(Refusal);
+    await expect(main(["migrate", "--lane", "../x"], d)).rejects.toThrow(/is not a lane key/);
+  });
+
+  test("a paused lane is refused by name and skipped under --all (the lead still goes): the lane is asked nothing and stays paused", async () => {
+    const { d, lines, opts, asks } = migrateWorld();
+    d.store.saveLane({ ...d.store.lane("k")!, status: "paused" });
+    await expect(migrate(d, { lane: "k" }, opts())).rejects.toThrow("lane k is paused");
+    expect(await migrate(d, { all: true }, opts())).toBe(0);
+    expect(lines).toEqual(["SKIP k paused", "MIGRATED lead w1:p1 -> hc:t1"]);
+    expect(asks().filter((a) => a.startsWith("[MIGRATE k]"))).toEqual([]);
+    expect(d.store.lane("k")!.status).toBe("paused");
+    expect(d.store.lane("k")!.sessionRef).toEqual(OLD);
   });
 
   test("--resume is refused when no omp session path is on record", async () => {
