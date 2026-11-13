@@ -1,5 +1,5 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "./harness.ts";
 import { renderHandoff } from "./migrate-brief.ts";
@@ -29,6 +29,8 @@ export type Subject = {
   readonly open: (rt: SessionRuntime, briefPath: string, resume: string | undefined) => Promise<SessionRef>;
   readonly setHold: (on: boolean) => void;
   readonly switchTo: (ref: SessionRef) => void;
+  /** The session the record points at now (the lane's sessionRef, the role's entry in roles.json). */
+  readonly current: () => SessionRef | undefined;
 };
 
 export const POLL_MS = 5_000;
@@ -39,10 +41,12 @@ export const askText = (d: Deps, name: string): string =>
   `[MIGRATE ${name}] write a handoff checkpoint now (goal, open todos, last state) to ${handoffPath(d, name)}, then stop`;
 
 /**
- * Step (2): waits until the old agent is no longer working, asks it for a checkpoint, and waits until it stops working
- * again. Nothing is ever delivered to a working agent: `working` (nothing delivered) when it is still working after
- * the wait. `blocked` is returned without delivering anything (a blocked agent waits for a person).
- * `gone`: no agent there to ask (a gone session, a bare shell), so the capture says so.
+ * Step (2): waits until the old agent is no longer working, asks it for a checkpoint, then waits until it has started
+ * on the ask (it reports working, or the checkpoint file appears) and stopped again, within --wait-minutes of the ask.
+ * One that never starts and writes nothing in that time is `stopped` too: the capture goes on without a checkpoint.
+ * Nothing is ever delivered to a working agent: `working` (nothing delivered) when it is still working after the
+ * first wait, or (ask delivered) still working on it after the second. `blocked` is returned without delivering
+ * anything (a blocked agent waits for a person). `gone`: no agent there to ask (a gone session, a bare shell).
  */
 export async function askCheckpoint(d: Deps, s: Subject, opts: MigrateOpts): Promise<"stopped" | "gone" | "blocked" | "working"> {
   const rt = d.runtimes.for(s.from);
@@ -57,11 +61,17 @@ export async function askCheckpoint(d: Deps, s: Subject, opts: MigrateOpts): Pro
   const out = await rt.deliver(s.from, askText(d, s.name), { when: "idle" });
   if (out.kind === "no-agent") return "gone";
   if (out.kind === "not-ready") return out.status === "blocked" ? "blocked" : "working";
-  const deadline = d.now() + opts.waitMinutes * 60_000;
+  // The prompt is submitted before omp turns working: an idle read right after the ask does not mean it is done.
+  const askedAt = d.now();
+  const deadline = askedAt + opts.waitMinutes * 60_000;
+  const handoff = handoffPath(d, s.name);
+  const wrote = (): boolean => existsSync(handoff) && statSync(handoff).mtimeMs >= askedAt;
+  let started = false;
   for (let status: AgentStatus = await rt.status(s.from); ; status = await rt.status(s.from)) {
     if (status === "gone" || status === "shell") return "gone";
-    if (status !== "working") return "stopped";
-    if (d.now() >= deadline) return "working";
+    if (status === "working") started = true;
+    else if (started || status === "blocked" || wrote()) return "stopped";
+    if (d.now() >= deadline) return started ? "working" : "stopped";
     await d.sleep(POLL_MS);
   }
 }

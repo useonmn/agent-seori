@@ -48,6 +48,8 @@ test.skipIf(!enabled)("a herdr lane migrates to a labelled hc terminal whose age
   d.store.enqueue(old, { at: 1, from: "cli", text: "E2E-QUEUED" });
 
   const lines: string[] = [];
+  // The brief is named after the run's start: the old pane never starts on the ask, so the wait moves the clock on.
+  const at = w.clock;
   const code = await migrate(d, { lane: "k" }, { to: "hc", dryRun: false, waitMinutes: 1, resume: false, log: (l) => void lines.push(l) });
   expect(code).toBe(0);
   const address = /^MIGRATED k w1:p3 -> hc:(t[0-9a-z]+)$/.exec(lines.join("\n"))?.[1];
@@ -56,7 +58,7 @@ test.skipIf(!enabled)("a herdr lane migrates to a labelled hc terminal whose age
   const got = await terminal(address!);
   expect(got["state"]).toBe("live");
   expect(got["labels"]).toMatchObject({ "seori.group": name, "seori.lane": "k", "seori.role": "lane" });
-  const brief = join(home, "briefs", `k.migrate-${w.clock}.md`);
+  const brief = join(home, "briefs", `k.migrate-${at}.md`);
   expect(readFileSync(brief, "utf8")).toContain("E2E-OLD-SCREEN");
   await until("the kickoff on the handoff brief to reach the fake omp", async () =>
     (await screen(address!)).includes(`Read your brief at ${brief}`) ? true : undefined,
