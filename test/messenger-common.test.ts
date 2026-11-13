@@ -53,6 +53,14 @@ describe("secret", () => {
     chmodSync(join(root, "secrets.json"), 0o644);
     expect(() => secret(root, "telegram", "token", "T", {}, readableByOthers)).toThrow("must not be readable by others");
   });
+
+  test("a truncated secrets.json is a configuration error naming the file", () => {
+    const root = home();
+    const path = join(root, "secrets.json");
+    writeFileSync(path, '{ "telegram": ');
+    chmodSync(path, 0o600);
+    expect(() => secret(root, "telegram", "token", "T", {})).toThrow(path);
+  });
 });
 
 describe("httpJson", () => {
