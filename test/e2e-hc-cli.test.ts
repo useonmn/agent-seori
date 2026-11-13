@@ -144,6 +144,7 @@ test.skipIf(!enabled)(
 
     const ctl = () => readFileSync(systemctlLog, "utf8").split("\n").filter(Boolean);
     expect(ctl()).toEqual([
+      "--user show-environment",
       "--user daemon-reload",
       `--user enable --now ${unitNames[0]}`,
       `--user enable --now ${unitNames[1]} ${unitNames[2]}`,
@@ -156,7 +157,7 @@ test.skipIf(!enabled)(
     expect(down).toContain(`CLOSED hc:${lead}`);
     expect(down).toContain(`CLOSED hc:${duty}`);
     // stop, then disable (each tolerant of a unit that is already gone), then a reload
-    expect(ctl().slice(3)).toEqual([`--user stop ${unitNames.join(" ")}`, `--user disable ${unitNames.join(" ")}`, "--user daemon-reload"]);
+    expect(ctl().slice(4)).toEqual([`--user stop ${unitNames.join(" ")}`, `--user disable ${unitNames.join(" ")}`, "--user daemon-reload"]);
     expect(readdirSync(unitDir)).toEqual([]);
     expect(rows(await hc("ls", "--label", `seori.group=${name}`))).toEqual([]);
   },
