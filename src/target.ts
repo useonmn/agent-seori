@@ -24,7 +24,8 @@ export function resolveTarget(d: Deps, target: string): SessionRef {
   if (lane && lane.status !== "done") {
     // A lost lane read back from a herdr record keeps the herdr pane id: nothing on hc can take its messages.
     if (parseRef(`hc:${lane.sessionRef.id}`) === undefined) {
-      throw new Refusal(`lane ${target} ran in the herdr pane ${lane.sessionRef.id}; seori runs on hc only, so it cannot take messages`);
+      const pane = lane.sessionRef.id ? ` ${lane.sessionRef.id}` : "";
+      throw new Refusal(`lane ${target} ran in the herdr pane${pane}; seori runs on hc only, so it cannot take messages`);
     }
     return lane.sessionRef;
   }

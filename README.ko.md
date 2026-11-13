@@ -532,7 +532,7 @@ seori watch stop dev
 | `supervision.defaults.costUsd` | `null` | 레인마다 비용 한도(미국 달러). `null`은 끔. hc에서는 적용되지 않습니다. hc에서는 omp가 세션 파일을 알려 주지 않아 값을 알 수 없기 때문입니다 |
 | `supervision.hungAfterMin` | `20` | 보고도 파일 변경도 없이 몇 분 지나면 working 레인을 멈춘 것으로 알리는지 |
 | `supervision.activityPaths` | `[]` | 바뀌면 모든 레인의 진행으로 치는 파일이나 폴더(각 레인 폴더 기준, 폴더는 항목이 생기거나 지워지거나 이름이 바뀔 때) |
-| `supervision.ulwPlan.tokens` | `300000` | 한도 플래그 없이 시작한 ulw-plan 레인의 토큰 한도. `supervision.defaults.tokens`가 있으면 그것을 씀. `null`은 끔. hc에서는 적용되지 않습니다. hc에서는 omp가 세션 파일을 알려 주지 않아 값을 알 수 없기 때문입니다. 그래서 아래의 60분 시간 한도만 적용됩니다 |
+| `supervision.ulwPlan.tokens` | `300000` | 한도 플래그 없이 시작한 ulw-plan 레인의 토큰 한도. `supervision.defaults.tokens`가 있으면 그것을 씀. `null`은 끔. hc에서는 적용되지 않습니다. hc에서는 omp가 세션 파일을 알려 주지 않아 값을 알 수 없기 때문입니다. 그래서 시간 한도(기본 60분)만 적용됩니다 |
 | `supervision.ulwPlan.wallMinutes` | `60` | 한도 플래그 없이 시작한 ulw-plan 레인의 시간 한도(분). `supervision.defaults.wallMinutes`가 있으면 그것을 씀. `null`은 끔 |
 | `guard.loadAlertPct` | `150` | 코어당 1분 부하(%)가 이보다 높으면 알림 |
 | `guard.loadOkPct` | `80` | 알림을 풀려면 부하(%)가 이보다 낮아져야 함 |
