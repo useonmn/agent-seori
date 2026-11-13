@@ -71,15 +71,26 @@ describe("records a herdr seori wrote", () => {
     expect(() => d.store.inboxPanes()).toThrow("names the herdr pane w1:p3");
   });
 
-  test("a duty loop pass with an open herdr lane prints one DUTY ERROR line naming the file and returns; other errors still throw", async () => {
-    const d = home();
+  test("a duty loop pass skips an open herdr lane and a herdr inbox with messages, names each once, and still delivers to hc; other errors still throw", async () => {
+    const w = new World();
+    const d = w.deps();
+    const lead = w.addPane("t1", "idle");
+    d.store.setRole("lead", { runtime: "hc", id: "t1" });
     const file = join(d.store.root, "lanes", "old-lane.json");
     writeFileSync(file, JSON.stringify(OLD_LANE));
+    const inbox = join(d.store.root, "inbox", "w1_p3.jsonl");
+    writeFileSync(inbox, `${JSON.stringify({ at: 1, from: "cli", text: "old" })}\n`);
+    d.store.enqueue({ runtime: "hc", id: "t1" }, { at: 2, from: "cli", text: "for the lead" });
     const out: string[] = [];
     const err: string[] = [];
     await dutyPass(d, (l) => void out.push(l), (l) => void err.push(l));
-    expect(err).toEqual([`DUTY ERROR ${file} names the herdr pane w1:p3; seori runs on hc only: close that pane and remove ${file}`]);
-    expect(out).toEqual([]);
+    expect(err).toEqual([
+      `DUTY ERROR ${inbox} names the herdr pane w1:p3; seori runs on hc only: close that pane and read its 1 queued message(s), then remove ${inbox} (they are dropped with it)`,
+      `DUTY ERROR ${file} names the herdr pane w1:p3; seori runs on hc only: close that pane and remove ${file}`,
+    ]);
+    expect(out).toContain("DUTY hc:t1 flushed");
+    expect(lead.received).toEqual(["for the lead"]);
+    expect(() => d.store.lanes()).toThrow(HerdrRecord);
     const broken = { ...d, store: Object.assign(Object.create(d.store), { inboxPanes: () => { throw new Error("disk gone"); } }) };
     await expect(dutyPass(broken, () => {}, () => {})).rejects.toThrow("disk gone");
   });

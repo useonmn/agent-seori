@@ -255,6 +255,9 @@ export function lockFile(path: string, now: number): (() => void) | undefined {
 }
 
 export class Store {
+  /** Set on a view from skippingHerdr: a live herdr record is reported here and skipped instead of refused. */
+  private onHerdr?: (e: HerdrRecord) => void;
+
   constructor(readonly root: string = process.env["SEORI_HOME"] ?? join(homedir(), ".seori")) {
     // The home holds secrets and the owner's messages: one seori creates is the owner's alone. An existing one keeps its mode.
     if (!existsSync(root)) mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -282,14 +285,33 @@ export class Store {
     this.writeJson(join(this.root, "lanes", `${lane.key}.json`), { ...lane, paneId: lane.sessionRef.id, tabId: "" });
   }
 
+  /**
+   * A view of this store whose lanes() and inboxPanes() skip a live herdr record, reporting it to `report`, instead of
+   * refusing it: the duty pass names the file and still supervises every hc lane.
+   */
+  skippingHerdr(report: (e: HerdrRecord) => void): Store {
+    return Object.assign(Object.create(this) as Store, { onHerdr: report });
+  }
+
+  /** `e` refused a record: rethrown, or reported and skipped on a skippingHerdr view. */
+  private herdrRefused(e: unknown): [] {
+    if (!(e instanceof HerdrRecord) || this.onHerdr === undefined) throw e;
+    this.onHerdr(e);
+    return [];
+  }
+
   lanes(): Lane[] {
     return readdirSync(join(this.root, "lanes"))
       .filter((f) => f.endsWith(".json"))
       .flatMap((f) => {
         const file = join(this.root, "lanes", f);
         const raw = this.readJson<StoredLane>(file);
-        const lane = raw && checkedLane(raw, file);
-        return lane === undefined ? [] : [lane];
+        try {
+          const lane = raw && checkedLane(raw, file);
+          return lane === undefined ? [] : [lane];
+        } catch (e) {
+          return this.herdrRefused(e);
+        }
       })
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
   }
@@ -375,7 +397,8 @@ export class Store {
 
   /**
    * Sessions with queued messages. A herdr pane's inbox (no `hc--` prefix) that is empty is skipped; one that still
-   * holds entries is refused (HerdrRecord), since nothing on hc can deliver them.
+   * holds entries is refused (HerdrRecord, or reported and skipped on a skippingHerdr view), since nothing on hc can
+   * deliver them.
    */
   inboxPanes(): SessionRef[] {
     const dir = join(this.root, "inbox");
@@ -385,10 +408,9 @@ export class Store {
         const stem = f.slice(0, -".jsonl".length);
         if (stem.startsWith(HC_INBOX_PREFIX)) return [{ runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) }];
         const left = readQueue(join(dir, f)).length;
-        if (left > 0) {
-          throw new HerdrRecord(join(dir, f), stem.replaceAll("_", ":"), `read its ${left} queued message(s), then remove ${join(dir, f)} (they are dropped with it)`);
-        }
-        return [];
+        if (left === 0) return [];
+        const fix = `read its ${left} queued message(s), then remove ${join(dir, f)} (they are dropped with it)`;
+        return this.herdrRefused(new HerdrRecord(join(dir, f), stem.replaceAll("_", ":"), fix));
       })
       .filter((r) => this.queued(r).length > 0);
   }
