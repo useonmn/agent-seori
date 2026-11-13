@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { join } from "node:path";
 import { envExec, HcError, hcCall } from "../src/runtime/hc/exec.ts";
 import { HcRuntime } from "../src/runtime/hc/index.ts";
+import { MESSENGER_TOKEN_ENV } from "../src/runtime/hc/sessions.ts";
 import type { SessionRef } from "../src/runtime/types.ts";
 
 // The hc adapter against real hc (herdr-core) on ONE isolated core, only with SEORI_E2E_HC=1. The core is chosen by
@@ -109,7 +110,7 @@ test.skipIf(!enabled)(
 
     const got = await hc("get", id);
     expect(got["labels"]).toMatchObject({ "seori.group": group, "seori.role": "lane", "seori.lane": "e2e lane" });
-    expect(got["argv"]).toEqual(["env", "FOO=1", "/bin/bash"]);
+    expect(got["argv"]).toEqual(["env", ...MESSENGER_TOKEN_ENV.flatMap((k) => ["-u", k]), "FOO=1", "/bin/bash"]);
     expect(got["notify"]).toBe(false);
     expect(got["status"]).toBeNull();
 

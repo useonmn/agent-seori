@@ -50,6 +50,8 @@ export type SessionInfo = {
   readonly cwd?: string;
   readonly status?: AgentStatus;
   readonly agent?: string;
+  /** hc, listed with `homes`: the seori.home label (homeTag of the home that opened it); absent on an unlabelled terminal. */
+  readonly home?: string;
 };
 
 /** One session group as the runtime lists it (herdr: a workspace and its label). */
@@ -71,7 +73,15 @@ export type CreateSpec = {
   readonly container: "workspace-root" | "tab" | "split-below";
   readonly group?: string;
   readonly near?: SessionRef;
+  /** The seori home that opens the session. hc labels the terminal `seori.home=<homeTag(home)>`; herdr ignores it. */
+  readonly home?: string;
 };
+
+/**
+ * `group`: one session group. `homes`: also read which seori home opened each session into SessionInfo.home (hc: its
+ * seori.home label, one lookup per session; herdr ignores it).
+ */
+export type ListFilter = { readonly group?: string; readonly homes?: boolean };
 
 export type DeliverWhen = "idle" | "working" | "any";
 /** `when`: the status the text may be typed under (hc: --if idle / --if working / none). `force`: type into a blocked agent (hc --force; herdr: no-op). */
@@ -110,7 +120,7 @@ export interface SessionRuntime {
   /** herdr: `pane run <id> <command>`. */
   start(ref: SessionRef, command: string): Promise<void>;
   /** Every session (of one group when given). Throws when the runtime's answer cannot be read: a failed list is never an empty one. */
-  list(filter?: { readonly group?: string }): Promise<readonly SessionInfo[]>;
+  list(filter?: ListFilter): Promise<readonly SessionInfo[]>;
   probe(ref: SessionRef): Promise<Probe>;
   /** herdr: `pane read --source recent-unwrapped` (always unwrapped). hc: `read`; unwrapped joins rows as wide as the terminal's `cols`. */
   read(ref: SessionRef, lines: number, opts?: ReadOptions): Promise<string>;

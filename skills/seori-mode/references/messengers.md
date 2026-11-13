@@ -104,7 +104,7 @@ seori reads only the DM with the owner and the group DMs, channels and threads w
 chmod 600 ~/.seori/secrets.json
 ```
 
-Write the file with a file tool, never through a shell string or `echo`, and never print a token back. Environment variables win over the file if set: `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`, `SEORI_DISCORD_TOKEN`.
+Write the file with a file tool, never through a shell string or `echo`, and never print a token back. Environment variables win over the file if set: `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`, `SEORI_DISCORD_TOKEN`. On hc seori unsets them in the lead, duty, lane and hourly-loop terminals, so the lead's `seori msg` needs the tokens in this file.
 
 ## 3. Pair the owner
 

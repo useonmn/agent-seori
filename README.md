@@ -403,7 +403,7 @@ The lead can take your requests from a messenger as well as from its terminal. C
 
 A Slack app marked as an agent app (Agents in the app settings, scope `assistant:write`) takes `"options": { "agent": true }`: every owner DM is answered in its own thread (its `thread_ts`, or the message itself for a top-level one), and once the lead has it the thread shows a working status (`assistant.threads.setStatus`, text `options.agentStatus`, default `is working on it...`). Slack drops a status after two minutes, so the daemon sets it again every minute until seori replies in that thread (a top-level reply clears it too) or 30 minutes pass. Without `agent`, DMs behave as before.
 
-Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuses a file others can read), or in environment variables, which win:
+Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuses a file others can read), or in environment variables, which win. On hc, seori unsets these variables in the lead, duty, lane and hourly-loop terminals, so there they reach only the daemon and the duty loop: keep the tokens in `secrets.json` so the lead's `seori msg` can send:
 
 ```json
 { "telegram": { "token": "123:abc" }, "slack": { "botToken": "xoxb-...", "appToken": "xapp-..." }, "discord": { "token": "..." } }
@@ -667,7 +667,7 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 | `SEORI_MAX_LOAD` | default for `seori loop --max-load` |
 | `SEORI_LANE` | set by seori in a lane's terminal; the default sender of `seori send` and the default owner of `seori watch add` |
 | `PI_CONFIG_FILES` | omp only: omp settings files; seori appends `$SEORI_HOME/prompts/agent-omp.yml` (`startup.setupWizard: false`) for the lead, duty and lane omp, so an omp whose setup version is behind still starts at its prompt instead of the onboarding wizard (log in to a provider with `omp login` first), and `$SEORI_HOME/prompts/lead-omp.yml` (`advisor.syncBacklog: strict`) for the lead's omp only. In a home other than `~/.seori`, `agent-omp.yml` also sets `mnemopi.dbPath` to `$SEORI_HOME/omp/memories/mnemopi.db` |
-| `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` |
+| `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` (on hc, not in the lead, duty, lane or hourly-loop terminals) |
 
 ## Testing
 

@@ -1,13 +1,35 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
+import { homeTag } from "../../systemd.ts";
 import type { Exec } from "../exec.ts";
-import type { CreateSpec, GroupInfo, SessionInfo, SessionRef } from "../types.ts";
+import type { CreateSpec, GroupInfo, SessionInfo, SessionRef, SessionRole } from "../types.ts";
 import { hcCall, isKind } from "./exec.ts";
 import { statusWord } from "./probe.ts";
 
 /** The label that groups seori's terminals (hc has no workspaces); never `dori.group`. */
 export const GROUP_LABEL = "seori.group";
+/** The label naming the seori home a terminal was opened for (its homeTag), so a down closes only its own home's terminals. */
+export const HOME_LABEL = "seori.home";
 /** The group of a spec that names none. */
 export const DEFAULT_GROUP = "seori";
+/**
+ * The messenger token variables the adapters read (telegram.ts, discord.ts, slack.ts; a test keeps this list equal to
+ * theirs). A terminal inherits the hc core's environment, so an agent terminal unsets them and a token exported where
+ * the core started is not in the environment of the commands a lane, the lead or duty runs. This is defence in depth
+ * only: those commands run as the owner and can still read $SEORI_HOME/secrets.json.
+ */
+export const MESSENGER_TOKEN_ENV = [
+  "SEORI_TELEGRAM_TOKEN",
+  "SEORI_DISCORD_TOKEN",
+  "SEORI_SLACK_BOT_TOKEN",
+  "SEORI_SLACK_APP_TOKEN",
+  "SEORI_SLACK_USER_TOKEN",
+  "SEORI_SLACK_COOKIE",
+] as const;
+/**
+ * The terminals that run only seori's own resident process and talk to the messengers (macOS): the daemon and the duty
+ * loop, whose alerts go out through the adapters. The hourly loop sends nothing to a messenger.
+ */
+const TOKEN_ROLES: ReadonlySet<SessionRole> = new Set<SessionRole>(["daemon", "duty-loop"]);
 const NAME_MAX = 32;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const RM_RETRIES = 5;
@@ -42,7 +64,10 @@ async function liveRows(exec: Exec, group?: string): Promise<Record<string, unkn
   return rows(result).filter((t) => isLocal(str(t["address"])) && t["state"] === "live");
 }
 
-/** The `hc run` argv for a spec: labels for grouping, the env through the `env` utility (one argv element per K=V). */
+/**
+ * The `hc run` argv for a spec: labels for grouping, the env through the `env` utility (one argv element per K=V), the
+ * messenger tokens unset first except in a TOKEN_ROLES terminal.
+ */
 export function createArgv(spec: CreateSpec, shell: string, name: string | undefined): string[] {
   for (const key of Object.keys(spec.env))
     if (!ENV_KEY.test(key)) throw new Error(`env key ${JSON.stringify(key)} is not a shell variable name`);
@@ -51,6 +76,7 @@ export function createArgv(spec: CreateSpec, shell: string, name: string | undef
     `seori.role=${spec.role}`,
     `seori.name=${spec.name}`,
     ...(spec.role === "lane" ? [`seori.lane=${spec.name}`] : []),
+    ...(spec.home === undefined ? [] : [`${HOME_LABEL}=${homeTag(spec.home)}`]),
   ];
   return [
     "run",
@@ -63,6 +89,7 @@ export function createArgv(spec: CreateSpec, shell: string, name: string | undef
     ...(name === undefined ? [] : ["--name", name]),
     "--",
     "env",
+    ...(TOKEN_ROLES.has(spec.role) ? [] : MESSENGER_TOKEN_ENV.flatMap((k) => ["-u", k])),
     ...Object.entries(spec.env).map(([k, v]) => `${k}=${v}`),
     shell,
   ];
@@ -94,19 +121,47 @@ export async function start(exec: Exec, id: string, command: string): Promise<vo
   await hcCall(exec, ["send", id, "--", command]);
 }
 
-/** This core's live terminals, all of them or those labelled `seori.group=<group>`. */
-export async function list(exec: Exec, group: string | undefined): Promise<SessionInfo[]> {
-  return (await liveRows(exec, group)).map((t): SessionInfo => {
+/** One label of an `hc get` answer. */
+const labelOf = (got: Record<string, unknown>, key: string): string | undefined => {
+  const labels = got["labels"];
+  return typeof labels === "object" && labels !== null ? str((labels as Record<string, unknown>)[key]) : undefined;
+};
+
+/**
+ * This core's live terminals, all of them or those labelled `seori.group=<group>`. With `homes`, each terminal's
+ * seori.home label is read with `hc get` (`hc ls` rows carry no labels) into `home`; one removed in between is skipped.
+ */
+export async function list(exec: Exec, group: string | undefined, homes = false): Promise<SessionInfo[]> {
+  const out: SessionInfo[] = [];
+  for (const t of await liveRows(exec, group)) {
     const id = str(t["address"]) ?? "";
-    const [name, cwd, status, agent] = [str(t["name"]), str(t["cwd"]), statusWord(t["status"]), str(t["agent"])];
-    return {
-      ref: { runtime: "hc", id, ...(group === undefined ? {} : { group }) },
-      ...(name === undefined ? {} : { name }),
-      ...(cwd === undefined ? {} : { cwd }),
-      ...(status === undefined ? {} : { status }),
-      ...(agent === undefined ? {} : { agent }),
-    };
-  });
+    let home: string | undefined;
+    if (homes) {
+      let got: Record<string, unknown>;
+      try {
+        got = await hcCall(exec, ["get", id]);
+      } catch (e) {
+        if (isKind(e, "not_found")) continue;
+        throw e;
+      }
+      if (got["state"] !== "live") continue;
+      home = labelOf(got, HOME_LABEL);
+    }
+    out.push(info(t, id, group, home));
+  }
+  return out;
+}
+
+function info(t: Record<string, unknown>, id: string, group: string | undefined, home: string | undefined): SessionInfo {
+  const [name, cwd, status, agent] = [str(t["name"]), str(t["cwd"]), statusWord(t["status"]), str(t["agent"])];
+  return {
+    ref: { runtime: "hc", id, ...(group === undefined ? {} : { group }) },
+    ...(name === undefined ? {} : { name }),
+    ...(cwd === undefined ? {} : { cwd }),
+    ...(status === undefined ? {} : { status }),
+    ...(agent === undefined ? {} : { agent }),
+    ...(home === undefined ? {} : { home }),
+  };
 }
 
 /**
@@ -123,8 +178,7 @@ export async function groups(exec: Exec): Promise<GroupInfo[]> {
       if (isKind(e, "not_found")) continue;
       throw e;
     }
-    const labels = got["labels"];
-    const group = typeof labels === "object" && labels !== null ? str((labels as Record<string, unknown>)[GROUP_LABEL]) : undefined;
+    const group = labelOf(got, GROUP_LABEL);
     if (group !== undefined && got["state"] === "live") seen.add(group);
   }
   return [...seen].map((g) => ({ id: g, label: g }));

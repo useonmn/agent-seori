@@ -42,7 +42,7 @@ import { ownerText, WATCH_USAGE, watchAdd, watchList, watchLog, watchRearm, watc
 import { WatchRefusal } from "./watch/store.ts";
 import { refText } from "./refs.ts";
 import { parseRef } from "./runtime/types.ts";
-import { removeUnits, systemctl, unitDir, writeUnits, type UnitKind } from "./systemd.ts";
+import { homeTag, removeUnits, systemctl, unitDir, writeUnits, type UnitKind } from "./systemd.ts";
 import { runMigrate } from "./migrate.ts";
 
 const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is an option)
@@ -382,10 +382,11 @@ async function upHc(d: Deps, name: string, cwd: string): Promise<void> {
       );
     });
   }
-  const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root", group: name });
+  const home = d.store.root;
+  const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root", group: name, home });
   await startAgent(d, "lead", leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
   d.store.setRole("lead", leadRef);
-  const dutyRef = await rt.create({ name: `${name}-duty`, cwd, env: { ...env, ...d.agent.agentEnv(d.store.root) }, role: "duty", container: "tab", group: name });
+  const dutyRef = await rt.create({ name: `${name}-duty`, cwd, env: { ...env, ...d.agent.agentEnv(d.store.root) }, role: "duty", container: "tab", group: name, home });
   await startAgent(d, "duty", dutyRef, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
   d.store.setRole("duty", dutyRef);
   if (!usesSystemdUnits(d)) return upHcTerminals(d, name, cwd, env, leadRef, dutyRef);
@@ -414,7 +415,7 @@ async function upHcTerminals(
   d: Deps, name: string, cwd: string, env: Record<string, string>, leadRef: SessionRef, dutyRef: SessionRef,
 ): Promise<void> {
   const rt = d.runtimes.default;
-  const open = (role: "duty-loop" | "hourly-loop" | "daemon") => rt.create({ name: `${name}-${role}`, cwd, env, role, container: "tab", group: name });
+  const open = (role: "duty-loop" | "hourly-loop" | "daemon") => rt.create({ name: `${name}-${role}`, cwd, env, role, container: "tab", group: name, home: d.store.root });
   const loopRef = await open("duty-loop");
   const hourlyRef = await open("hourly-loop");
   const daemonRef = await open("daemon");
@@ -439,10 +440,11 @@ const DOWN_UNITS: Readonly<Record<string, readonly UnitKind[]>> = { duty: ["duty
 
 /**
  * `seori down`: each process is asked to stop first (it ends cleanly, which its unit does not restart), then the
- * home's units of that group are stopped, disabled and removed. `all` on hc also closes every terminal labelled
- * seori.group=<name> (lead, duty and lanes), the caller's own terminal last. ok is false when a process outlived the wait.
+ * home's units of that group are stopped, disabled and removed. `all` on hc also closes this home's terminals
+ * (homeTerminals: lead, duty and lanes), the caller's own terminal last, or, with keepSelf, not at all: it is left for
+ * the owner to close. ok is false when a process outlived the wait.
  */
-async function downHome(d: Deps, which: string): Promise<{ lines: string[]; ok: boolean }> {
+async function downHome(d: Deps, which: string, opts: { keepSelf?: boolean } = {}): Promise<{ lines: string[]; ok: boolean }> {
   const r = await down(d.store.root, DOWN_GROUPS[which]!);
   const name = (() => {
     try {
@@ -457,8 +459,12 @@ async function downHome(d: Deps, which: string): Promise<{ lines: string[]; ok: 
   if (which === "all" && runtimeKind(d) === "hc") {
     const rt = d.runtimes.default;
     const self = process.env["HC_TERMINAL_ID"];
-    const open = (await rt.list({ group: name })).map((s) => s.ref).sort((a, b) => Number(a.id === self) - Number(b.id === self));
+    const open = (await homeTerminals(d, name)).sort((a, b) => Number(a.id === self) - Number(b.id === self));
     for (const ref of open) {
+      if (opts.keepSelf && ref.id === self) {
+        lines.push(`LEFT ${refText(ref)} open: this command runs in it; close this terminal by hand`);
+        continue;
+      }
       lines.push(`CLOSED ${refText(ref)} (seori.group=${name})`);
       if (ref.id === self) {
         console.log(lines.splice(0).join("\n")); // closing this terminal ends this command: print what it did first
@@ -467,6 +473,23 @@ async function downHome(d: Deps, which: string): Promise<{ lines: string[]; ok: 
     }
   }
   return { lines, ok: r.ok };
+}
+
+/**
+ * This home's live hc terminals in seori.group=<name>: those labelled with its seori.home, plus unlabelled ones (opened
+ * before that label existed) that its store records as its lead, duty or a lane (a done lane's terminal may still be open). A terminal labelled for another
+ * home is never closed, even when a stale record names its id (hc ids start over after a core restart).
+ */
+async function homeTerminals(d: Deps, name: string): Promise<SessionRef[]> {
+  const mine = homeTag(d.store.root);
+  const recorded = new Set(
+    [...Object.values(d.store.roles()), ...d.store.lanes().map((l) => l.sessionRef)]
+      .filter((r): r is SessionRef => r !== undefined && r.runtime === "hc")
+      .map((r) => r.id),
+  );
+  return (await d.runtimes.default.list({ group: name, homes: true }))
+    .filter((s) => s.home === mine || (s.home === undefined && recorded.has(s.ref.id)))
+    .map((s) => s.ref);
 }
 
 /** The selected runtime kind, or undefined when none can be chosen (down and uninstall still stop the processes). */
@@ -1172,7 +1195,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "uninstall": {
       // Its loops and daemon run from this checkout: stop them before their command goes away.
-      console.log((await downHome(d, "all")).lines.join("\n"));
+      // Run from the lead or duty terminal, closing it would end this command before the uninstall: it is left open.
+      console.log((await downHome(d, "all", { keepSelf: true })).lines.join("\n"));
       const name = (() => {
         try {
           return loadConfig(d.store.root).name;
@@ -1180,7 +1204,9 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
           return undefined; // a broken config.json must not stop an uninstall
         }
       })();
-      const lines = await uninstall({ skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, name, purge: a.flags.has("purge") });
+      const lines = await uninstall({
+        skillsDir: one(a, "skills-dir") ?? defaultSkillsDir(), home: d.store.root, name, purge: a.flags.has("purge"), runtime: runtimeKind(d),
+      });
       for (const line of lines) console.log(line);
       return 0;
     }

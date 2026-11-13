@@ -10,6 +10,7 @@ import type {
   DeliverOutcome,
   GroupInfo,
   Key,
+  ListFilter,
   Probe,
   ReadOptions,
   SessionInfo,
@@ -75,8 +76,8 @@ export class HcRuntime implements SessionRuntime {
     return start(this.exec, ref.id, command);
   }
 
-  list(filter?: { readonly group?: string }): Promise<readonly SessionInfo[]> {
-    return list(this.exec, filter?.group);
+  list(filter?: ListFilter): Promise<readonly SessionInfo[]> {
+    return list(this.exec, filter?.group, filter?.homes);
   }
 
   probe(ref: SessionRef): Promise<Probe> {
