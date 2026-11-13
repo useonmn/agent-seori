@@ -1,6 +1,6 @@
 import {
   type ActionNotes, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
-  type ThreadChange, type ThreadStatus, type ThreadTarget,
+  type ThreadChange, type ThreadResult, type ThreadStatus, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
 
@@ -682,9 +682,9 @@ export class SlackAdapter implements MessengerAdapter {
   }
 
   /** The status is one reaction on the thread's first message (the root ts, else the message asked from). */
-  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult> {
     const root = target.thread ?? target.message;
-    if (root === undefined) throw new Error("slack: no thread given: pass the thread's root ts or the message it was asked from");
+    if (root === undefined) return { notes: ["slack: no thread or message given, so there is no thread to mark; the status message carries the status"] };
     if (change.status !== undefined) {
       for (const [status, name] of Object.entries(STATUS_REACTIONS)) {
         if (status !== change.status) await this.reaction(target.chat, root, name, false);
@@ -694,7 +694,7 @@ export class SlackAdapter implements MessengerAdapter {
     const notes: string[] = [];
     if (change.name !== undefined) notes.push("slack: threads have no names; the status is shown as a reaction on the thread's first message");
     if (change.state !== undefined) notes.push("slack: threads cannot be closed or reopened; the ✅ reaction marks it done");
-    return notes;
+    return { ...(change.status !== undefined ? { status: change.status } : {}), notes };
   }
 
   async check(): Promise<string> {

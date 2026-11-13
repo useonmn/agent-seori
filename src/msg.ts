@@ -4,7 +4,8 @@ import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { replyTarget } from "./messenger/common.ts";
 import { Refusal } from "./harness.ts";
 import {
-  type ActionNotes, loadMessengers, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain, type ThreadChange, type ThreadTarget,
+  type ActionNotes, loadMessengers, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain, type ThreadChange, type ThreadResult,
+  type ThreadTarget,
 } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 import { type Draft, type DraftTarget, Outbox, targetLabel } from "./outbox.ts";
@@ -377,21 +378,45 @@ export async function msgReact(root: string, id: string, on: boolean, d: MsgDeps
   await adapterFor(d, row.source).react(row.chat, upstreamId(row), on);
 }
 
-/** `seori msg edit`: new text for a message seori sent (its id as `msg send` printed it). */
+/** `seori msg edit --to`: new text for a message seori sent (its id as `msg send` printed it). */
 export async function msgEdit(to: NoticeTarget, message: string, text: string, d: MsgDeps): Promise<void> {
+  if (!/^[\w.-]+$/.test(message)) throw new Refusal(`--message must be a message id (letters, digits, dot, dash), got "${message}"`);
   if (!text.trim()) throw new Refusal("refusing to edit a message to empty text");
   await adapterFor(d, to.source).edit({ chat: to.chat, ...(to.thread !== undefined ? { thread: to.thread } : {}) }, message, text);
+}
+
+/**
+ * `seori msg edit --reply-of <id>`: new text for seori's FIRST reply to that message (the acknowledgement that serves as
+ * the job's status message), found in the ledger, so a drafted or flushed reply can be edited without its message id.
+ * Returns the edited message id.
+ */
+export async function msgEditReplyOf(root: string, id: string, text: string, d: MsgDeps): Promise<string> {
+  const row = messengerRow(root, id);
+  const first = new Channel(root).ledger().find((e) => e.id === id && e.ev === "replied");
+  if (first?.ev !== "replied") throw new Refusal(`no reply to ${id} has been sent yet; --reply-of edits a reply seori already sent`);
+  if (!text.trim()) throw new Refusal("refusing to edit a message to empty text");
+  await adapterFor(d, row.source).edit({ chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}) }, first.messageId, text);
+  return first.messageId;
 }
 
 export async function msgTyping(w: Where, d: MsgDeps): Promise<ActionNotes> {
   return adapterFor(d, w.source).typing(w.target);
 }
 
-export async function msgThread(w: Where, change: ThreadChange, d: MsgDeps): Promise<ActionNotes> {
+export async function msgThread(w: Where, change: ThreadChange, d: MsgDeps): Promise<ThreadResult> {
   if (change.name === undefined && change.status === undefined && change.state === undefined) {
     throw new Refusal("nothing to change: give --name, --status, --close or --reopen");
   }
   return adapterFor(d, w.source).thread(w.target, change);
+}
+
+/** The lines `seori msg thread` prints: what the messenger did (or SKIPPED when it did nothing), then one NOTE per limit. */
+export function threadLine(label: string, r: ThreadResult): string[] {
+  const did = [
+    ...(r.name !== undefined ? [`name=${JSON.stringify(r.name)}`] : r.status !== undefined ? [`status=${r.status}`] : []),
+    ...(r.state === "close" ? ["closed"] : r.state === "reopen" ? ["reopened"] : []),
+  ];
+  return [did.length ? `THREAD ${label} ${did.join(" ")}` : `SKIPPED thread ${label}`, ...r.notes.map((n) => `NOTE ${n}`)];
 }
 
 /** Closes an id without replying (handled elsewhere, not worth an answer). */

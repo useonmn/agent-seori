@@ -1,6 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type ActionNotes, type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain, type ThreadChange, type ThreadTarget } from "./adapter.ts";
+import {
+  type ActionNotes, type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain, type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
+} from "./adapter.ts";
 
 // A messenger made of files under $SEORI_HOME/messenger/fake/, so tests and humans can drive the whole channel without a
 // platform account: append a row to in.jsonl to "send" a message to the lead; read out.jsonl to see what was sent back;
@@ -163,9 +165,13 @@ export class FakeAdapter implements MessengerAdapter {
     return [];
   }
 
-  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult> {
     this.act("thread", { ...target, ...change });
-    return [];
+    return {
+      ...(change.name !== undefined ? { name: threadName(change.name, change.status) } : change.status !== undefined ? { status: change.status } : {}),
+      ...(change.state !== undefined ? { state: change.state } : {}),
+      notes: [],
+    };
   }
 
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {

@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import {
-  type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
-  type ThreadChange, threadName, type ThreadTarget,
+  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
 import type { VoiceTranscriber } from "./voice.ts";
@@ -274,12 +274,12 @@ export class TelegramAdapter implements MessengerAdapter {
   private async act(method: string, body: Record<string, unknown>, harmless?: RegExp): Promise<void> {
     const token = this.token();
     try {
-      const res = await httpJson(this.url(token, method), { body }, { mutating: false, timeoutMs: 30_000, retries: 2, sleep: this.sleepFn });
+      const res = await httpJson(this.url(token, method), { body }, { mutating: false, timeoutMs: 30_000, retries: 2, sleep: this.sleepFn, maxRetryAfterMs: ACTION_MAX_RETRY_AFTER_MS });
       const b = res.body as ApiBody | undefined;
       if (b?.ok !== true) throw new Error(`telegram (${this.source}): ${method} failed: ${b?.description ?? "not ok"}`);
     } catch (e) {
       if (!(e instanceof HttpError)) throw new Error(String((e as Error)?.message ?? e).replaceAll(token, "<token>"));
-      const description = (e.body as ApiBody | undefined)?.description ?? e.message;
+      const description = e.status === 429 ? e.message : ((e.body as ApiBody | undefined)?.description ?? e.message);
       if (harmless?.test(description)) return;
       throw new Error(`telegram (${this.source}): ${method} failed: ${description}`);
     }
@@ -302,23 +302,30 @@ export class TelegramAdapter implements MessengerAdapter {
   }
 
   /** Topics: renamed in forum supergroups and private chats with topics; closed and reopened only in forum supergroups. */
-  async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
-    if (target.thread === undefined) return ["telegram: the message is not in a topic, so there is no topic to rename or close; the status message carries the status"];
+  async thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult> {
+    if (target.thread === undefined) return { notes: ["telegram: the message is not in a topic, so there is no topic to rename or close; the status message carries the status"] };
     const topic = { chat_id: target.chat, message_thread_id: Number(target.thread) };
     const notes: string[] = [];
+    let named: string | undefined;
+    let state: ThreadChange["state"];
     if (change.name !== undefined) {
       const name = threadName(change.name, change.status);
       if (name.length > TOPIC_NAME_LIMIT) throw new Error(`telegram (${this.source}): a topic name holds at most ${TOPIC_NAME_LIMIT} characters, got ${name.length}`);
       await this.act("editForumTopic", { ...topic, name }, /TOPIC_NOT_MODIFIED/);
+      named = name;
     } else if (change.status !== undefined) {
       notes.push(`telegram: a topic's name cannot be read back; pass --name with --status`);
     }
     if (change.state !== undefined) {
       // Private chat ids are the user's id (positive); groups and supergroups are negative.
-      if (target.chat.startsWith("-")) await this.act(change.state === "close" ? "closeForumTopic" : "reopenForumTopic", topic, /TOPIC_NOT_MODIFIED/);
-      else notes.push("telegram: a topic in a private chat cannot be closed or reopened; the ✅ at the start of its name marks it done");
+      if (target.chat.startsWith("-")) {
+        await this.act(change.state === "close" ? "closeForumTopic" : "reopenForumTopic", topic, /TOPIC_NOT_MODIFIED/);
+        state = change.state;
+      } else {
+        notes.push("telegram: a topic in a private chat cannot be closed or reopened; the ✅ at the start of its name marks it done");
+      }
     }
-    return notes;
+    return { ...(named !== undefined ? { name: named } : {}), ...(state !== undefined ? { state } : {}), notes };
   }
 
   async check(): Promise<string> {

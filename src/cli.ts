@@ -11,11 +11,12 @@ import { heartbeatPath, runDaemon } from "./daemon.ts";
 import { down, DOWN_GROUPS, liveRunners, running, sleepUnless } from "./down.ts";
 import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
-import { type ActionNotes, loadMessengers, type ThreadChange, threadName, type ThreadStatus } from "./messenger/adapter.ts";
+import { loadMessengers, type ThreadChange, type ThreadStatus } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
 import {
-  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgFlush, msgList, msgReact, msgSend, msgThread, msgTyping, parseTo, whereLabel, whereOf,
+  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgReact, msgSend, msgThread, msgTyping, parseTo,
+  threadLine, whereLabel, whereOf,
 } from "./msg.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
@@ -120,8 +121,9 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
   seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
-  seori msg edit --to SOURCE:CHAT[:THREAD] --message MID --text T
-                                              replace the text of a message seori sent (MID: the message= that send printed)
+  seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
+                                              replace the text of a message seori sent: --reply-of edits seori's first reply
+                                              to that lead channel message (drafted or not); MID: the message= send printed
   seori msg typing (--to SOURCE:CHAT[:THREAD] | --of ID)
                                               show the typing indicator once, right before a message goes out
   seori msg thread (--to SOURCE:CHAT:THREAD | --of ID) [--name T] [--status working|waiting|done] [--close|--reopen]
@@ -645,7 +647,7 @@ async function msgAction(root: string, d: Deps, a: Args, sub: "react" | "edit" |
   const deps = msgDepsFor(root, d.now);
   let what = "";
   let done = "";
-  let act: () => Promise<ActionNotes | void>;
+  let act: () => Promise<readonly string[] | void>;
   if (sub === "react") {
     const id = need(a.pos[2], "message id");
     const on = one(a, "remove") !== "true";
@@ -653,12 +655,21 @@ async function msgAction(root: string, d: Deps, a: Args, sub: "react" | "edit" |
     done = `${on ? "REACTED" : "UNREACTED"} ${id}`;
     act = () => msgReact(root, id, on, deps);
   } else if (sub === "edit") {
-    const to = parseTo(need(one(a, "to"), "--to"));
-    const message = need(one(a, "message"), "--message");
+    const replyOf = one(a, "reply-of");
+    if ((replyOf === undefined) === (one(a, "to") === undefined)) throw new Refusal("give exactly one of --reply-of ID or --to SOURCE:CHAT[:THREAD] (with --message MID)");
     const text = await textOf(a);
-    what = need(one(a, "to"), "--to");
-    done = `EDITED ${what} message=${message}`;
-    act = () => msgEdit(to, message, text, deps);
+    if (replyOf !== undefined) {
+      what = replyOf;
+      act = async () => {
+        done = `EDITED ${replyOf} message=${await msgEditReplyOf(root, replyOf, text, deps)}`;
+      };
+    } else {
+      const to = parseTo(need(one(a, "to"), "--to"));
+      const message = need(one(a, "message"), "--message");
+      what = need(one(a, "to"), "--to");
+      done = `EDITED ${what} message=${message}`;
+      act = () => msgEdit(to, message, text, deps);
+    }
   } else {
     const where = whereOf(root, { to: one(a, "to"), of: one(a, "of") });
     what = whereLabel(where);
@@ -677,15 +688,15 @@ async function msgAction(root: string, d: Deps, a: Args, sub: "react" | "edit" |
         ...(status !== undefined ? { status: status as ThreadStatus } : {}),
         ...(close ? { state: "close" as const } : reopen ? { state: "reopen" as const } : {}),
       };
-      done = [
-        `THREAD ${what}`,
-        ...(name !== undefined ? [`name=${JSON.stringify(threadName(name, change.status))}`] : status !== undefined ? [`status=${status}`] : []),
-        ...(close ? ["closed"] : reopen ? ["reopened"] : []),
-      ].join(" ");
-      act = () => msgThread(where, change, deps);
+      const label = what;
+      act = async () => {
+        const [first, ...notes] = threadLine(label, await msgThread(where, change, deps));
+        done = first!;
+        return notes.map((n) => n.slice("NOTE ".length));
+      };
     }
   }
-  let notes: ActionNotes;
+  let notes: readonly string[];
   try {
     notes = (await act()) ?? [];
   } catch (e) {
