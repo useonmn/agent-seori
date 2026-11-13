@@ -28,6 +28,8 @@ type Mock = {
   replies: Record<string, Record<string, unknown>[]>;
   counts: { ims?: unknown[]; mpims?: unknown[]; channels?: unknown[] };
   threadView: unknown[];
+  /** What conversations.open answers for the owner: the DM channel with them. */
+  ownerDm: string;
   /** Methods answered `{ ok: false, error: "unknown_method" }`. */
   refuse: Set<string>;
   authAnswer: () => Response;
@@ -49,6 +51,7 @@ function startMock(): Mock {
     replies: {},
     counts: {},
     threadView: [],
+    ownerDm: "D1",
     refuse: new Set(),
     authAnswer: () => json({ ok: true, user: "seori", user_id: SELF, team: "Acme", team_id: "T1" }),
     stop: () => server.stop(true),
@@ -68,6 +71,8 @@ function startMock(): Mock {
           return mock.authAnswer();
         case "apps.connections.open":
           return json({ ok: true, url: "ws://127.0.0.1:1/unused" });
+        case "conversations.open":
+          return json({ ok: true, channel: { id: q.get("users") === OWNER || body?.["users"] === OWNER ? mock.ownerDm : "D-OTHER" } });
         case "client.counts":
           return json({ ok: true, ...mock.counts });
         case "subscriptions.thread.getView":
@@ -203,7 +208,7 @@ describe("SlackAdapter user mode selection", () => {
     await a.edit({ chat: "D1" }, "1800000000.000001", "y");
     await a.react("D1", "1700000000.000100", true);
     await r.stop();
-    expect(mock.calls.map((c) => c.path)).toEqual(["auth.test", "subscriptions.thread.getView", "client.counts", "conversations.history", "chat.postMessage", "chat.update", "reactions.add"]);
+    expect(mock.calls.map((c) => c.path)).toEqual(["auth.test", "conversations.open", "subscriptions.thread.getView", "client.counts", "conversations.history", "chat.postMessage", "chat.update", "reactions.add"]);
     expect(mock.calls.every((c) => c.cookie === "d=xoxd-c%2F1" && c.auth === "Bearer xoxc-1")).toBe(true);
 
     const bot = startMock();
@@ -353,6 +358,71 @@ describe("SlackAdapter user mode receive", () => {
       .receive(new AbortController().signal, async () => {})
       .catch((e: unknown) => e);
     expect((err as Error).message).toMatch(/^slack slack: no working connection for \d+ s; last error: .*503/);
+  });
+
+  test("the account must not be the owner's own: receive and check refuse it, so seori never reads its own replies as commands", async () => {
+    const mock = startMock();
+    mock.authAnswer = () => json({ ok: true, user: "owner", user_id: OWNER, team: "Acme" });
+    mock.counts = { ims: [{ id: "D1", has_unreads: true }] };
+    mock.history["D1"] = [msg("1700000000.000100")];
+    const err = await adapter(mock, home())
+      .receive(new AbortController().signal, async () => {})
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/is the owner's own account.*its own member account/);
+    await expect(adapter(mock, home()).check()).rejects.toThrow(/is the owner's own account/);
+    expect(mock.calls.some((c) => c.path === "conversations.history")).toBe(false);
+  });
+
+  test("only the DM with the owner is read; other people's DMs to the account never are, unread or not", async () => {
+    const mock = startMock();
+    mock.counts = { ims: [{ id: "D1", has_unreads: true }, { id: "D2", has_unreads: true }], mpims: [{ id: "G1", has_unreads: true, mention_count: 0 }] };
+    mock.history["D1"] = [msg("1700000000.000100")];
+    mock.history["D2"] = [msg("1700000000.000200", { user: "UCOLLEAGUE" })];
+    const root = home();
+    const r = run(mock, root);
+    await r.clock.parked();
+    r.clock.next();
+    await r.clock.parked();
+    await r.stop();
+    expect(r.got.map((m) => m.id)).toEqual(["slack:D1:1700000000.000100"]);
+    const read = mock.calls.filter((c) => c.path === "conversations.history").map((c) => c.query.get("channel"));
+    expect(new Set(read)).toEqual(new Set(["D1"]));
+    expect(Object.keys(cursorOf(root).channels)).toEqual(["D1"]);
+  });
+
+  test("auth.test without a user id is retried, never cached as an empty id", async () => {
+    const mock = startMock();
+    let first = true;
+    mock.authAnswer = () => {
+      if (first) {
+        first = false;
+        return json({ ok: true, user: "seori", team: "Acme" });
+      }
+      return json({ ok: true, user: "seori", user_id: SELF, team: "Acme" });
+    };
+    mock.counts = { ims: [{ id: "D1", has_unreads: true }] };
+    mock.history["D1"] = [msg("1700000000.000300", { user: SELF, text: "mine" }), msg("1700000000.000100")];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    const got: string[] = [];
+    await adapter(mock, home(), {
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        if (got.length) ac.abort();
+      },
+    }).receive(ac.signal, async (m) => void got.push(m.text));
+    expect(got).toEqual(["hi 1700000000.000100"]);
+    expect(mock.calls.filter((c) => c.path === "auth.test")).toHaveLength(2);
+    expect(sleeps[0]).toBeLessThan(60_000);
+  });
+
+  test("fetchMessage reads with the user token and cookie", async () => {
+    const mock = startMock();
+    mock.history["D1"] = [msg("1700000000.000100")];
+    const got = await adapter(mock, home()).fetchMessage("D1", "1700000000.000100");
+    expect(got).toEqual({ from: OWNER, at: 1700000000000, text: "hi 1700000000.000100" });
+    const call = mock.calls.find((c) => c.path === "conversations.history")!;
+    expect([call.auth, call.cookie]).toEqual(["Bearer xoxc-1", "d=xoxd-c%2F1"]);
   });
 
   test("invalid_auth or token_revoked rejects receive saying to refresh the user token and cookie", async () => {
