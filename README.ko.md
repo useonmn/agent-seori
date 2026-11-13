@@ -569,7 +569,7 @@ seori watch stop dev
 잘못된 필드는 조용히 기본값으로 넘어가지 않고, 그 필드 이름을 담은 오류가 됩니다. 그래서 오타 하나로 한도가 몰래 꺼지는 일이 없습니다:
 
 - 올바른 JSON이 아니거나 JSON 객체가 아니면 오류입니다.
-- 맨 위나 `supervision`, `supervision.defaults`, `guard`, `heavy` 안에 모르는 필드가 있으면, 그 필드와 아는 필드 목록을 담은 오류입니다.
+- 맨 위나 `supervision`, `supervision.defaults`, `guard`, `heavy` 안에 모르는 필드가 있으면, 그 필드와 아는 필드 목록을 담은 오류입니다(없어진 기능에서 남은 `talkWithOthers`, `agentTurnLimit`, `trusted`는 받아들이고 무시합니다).
 - `repoIdentities`, `supervision`, `supervision.defaults`, `guard`, `heavy`는 객체여야 하고, `repoIdentities` 항목마다 비어 있지 않은 `name`과 `email`이 있어야 합니다.
 - 숫자는 모두 유한하고 음수가 아니어야 합니다. 한도는 그런 숫자이거나 `null`입니다. `heavy.slots`는 1 이상의 정수여야 합니다.
 - `name`은 표에 적힌 규칙을 따라야 합니다.

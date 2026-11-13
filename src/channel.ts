@@ -35,6 +35,15 @@ export type WatchRow = {
 export type InboundRow = MessengerRow | WatchRow;
 
 /**
+ * A row an earlier seori stored from someone other than the owner (`sender.kind` person, agent or trusted, from the
+ * removed talking-with-others): it counts as closed, so it is never delivered to the lead again.
+ */
+const fromOther = (row: InboundRow): boolean => {
+  const kind = (row as { readonly sender?: { readonly kind?: unknown } }).sender?.kind;
+  return row.kind === "messenger" && kind !== undefined && kind !== "owner";
+};
+
+/**
  * - delivered: the extension handed the id to omp (attempt counts from 1; mode is how).
  * - entered: the delivered message appeared in the lead's conversation.
  * - sending: `seori msg send --reply-to` is about to call the messenger. Written first, so a process killed mid-send
@@ -225,14 +234,14 @@ export class Channel {
     }
     return this.inbound().map((row) => {
       const a = byId.get(row.id);
-      if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: false, uncertain: false, gaveUp: false, drafted: drafted.has(row.id), alerted: [] };
+      if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: fromOther(row), uncertain: false, gaveUp: false, drafted: drafted.has(row.id), alerted: [] };
       return {
         row,
         deliveries: a.deliveries,
         ...(a.lastDeliveredAt !== undefined ? { lastDeliveredAt: a.lastDeliveredAt } : {}),
         entered: a.entered,
         replied: a.replied,
-        closed: a.closed,
+        closed: a.closed || fromOther(row),
         uncertain: a.sendUncertain || a.inFlight,
         gaveUp: a.gaveUp,
         drafted: drafted.has(row.id),

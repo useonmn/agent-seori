@@ -39,6 +39,12 @@ describe("instance name", () => {
     }
   });
 
+  test("a config.json from before talking with others was removed still loads; its keys are ignored", () => {
+    const root = mkdtempSync(join(tmpdir(), "seori-legacy-"));
+    writeFileSync(join(root, "config.json"), JSON.stringify({ name: "seori", talkWithOthers: false, agentTurnLimit: 6, trusted: [{ source: "slack", id: "U1" }] }));
+    expect(loadConfig(root).name).toBe("seori");
+  });
+
   test("a lane with no workspace to join opens one under the instance's name", async () => {
     const w = new World();
     const d = w.deps();
