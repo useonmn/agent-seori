@@ -3,7 +3,9 @@ import { join, resolve } from "node:path";
 import { ConfigError, loadConfig, type SeoriConfig } from "./config.ts";
 import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
 import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
-import type { Ceilings, Lane, LaneLogKind } from "./store.ts";
+import { type Ceilings, type Lane, type LaneLogKind, lockFile } from "./store.ts";
+
+const COST_LOCK_WAIT_MS = 2000;
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
 import { refText } from "./refs.ts";
 import { runHook } from "./hooks.ts";
@@ -60,17 +62,32 @@ export type CostRecord = { key: string; closeKey: string; tokens: number | null;
 export async function recordCloseCost(d: Deps, lane: Lane): Promise<void> {
   const path = join(d.store.root, "cost.jsonl");
   const closeKey = `${lane.key}@${lane.createdAt}`;
-  const recorded = existsSync(path) && readFileSync(path, "utf8").split("\n").some((line) => {
-    try {
-      return (JSON.parse(line) as Partial<CostRecord>).closeKey === closeKey;
-    } catch {
-      return false;
-    }
-  });
-  if (recorded) return;
+  const recorded = (): boolean =>
+    existsSync(path) && readFileSync(path, "utf8").split("\n").some((line) => {
+      try {
+        return (JSON.parse(line) as Partial<CostRecord>).closeKey === closeKey;
+      } catch {
+        return false;
+      }
+    });
+  if (recorded()) return;
   const usage = await laneUsage(d, lane);
+  // Two closes can both pass the check above while usage is read; the check is repeated under the lock so only one appends.
+  const lock = join(d.store.root, "cost.jsonl.lock");
+  const deadline = Date.now() + COST_LOCK_WAIT_MS;
+  let release = lockFile(lock, d.now());
+  while (!release) {
+    if (Date.now() > deadline) throw new Error(`cost ledger is locked by another process (${lock})`);
+    await new Promise((r) => setTimeout(r, 5));
+    release = lockFile(lock, d.now());
+  }
   const record: CostRecord = { key: lane.key, closeKey, tokens: usage.tokens ?? null, costUsd: usage.costUsd ?? null, at: d.now() };
-  appendFileSync(path, JSON.stringify(record) + "\n");
+  try {
+    if (recorded()) return;
+    appendFileSync(path, JSON.stringify(record) + "\n");
+  } finally {
+    release();
+  }
   if (record.tokens === null && record.costUsd === null) return;
   void runHook(d, "recordCost", { key: lane.key, tokens: String(record.tokens), cost: String(record.costUsd), closeKey });
 }
