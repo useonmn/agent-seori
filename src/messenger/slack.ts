@@ -1,5 +1,5 @@
 import {
-  type ActionNotes, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
   type ThreadChange, type ThreadResult, type ThreadStatus, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
@@ -198,11 +198,17 @@ export class SlackAdapter implements MessengerAdapter {
     return secret(this.root, this.source, "appToken", APP_ENV, this.env);
   }
 
-  /** One Web API call. `ratelimited` (HTTP 200 or 429) waits and retries: Slack did not take the request. */
-  private async api(method: string, token: string, params: Record<string, unknown> | undefined, mode: Mode, signal?: AbortSignal): Promise<ApiBody> {
+  /**
+   * One Web API call. `ratelimited` (HTTP 200 or 429) waits and retries: Slack did not take the request. `maxWaitMs`
+   * (the actions) caps each wait: a longer one throws, saying when to retry, instead of holding the caller.
+   */
+  private async api(method: string, token: string, params: Record<string, unknown> | undefined, mode: Mode, signal?: AbortSignal, maxWaitMs?: number): Promise<ApiBody> {
     const headers = { authorization: `Bearer ${token}` };
     for (let attempt = 0; ; attempt++) {
-      const opts = { mutating: mode === "SEND", sleep: this.sleep, ...(this.timeoutMs !== undefined ? { timeoutMs: this.timeoutMs } : {}) };
+      const opts = {
+        mutating: mode === "SEND", sleep: this.sleep, ...(this.timeoutMs !== undefined ? { timeoutMs: this.timeoutMs } : {}),
+        ...(maxWaitMs !== undefined ? { maxRetryAfterMs: maxWaitMs } : {}),
+      };
       const res =
         mode === "GET"
           ? await httpJson(`${this.apiBase}/${method}${params ? `?${new URLSearchParams(params as Record<string, string>)}` : ""}`, { method: "GET", headers, ...(signal ? { signal } : {}) }, opts)
@@ -211,7 +217,9 @@ export class SlackAdapter implements MessengerAdapter {
       if (body.ok === true) return body;
       const error = typeof body.error === "string" ? body.error : `unexpected answer ${JSON.stringify(res.body)}`;
       if (error === "ratelimited" && attempt < MAX_RATELIMIT_RETRIES) {
-        await this.sleep(retryAfterMs(res.headers, body));
+        const wait = retryAfterMs(res.headers, body);
+        if (maxWaitMs !== undefined && wait > maxWaitMs) throw new HttpError(`slack ${method} is rate limited; retry after ${Math.ceil(wait / 1000)} s`, res.status, body);
+        await this.sleep(wait);
         continue;
       }
       throw new SlackApiError(method, error, res.status, body);
@@ -655,7 +663,7 @@ export class SlackAdapter implements MessengerAdapter {
   /** Adds or removes one reaction; already there (or already gone) counts as done. */
   private async reaction(channel: string, ts: string, name: string, on: boolean): Promise<void> {
     try {
-      await this.api(on ? "reactions.add" : "reactions.remove", this.botToken(), { channel, timestamp: ts, name }, "POST");
+      await this.api(on ? "reactions.add" : "reactions.remove", this.botToken(), { channel, timestamp: ts, name }, "POST", undefined, ACTION_MAX_RETRY_AFTER_MS);
     } catch (e) {
       if (e instanceof SlackApiError && e.error === (on ? "already_reacted" : "no_reaction")) return;
       throw this.fatal(e, false) ?? e;
@@ -671,7 +679,7 @@ export class SlackAdapter implements MessengerAdapter {
     const escaped = escape(text);
     if (escaped.length > TEXT_LIMIT) throw new Error(`slack: an edited message holds at most ${TEXT_LIMIT} characters, got ${escaped.length}`);
     try {
-      await this.api("chat.update", this.botToken(), { channel: target.chat, ts: message, text: escaped }, "POST");
+      await this.api("chat.update", this.botToken(), { channel: target.chat, ts: message, text: escaped }, "POST", undefined, ACTION_MAX_RETRY_AFTER_MS);
     } catch (e) {
       throw this.fatal(e, false) ?? e;
     }

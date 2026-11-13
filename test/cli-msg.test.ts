@@ -97,6 +97,7 @@ describe("seori msg react, edit, typing and thread", () => {
     await expect(main(["msg", "edit", "--to", "fake:c1", "--text", "x"], d)).rejects.toThrow(/--message/);
     await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "9", "--text", " "], d)).rejects.toThrow(/empty/);
     await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "../../guilds/1", "--text", "x"], d)).rejects.toThrow(/--message must be a message id/);
+    await expect(main(["msg", "edit", "--to", "fake:c1", "--message", "..", "--text", "x"], d)).rejects.toThrow(/--message must be a message id/);
     expect(fake.actions()).toEqual([]);
   });
 });
