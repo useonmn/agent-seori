@@ -1,6 +1,6 @@
 # Hourly loop
 
-`seori loop` is an always-on process that wakes once an hour, checks the harness against reality, and starts the next piece of work that needs nobody's decision. `seori up` starts it in a pane under the duty loop. The duty loop works in minutes (nudges, inbox flushes). The hourly loop works in hours: it decides what runs next.
+`seori loop` is an always-on process that wakes once an hour, checks the harness against reality, and starts the next piece of work that needs nobody's decision. `seori up` starts it: a `systemd --user` unit on Linux, an hc terminal on macOS, a pane on herdr. The duty loop works in minutes (nudges, inbox flushes). The hourly loop works in hours: it decides what runs next.
 
 ## Where the next work comes from
 
