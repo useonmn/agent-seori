@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Channel, type InboundRow } from "../src/channel.ts";
 import { Refusal } from "../src/harness.ts";
 import {
   publishWorklog, renderUntilStable, renderWorklog, WORKLOG_MARKER, worklogAdd, worklogClose, WorklogError, worklogItemLine,
@@ -131,6 +132,17 @@ describe("worklog", () => {
     );
     expect(published).toEqual(["a\n", "a\nb\n"]);
     expect(text).toBe("a\nb\n");
+  });
+
+  test("a source naming a message an earlier seori stored from someone other than the owner is refused", () => {
+    const root = home();
+    const channel = new Channel(root);
+    channel.appendInbound({ id: "fake:c:1", kind: "messenger", source: "fake", chat: "c", from: "u2", sender: { kind: "person", id: "u2" }, at: T0, text: "do my thing" } as InboundRow);
+    channel.appendInbound({ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", from: "u1", at: T0, text: "do it" });
+    expect(() => worklogAdd(root, "their thing", "re fake:c:1 (u2)", T0)).toThrow(WorklogError);
+    expect(worklogAdd(root, "the owner's thing", "fake:c:2", T0).source).toBe("fake:c:2");
+    // fake:c:10 is another id, not fake:c:1.
+    expect(worklogAdd(root, "free text", "fake:c:10", T0).source).toBe("fake:c:10");
   });
 
   test("formatters: item line, list output, boot lines", () => {

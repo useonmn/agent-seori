@@ -38,7 +38,7 @@ export type InboundRow = MessengerRow | WatchRow;
  * A row an earlier seori stored from someone other than the owner (`sender.kind` person, agent or trusted, from the
  * removed talking-with-others): it counts as closed, so it is never delivered to the lead again.
  */
-const fromOther = (row: InboundRow): boolean => {
+export const fromOther = (row: InboundRow): boolean => {
   const kind = (row as { readonly sender?: { readonly kind?: unknown } }).sender?.kind;
   return row.kind === "messenger" && kind !== undefined && kind !== "owner";
 };
