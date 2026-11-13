@@ -113,9 +113,11 @@ describe("Telegram actions", () => {
     expect(t.sent().map(([m]) => m)).toEqual(["editForumTopic"]);
   });
 
-  test("a message outside a topic has no thread to change", async () => {
+  test("a message outside a topic has no thread to change, and says so", async () => {
     const t = setup();
-    await expect(t.a.thread({ chat: "42", message: "5" }, { name: "x", status: "working" })).rejects.toThrow(/not in a topic/);
+    expect(await t.a.thread({ chat: "42", message: "5" }, { name: "x", status: "working" })).toEqual([
+      "telegram: the message is not in a topic, so there is no topic to rename or close; the status message carries the status",
+    ]);
     expect(t.calls).toEqual([]);
   });
 });
@@ -164,9 +166,11 @@ describe("Discord actions", () => {
     ]);
   });
 
-  test("a channel that is not a thread is never renamed", async () => {
-    const t = setup(0);
-    await expect(t.a.thread({ chat: "C1" }, { name: "Fix login", status: "working" })).rejects.toThrow(/not a thread/);
+  test("a channel that is not a thread (a DM, a server channel) is never renamed, and says so", async () => {
+    const t = setup(1);
+    expect(await t.a.thread({ chat: "D1" }, { name: "Fix login", status: "working" })).toEqual([
+      "discord: channel D1 is not a thread, so there is no thread to rename or close; the status message carries the status",
+    ]);
     expect(t.sent().map(([m]) => m)).toEqual(["GET"]);
   });
 });

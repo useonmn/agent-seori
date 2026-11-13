@@ -303,7 +303,7 @@ export class TelegramAdapter implements MessengerAdapter {
 
   /** Topics: renamed in forum supergroups and private chats with topics; closed and reopened only in forum supergroups. */
   async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
-    if (target.thread === undefined) throw new Error(`telegram (${this.source}): the message is not in a topic; only a topic has a name and can be closed`);
+    if (target.thread === undefined) return ["telegram: the message is not in a topic, so there is no topic to rename or close; the status message carries the status"];
     const topic = { chat_id: target.chat, message_thread_id: Number(target.thread) };
     const notes: string[] = [];
     if (change.name !== undefined) {

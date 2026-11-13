@@ -525,12 +525,12 @@ export class DiscordAdapter implements MessengerAdapter {
 
   /**
    * A thread is a channel: renamed and archived with one PATCH. The channel type is read first, so a message that came
-   * in outside a thread can never rename the channel it was posted in.
+   * in outside a thread (a DM, a server channel) can never rename the channel it was posted in.
    */
   async thread(target: ThreadTarget, change: ThreadChange): Promise<ActionNotes> {
     const id = target.thread ?? target.chat;
     const channel = (await this.act("GET", `/channels/${id}`)) as { type?: unknown } | undefined;
-    if (!THREAD_TYPES.has(Number(channel?.type))) throw new Error(`${this.source}: channel ${id} is not a thread; only a thread is renamed or archived`);
+    if (!THREAD_TYPES.has(Number(channel?.type))) return [`${this.source}: channel ${id} is not a thread, so there is no thread to rename or close; the status message carries the status`];
     const notes: string[] = [];
     const patch: Record<string, unknown> = {};
     if (change.name !== undefined) {
