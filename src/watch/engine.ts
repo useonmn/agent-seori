@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { shPath } from "../platform.ts";
+import { parseRef } from "../runtime/types.ts";
 import { lstatSync, readdirSync, type Stats, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
@@ -659,9 +660,16 @@ function checksRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "checks"
   });
 }
 
-/** hc reports a lane that finished its turn unwatched as `done`; like the harness, that counts as idle. */
+/**
+ * hc reports a lane that finished its turn unwatched as `done`; like the harness, that counts as idle. A watch saved
+ * with a herdr pane id (before seori ran on hc only) is stopped once instead of failing every poll.
+ */
 function paneRunner(ctx: RunnerCtx, src: Extract<WatchSource, { kind: "pane" }>): Runner {
   return poll(ctx, ctx.timing.panePollMs, async () => {
+    if (parseRef(src.pane) === undefined) {
+      await ctx.finish("stopped", "not an hc terminal", `pane ${src.pane} is not an hc terminal (hc:t7); seori runs on hc only; watch stopped`);
+      return true;
+    }
     const status = await ctx.deps.paneStatus(src.pane);
     const hit = src.status === "idle" ? status === "idle" || status === "done" : status === src.status;
     if (!hit && status !== "gone") return false;

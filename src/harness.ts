@@ -236,8 +236,7 @@ async function settled<T extends SendResult | undefined>(delivery: Promise<T>): 
 export async function sendToShell(d: Deps, target: string, text: string, from: string): Promise<SendResult> {
   const to = resolveTarget(d, target);
   if ((await d.runtime.status(to)) !== "shell") return send(d, target, text, from);
-  const { rt, ref } = { rt: d.runtime, ref: to };
-  if (await rt.typeIntoShell(ref, text)) return "DELIVERED";
+  if (await d.runtime.typeIntoShell(to, text)) return "DELIVERED";
   d.store.enqueue(to, { at: d.now(), from, text });
   return "QUEUED";
 }
@@ -276,9 +275,8 @@ async function flushLocked(d: Deps, to: SessionRef): Promise<"delivered" | "queu
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
   try {
-    const { rt, ref } = { rt: d.runtime, ref: to };
     // Typed only under the status just read (hc compares and sends in one step): a goal-mode lane takes it while working.
-    if (!(await deliverOrThrow(rt, ref, body, { when: status === "working" ? "working" : "idle" }))) return "no-agent";
+    if (!(await deliverOrThrow(d.runtime, to, body, { when: status === "working" ? "working" : "idle" }))) return "no-agent";
   } catch (e) {
     if (e instanceof DeliveryUncertain) await recordUncertain(d, to, queued, e);
     throw e;

@@ -60,7 +60,8 @@ function scanLanes(root: string): { lanes: Lane[]; unreadable: string[] } {
       if (typeof lane?.key !== "string" || typeof lane.paneId !== "string" || typeof lane.status !== "string" || !Array.isArray(lane.log)) {
         throw new Error("not a lane record");
       }
-      lanes.push(checkedLane(lane, path));
+      const checked = checkedLane(lane, path);
+      if (checked) lanes.push(checked);
     } catch (e) {
       unreadable.push(e instanceof HerdrRecord ? `${path} (${e.message})` : path);
     }

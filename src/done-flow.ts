@@ -44,8 +44,7 @@ export async function closeLane(d: Deps, lane: Lane, note: string): Promise<void
   await recordCloseCost(d, lane).catch((e: unknown) => {
     process.stderr.write(`seori: lane ${lane.key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
   });
-  const { rt, ref } = { rt: d.runtime, ref: lane.sessionRef };
-  if ((await rt.status(ref)) !== "gone") await rt.close(ref);
+  if ((await d.runtime.status(lane.sessionRef)) !== "gone") await d.runtime.close(lane.sessionRef);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: note });
   d.store.saveLane(lane);

@@ -2,7 +2,7 @@
 
 seori never draws its own terminals. hc (herdr-core) opens them, runs the agent inside, and tells seori what state the agent is in. seori runs on hc only, with one agent, omp.
 
-Every record seori keeps names its session with an hc ref such as `hc:t7`. Commands that take a session (`seori adopt --ref`, `seori role`, `seori send`) take that form. A record written by an older seori that ran on herdr (a bare pane id such as `w1:p3`) is refused with one line that names the file; close that pane and remove the file.
+Every record seori keeps names its session with an hc ref such as `hc:t7`. Commands that take a session (`seori adopt --ref`, `seori role`, `seori send`) take that form. Records an older seori wrote on herdr (a bare pane id such as `w1:p3`) are handled by whether they are still live. A done or lost lane is history and is skipped. So is an empty inbox file. A live one is refused with one line that names the file: an open lane, a role, or an inbox that still holds messages. Close that pane and remove the file. While such a record is there, each duty pass prints that line as `DUTY ERROR` and the loop keeps running. A pane watch saved with a herdr pane id is stopped.
 
 ## The agent
 
