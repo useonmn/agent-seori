@@ -1,5 +1,5 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "./harness.ts";
 import { renderHandoff } from "./migrate-brief.ts";
@@ -47,21 +47,24 @@ export const askText = (d: Deps, name: string): string =>
  * started on the ask (it reports working, or the checkpoint file appears) and stopped, within --wait-minutes of the
  * ask. One that never starts and writes nothing in that time is `stopped` too: the capture goes on without a
  * checkpoint. `working` when it is still working after the wait. `blocked` is returned without delivering anything (a
- * blocked agent waits for a person). `gone`: no agent there to ask (a gone session, a bare shell).
+ * blocked agent waits for a person). `gone`: no agent there to ask (a gone session, a bare shell). `notReady`: the
+ * runtime refused the ask for another reason and typed nothing (hc's status mismatch or an unknown status).
+ * The caller removes any earlier checkpoint before the ask, so a checkpoint file that exists was written for it.
  */
-export async function askCheckpoint(d: Deps, s: Subject, opts: MigrateOpts): Promise<"stopped" | "gone" | "blocked" | "working"> {
+export async function askCheckpoint(
+  d: Deps, s: Subject, opts: MigrateOpts,
+): Promise<"stopped" | "gone" | "blocked" | "working" | { readonly notReady: AgentStatus }> {
   const rt = d.runtimes.for(s.from);
   const first = await rt.status(s.from);
   if (first === "blocked") return "blocked";
   if (first === "gone" || first === "shell") return "gone";
+  const deadline = d.now() + opts.waitMinutes * 60_000;
   const out = await rt.deliver(s.from, askText(d, s.name), { when: first === "working" ? "working" : "idle" });
   if (out.kind === "no-agent") return "gone";
-  if (out.kind === "not-ready") return out.status === "blocked" ? "blocked" : "working";
+  if (out.kind === "not-ready") return out.status === "blocked" ? "blocked" : { notReady: out.status };
   // The prompt is submitted before omp turns working: an idle read right after the ask does not mean it is done.
-  const askedAt = d.now();
-  const deadline = askedAt + opts.waitMinutes * 60_000;
   const handoff = handoffPath(d, s.name);
-  const wrote = (): boolean => existsSync(handoff) && statSync(handoff).mtimeMs >= askedAt;
+  const wrote = (): boolean => existsSync(handoff);
   let started = false;
   for (let status: AgentStatus = await rt.status(s.from); ; status = await rt.status(s.from)) {
     if (status === "gone" || status === "shell") return "gone";

@@ -127,15 +127,20 @@ async function agentSession(d: Deps, s: Subject, j: MigrateJournal | undefined, 
     j = { name: s.name, kind: s.kind, phase: "hold", from: s.from, to: opts.to, at: d.now(), ...(resume === undefined ? {} : { resume }) };
     if (!createJournal(d.store.root, j)) throw new Refusal(`another seori migrate of ${s.name} is running`);
     s.setHold(true);
+  } else {
+    // A run cut short between the journal and the hold left no hold: set it again (a no-op when it is set).
+    s.setHold(true);
   }
   if (j.phase === "hold" && j.briefPath === undefined) {
     // A checkpoint an earlier migration left is not this agent's current state: only one written after this ask counts.
     rmSync(handoffPath(d, s.name), { force: true });
     const asked = j.resume === undefined ? await askCheckpoint(d, s, opts) : "stopped";
-    if (asked === "blocked" || asked === "working") {
+    if (typeof asked === "object" || asked === "blocked" || asked === "working") {
       removeJournal(d.store.root, s.name);
       s.setHold(false);
-      opts.log(`DEFERRED ${s.name} ${asked === "blocked" ? "blocked" : `working past ${opts.waitMinutes} min`}`);
+      const why =
+        typeof asked === "object" ? `not ready (${asked.notReady})` : asked === "blocked" ? "blocked" : `working past ${opts.waitMinutes} min`;
+      opts.log(`DEFERRED ${s.name} ${why}`);
       return 0;
     }
     j = { ...j, briefPath: await capture(d, s, j, asked === "gone") };
@@ -144,13 +149,19 @@ async function agentSession(d: Deps, s: Subject, j: MigrateJournal | undefined, 
   return swapAgent(d, s, j, opts);
 }
 
-async function migrateName(d: Deps, name: string, from: SessionRef, opts: MigrateOpts, sub: () => Subject): Promise<number> {
-  const j = readJournal(d.store.root, name);
+/** False (having logged SKIP) when `from` is already on the target and no run is in progress; refuses a run toward another runtime. */
+function needed(name: string, from: SessionRef, j: MigrateJournal | undefined, opts: MigrateOpts): boolean {
   if (j !== undefined && j.to !== opts.to) throw new Refusal(`a migration of ${name} is in progress toward ${j.to}; finish it with --to ${j.to}`);
   if (j === undefined && from.runtime === opts.to) {
     opts.log(`SKIP ${name} already on ${opts.to}`);
-    return 0;
+    return false;
   }
+  return true;
+}
+
+async function migrateName(d: Deps, name: string, from: SessionRef, opts: MigrateOpts, sub: () => Subject): Promise<number> {
+  const j = readJournal(d.store.root, name);
+  if (!needed(name, from, j, opts)) return 0;
   if (opts.dryRun) {
     const what = j === undefined ? `inbox entries: ${d.store.queued(from).length}` : `resume at ${j.phase}`;
     opts.log(`PLAN ${name} ${refText(from)} -> ${opts.to} (${what})`);
@@ -159,7 +170,11 @@ async function migrateName(d: Deps, name: string, from: SessionRef, opts: Migrat
   const release = lockMigration(d.store.root, name, d.now());
   if (!release) throw new Refusal(`another seori migrate of ${name} is running`);
   try {
-    return await agentSession(d, sub(), j, opts);
+    // Another run may have finished or started between the reads above and the lock: decide again on what is there now.
+    const locked = readJournal(d.store.root, name);
+    const s = sub();
+    if (!needed(name, s.from, locked, opts)) return 0;
+    return await agentSession(d, s, locked, opts);
   } finally {
     release();
   }
@@ -202,7 +217,7 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtensi
       throw new Refusal(`no ${role} session registered`);
     }
     if (isSelf(role, ref)) continue;
-    code = Math.max(code, await migrateName(d, role, ref, opts, () => roleSubject(d, role, ref, leadExtension)));
+    code = Math.max(code, await migrateName(d, role, ref, opts, () => roleSubject(d, role, d.store.roles()[role] ?? ref, leadExtension)));
   }
   return code;
 }

@@ -63,6 +63,7 @@ Each session ends with one line:
 - `MIGRATED <name> <old> -> <new>`: done.
 - `MIGRATE_ROLLBACK <name> <new> <why>`: the replacement did not start or did not verify. It is closed, and the inbox entries go back to the old inbox: queued entries go back queued, held entries stay held, and entries that were typed come back as ambiguous (held), never retyped. The hold is lifted, and the exit code is 3.
 - `DEFERRED <name> blocked`: nothing moved, the blocked session got no message, and the hold is lifted.
+- `DEFERRED <name> not ready (<status>)`: the runtime refused the checkpoint ask without typing it (on hc, the session's status changed under the ask or is unknown). Nothing moved, nothing was delivered, and the hold is lifted; run `seori migrate` again later.
 - `DEFERRED <name> working past N min`: nothing moved and the hold is lifted, but the session already received the checkpoint ask. The duty loop nudges it back to its lane work as it nudges any lane that goes quiet.
 - `SKIP <name> already on <runtime>`.
 - `SKIP <key> paused`: only under `--all`. A paused lane is not migrated, because the replacement would start working on its kickoff; named with `--lane`, it is refused (exit 2). Resume it first.
