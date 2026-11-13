@@ -12,12 +12,14 @@ export type Hooks = {
   readonly onReady?: ArgvTemplate;
   readonly onReport?: ArgvTemplate;
   readonly onLost?: ArgvTemplate;
+  /** Speech to text: `{file}` is an audio file path; the command prints the transcript on stdout. */
+  readonly transcribe?: ArgvTemplate;
 };
 
 export type HookName = keyof Hooks;
-export type HookVars = Partial<Record<"key" | "text" | "evidence", string>>;
+export type HookVars = Partial<Record<"key" | "text" | "evidence" | "file", string>>;
 
-const NAMES: readonly HookName[] = ["onReady", "onReport", "onLost"];
+const NAMES: readonly HookName[] = ["onReady", "onReport", "onLost", "transcribe"];
 
 function template(name: string, value: unknown): ArgvTemplate {
   if (!Array.isArray(value) || value.length === 0)
@@ -61,10 +63,10 @@ export function loadHooks(root: string): Hooks {
   return hooks;
 }
 
-/** Substitutes `{key}`, `{text}`, `{evidence}` inside each element. */
+/** Substitutes `{key}`, `{text}`, `{evidence}`, `{file}` inside each element. */
 export function substitute(argv: ArgvTemplate, vars: HookVars): string[] {
   return argv.map((element) =>
-    element.replace(/\{(key|text|evidence)\}/g, (whole, k: keyof HookVars) => vars[k] ?? whole),
+    element.replace(/\{(key|text|evidence|file)\}/g, (whole, k: keyof HookVars) => vars[k] ?? whole),
   );
 }
 
@@ -96,7 +98,7 @@ const firstLine = (s: string): string => s.trim().split("\n")[0] ?? "";
  * Runs a lifecycle hook fire-and-forget: the caller never waits for it and it never throws. A bad config, a spawn
  * error or a non-zero exit writes one stderr line. The returned promise is only for callers that want to await it.
  */
-export function runHook(d: Deps, name: HookName, vars: HookVars): Promise<void> {
+export function runHook(d: Deps, name: Exclude<HookName, "transcribe">, vars: HookVars): Promise<void> {
   const fail = (why: string) => {
     process.stderr.write(`seori: hook ${name} failed (${why})\n`);
   };

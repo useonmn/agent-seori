@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -18,7 +18,8 @@ import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
 import { pidAlive, type Lane, type Role } from "./store.ts";
 import { parsePr, promptsDir } from "./harness.ts";
-import { hooksSettled } from "./hooks.ts";
+import { hooksSettled, loadHooks } from "./hooks.ts";
+import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 import { candidateLine, DEFAULT_PAIR_MINUTES, pairedLine, pairOwner } from "./pair.ts";
 import { canLaunch, canLaunchLine, guardLines } from "./guard.ts";
 import { runHeavy } from "./heavy.ts";
@@ -52,6 +53,7 @@ const USAGE = `seori - a proactive multi-session harness on herdr + omp
                                               register an already-running session as a lane (types nothing into it)
   seori sync [--write]                         lane registry vs live sessions in the seori.group group; with --write a
                                               vanished lane is marked lost (no session is ever closed)
+  seori transcribe <audio-file>                run hooks.transcribe (config.json, argv template with {file}) and print the text
   seori report <key> --text T [--status working|waiting]
   seori ready <key> --text T --evidence LINK [--evidence LINK ...]
   seori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane's agent is idle
@@ -797,6 +799,17 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "sync": {
       console.log((await syncRegistry(d, one(a, "write") === "true")).lines.join("\n"));
+      return 0;
+    }
+    case "transcribe": {
+      const file = need(x, "audio file");
+      if (!existsSync(file)) throw new Refusal(`audio file not found: ${file}`);
+      try {
+        console.log(await transcribe(d.exec, loadHooks(d.store.root).transcribe, file));
+      } catch (e) {
+        if (e instanceof TranscriptionError) throw new Refusal(e.message);
+        throw e;
+      }
       return 0;
     }
     case "report": {

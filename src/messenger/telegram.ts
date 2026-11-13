@@ -1,5 +1,8 @@
+import { mkdirSync } from "node:fs";
+import { extname, join } from "node:path";
 import { ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
+import type { VoiceTranscriber } from "./voice.ts";
 
 // Telegram Bot API over plain fetch: getUpdates long polling in, sendMessage out. The cursor is the next update offset,
 // saved after each update was handled; Telegram confirms an update once getUpdates is called with a higher offset and
@@ -44,6 +47,13 @@ export type TelegramDeps = {
   pairing?: boolean;
   /** Where the cursor lives instead of `root` (`seori msg pair` points it at a temp dir so the daemon's cursor is untouched). */
   cursorRoot?: string;
+  /**
+   * Voice and audio messages: when set, the owner's voice/audio file is downloaded to <root>/messenger/<source>/voice/
+   * and its transcript is appended to the message text as a "[transcript: ...]" line. A failure (hook missing or
+   * failing, download error) leaves the text as it was (the file is still referenced) and calls `warn` once.
+   */
+  transcribe?: VoiceTranscriber;
+  warn?: (line: string) => void;
 };
 
 /** Thrown out of receive(): retrying cannot help, the owner has to change something. */
@@ -59,6 +69,8 @@ export class TelegramAdapter implements MessengerAdapter {
   private readonly sleepFn: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private readonly pairing: boolean;
+  private readonly transcribe: VoiceTranscriber | undefined;
+  private readonly warn: (line: string) => void;
 
   constructor(config: MessengerConfig, private readonly root: string, deps: TelegramDeps = {}) {
     this.source = config.source;
@@ -71,6 +83,8 @@ export class TelegramAdapter implements MessengerAdapter {
     this.sleepFn = deps.sleep ?? ((ms) => Bun.sleep(ms));
     this.now = deps.now ?? Date.now;
     this.pairing = deps.pairing === true;
+    this.transcribe = deps.pairing === true ? undefined : deps.transcribe;
+    this.warn = deps.warn ?? ((line) => void process.stderr.write(`${line}\n`));
   }
 
   private token(): string {
@@ -155,13 +169,41 @@ export class TelegramAdapter implements MessengerAdapter {
       if (!Array.isArray(result)) continue;
       for (const update of result as Update[]) {
         if (signal.aborted) return;
-        const m = this.inbound(update);
+        const m = await this.withTranscript(update, token, this.inbound(update));
         // A rejection propagates before the save, so this update is fetched again on the next receive.
         if (m) await onMessage(m);
         offset = update.update_id + 1;
         this.cursor.save({ offset });
       }
     }
+  }
+
+  /** `m` plus a transcript line when the update carries a voice/audio file and hooks.transcribe produces one. */
+  private async withTranscript(update: Update, token: string, m: InboundMessage | undefined): Promise<InboundMessage | undefined> {
+    const file = (update.edited_message ?? update.message)?.voice ?? (update.edited_message ?? update.message)?.audio;
+    if (!m || !file || !this.transcribe) return m;
+    try {
+      const text = await this.transcribe(() => this.download(token, file));
+      return { ...m, text: `${m.text}\n[transcript: ${text}]` };
+    } catch (e) {
+      const why = String((e as Error)?.message ?? e).replaceAll(token, "<token>").trim().split("\n")[0];
+      this.warn(`seori: telegram (${this.source}): voice message not transcribed: ${why}`);
+      return m;
+    }
+  }
+
+  /** Saves a Telegram file under <root>/messenger/<source>/voice/ and returns its path (the file is kept). */
+  private async download(token: string, f: FileRef): Promise<string> {
+    const res = await httpJson(this.url(token, "getFile"), { body: { file_id: f.file_id } }, { mutating: false, timeoutMs: 30_000, retries: 2, sleep: this.sleepFn });
+    const filePath = ((res.body as ApiBody | undefined)?.result as { file_path?: string } | undefined)?.file_path;
+    if (!filePath) throw new Error("telegram getFile answered without a file path");
+    const got = await fetch(`${this.apiBase}/file/bot${token}/${filePath}`, { signal: AbortSignal.timeout(120_000) });
+    if (!got.ok) throw new Error(`telegram file download failed (${got.status})`);
+    const dir = join(this.root, "messenger", this.source, "voice");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${f.file_id.replace(/[^\w-]/g, "_")}${extname(filePath) || ".ogg"}`);
+    await Bun.write(path, got);
+    return path;
   }
 
   /** The owner's message as an InboundMessage, or undefined for anything to skip (others, bots, channels, empty). */
