@@ -406,14 +406,15 @@ describe("lifecycle", () => {
     await until("muted events", () => (t.store.get(w.id)?.mutedEvents ?? 0) >= 3);
     const texts = t.texts();
     expect(texts).toHaveLength(7);
-    expect(texts.slice(0, 6).every((x) => /^\[watch chat \w+\] \d+$/.test(x))).toBe(true);
+    // One wake can carry several lines when they arrive within one read (a slow runner), so a wake is one or more numbers.
+    expect(texts.slice(0, 6).every((x) => /^\[watch chat \w+\] \d+(\n\d+)*$/.test(x))).toBe(true);
     expect(texts[6]).toBe(`[watch chat ${w.id}] muted after 6 wakes in 1h; seori watch rearm ${w.id} to resume`);
 
     // what `seori watch rearm` writes
     const cur = t.store.get(w.id) as Watch;
     t.store.save({ ...cur, status: "active", wakes: [], mutedEvents: 0 });
     await until("delivery resumed", () => t.delivered.length >= 9);
-    expect(t.texts().slice(7).every((x) => /^\[watch chat \w+\] \d+$/.test(x))).toBe(true);
+    expect(t.texts().slice(7).every((x) => /^\[watch chat \w+\] \d+(\n\d+)*$/.test(x))).toBe(true);
   });
 
   /** A chatty command that also writes its line count to a file, so a test can wait for lines instead of for time. */
