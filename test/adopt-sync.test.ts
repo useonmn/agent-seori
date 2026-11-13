@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { adoptLane, syncRegistry } from "../src/adopt-sync.ts";
 import { main } from "../src/cli.ts";
 import { Refusal, type Deps } from "../src/harness.ts";
-import { Runtimes } from "../src/runtime/index.ts";
 import type { SessionRef } from "../src/runtime/types.ts";
 import type { Lane } from "../src/store.ts";
 import { World } from "./fake.ts";
@@ -23,7 +22,7 @@ const lane = (key: string, r: SessionRef, status: Lane["status"]): Lane => ({
 function setup(initial: Parameters<typeof rig>[0], knobs: Parameters<typeof rig>[2] = {}) {
   const r = rig(initial, {}, knobs);
   const w = new World();
-  const d: Deps = { ...w.deps(), runtimes: new Runtimes("hc", () => r.rt) };
+  const d: Deps = { ...w.deps(), runtime: r.rt };
   return { r, d };
 }
 

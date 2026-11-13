@@ -15,8 +15,6 @@ grep -E '^\s*notes\s*=\s*false' "${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/co
 
 Also needed: bun 1.3+, git, omp on PATH (logged in to a model provider), the GitHub CLI `gh` logged in (`gh auth status`) for reviews, merges and Done signals on PRs, and on Linux a running systemd user session (`systemctl --user`). macOS works without systemd; Windows is not supported.
 
-herdr can stand in for hc (`SEORI_RUNTIME=herdr`). It then needs its omp integration: `herdr integration status` must show an `omp:` line that does not say `not installed` (`herdr integration install omp` if it does); without it herdr reports omp as idle at all times and seori refuses to start lanes.
-
 ## 2. Install seori
 
 ```sh
@@ -48,7 +46,7 @@ seori up [--cwd DIR]
 # UP lead=hc:t1 duty=hc:t2 units=seori-seori-1a2b3c4d-daemon.service,seori-seori-1a2b3c4d-duty.service,seori-seori-1a2b3c4d-hourly.service home=~/.seori name=seori
 ```
 
-That opens the lead terminal (omp with `prompts/lead.md`) and the duty terminal, labelled `seori.group=<name>`, and on Linux runs the duty loop, the hourly loop and the messenger daemon as `systemd --user` units (on macOS as hc terminals of the same group). On herdr it opens one workspace with all five panes. From now on the lead pane receives the owner's messages and answers them. If `messengers.json` changes later, the daemon restarts on its own.
+That opens the lead terminal (omp with `prompts/lead.md`) and the duty terminal, labelled `seori.group=<name>`, and on Linux runs the duty loop, the hourly loop and the messenger daemon as `systemd --user` units (on macOS as hc terminals of the same group). From now on the lead receives the owner's messages and answers them. If `messengers.json` changes later, the daemon restarts on its own.
 
 Tell the owner the lead is up and which terminal it is in.
 

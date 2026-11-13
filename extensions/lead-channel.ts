@@ -6,8 +6,7 @@
 // It also releases the lead's reply drafts (src/outbox.ts): a flush after a turn ends with no continuation, held when
 // omp's advisor steers a continuation (src/release.ts decides when).
 //
-// Env (set by `seori up` on the lead's workspace shell with `herdr workspace create --env`, which omp inherits; herdr
-// agent start has no --env): SEORI_HOME (the extension is inert without it) and SEORI_CMD (how the lead runs seori,
+// Env (set by `seori up` on the lead's hc terminal shell, which omp inherits): SEORI_HOME (the extension is inert without it) and SEORI_CMD (how the lead runs seori,
 // quoted into the message; default `seori`).
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { readFileSync, watch, type FSWatcher } from "node:fs";

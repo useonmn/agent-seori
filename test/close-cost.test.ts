@@ -9,11 +9,11 @@ import { World } from "./fake.ts";
 const assistant = (totalTokens: number, cost: number) =>
   JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 1, output: 2, totalTokens, cost: { total: cost } } } });
 
-/** A herdr lane `fix-a` in w1:p5 whose omp session file holds `lines` (none: no session path reported). */
+/** A lane `fix-a` in hc:t5 whose omp session file holds `lines` (none: no session path reported). */
 function setup(lines?: string[], hooks?: unknown) {
   const w = new World();
   const d = w.deps();
-  const pane = w.addPane("w1:p5", "idle");
+  const pane = w.addPane("t5", "idle");
   pane.agent = "omp";
   if (lines) {
     const path = join(d.store.root, "session.jsonl");
@@ -22,7 +22,7 @@ function setup(lines?: string[], hooks?: unknown) {
   }
   if (hooks !== undefined) writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ hooks }));
   const lane: Lane = {
-    key: "fix-a", sessionRef: { runtime: "herdr", id: "w1:p5", container: "w1:t5" }, paneId: "w1:p5", tabId: "w1:t5", brief: "/dev/null",
+    key: "fix-a", sessionRef: { runtime: "hc", id: "t5" }, paneId: "t5", tabId: "w1:t5", brief: "/dev/null",
     cwd: "/repo", status: "ready", createdAt: 7, lastActivityAt: 7, nudges: 0, log: [],
   };
   d.store.saveLane(lane);
@@ -39,7 +39,7 @@ describe("cost recorded when a lane closes", () => {
     const { w, d, lane, ledger } = setup([assistant(100, 0.25), assistant(50, 0.5)]);
     w.clock = 9_000;
     await closeLane(d, lane, "closed by lead");
-    expect(w.panes.has("w1:p5")).toBe(false);
+    expect(w.panes.has("t5")).toBe(false);
     expect(ledger()).toEqual([{ key: "fix-a", closeKey: "fix-a@7", tokens: 150, costUsd: 0.75, at: 9_000 }]);
     // A retried close of the same lane records nothing more.
     await closeLane(d, d.store.lane("fix-a")!, "closed by lead");

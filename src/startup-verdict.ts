@@ -3,7 +3,7 @@
 // classified, so a lane whose omp hit "No API key", a 429 or a spent quota is not reported as started.
 import { openLaneSession, type Deps, type StartOptions } from "./harness.ts";
 import { refText } from "./refs.ts";
-import { statusOf, type AgentStatus } from "./runtime/index.ts";
+import type { AgentStatus } from "./runtime/index.ts";
 import { startupFailure } from "./startup-screen.ts";
 import type { Lane } from "./store.ts";
 
@@ -12,7 +12,7 @@ export const FIRST_CHECK_MS = 20_000;
 export const RECHECK_MS = 10_000;
 const SCREEN_LINES = 40;
 
-/** omp is running: idle, working, or done (herdr: a finished turn not looked at yet). */
+/** omp is running: idle, working, or done (a finished turn not looked at yet). */
 const ready = (s: AgentStatus | undefined): boolean => s === "idle" || s === "working" || s === "done";
 const unreported = (s: AgentStatus | undefined): boolean => s === undefined || s === "unknown";
 /** omp ran a turn on the kickoff: the `/goal` it carries put omp in goal mode. */
@@ -31,13 +31,13 @@ async function look(d: Deps, lane: Lane): Promise<Look | "finished"> {
   const ref = lane.sessionRef;
   let screen: string;
   try {
-    screen = await d.runtimes.for(ref).read(ref, SCREEN_LINES, { unwrapped: true });
+    screen = await d.runtime.read(ref, SCREEN_LINES, { unwrapped: true });
   } catch (e) {
     return finished(d, lane.key) ? "finished" : { screen: "", error: `screen read failed: ${message(e)}` };
   }
   let status: AgentStatus;
   try {
-    status = await statusOf(d.runtimes, ref);
+    status = await d.runtime.status(ref);
   } catch (e) {
     return finished(d, lane.key) ? "finished" : { screen, error: `status lookup failed: ${message(e)}` };
   }

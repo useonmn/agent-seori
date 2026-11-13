@@ -1,5 +1,5 @@
 import { type Deps, Refusal } from "./harness.ts";
-import { DeliveryUncertain, deliverOrThrow, session, statusOf, ToolError, type SessionRef } from "./runtime/index.ts";
+import { DeliveryUncertain, deliverOrThrow, ToolError, type SessionRef } from "./runtime/index.ts";
 import type { Lane, LaneStatus } from "./store.ts";
 import { refText } from "./refs.ts";
 
@@ -40,7 +40,7 @@ export const READ_BACK_LINES = 200;
 export const READ_BACK_TRIES = 8;
 export const READ_BACK_INTERVAL_MS = 700;
 
-/** After the pause is saved, how long herdr is watched for a turn that starts late (one Escape if it does), and how often. */
+/** After the pause is saved, how long the lane is watched for a turn that starts late (one Escape if it does), and how often. */
 export const ESCAPE_WATCH_MS = 3_000;
 export const ESCAPE_WATCH_INTERVAL_MS = 500;
 
@@ -52,10 +52,11 @@ const count = (screen: string, shown: RegExp): number => screen.match(shown)?.le
  * like a sure one: the screen decides.
  */
 async function goalCommand(d: Deps, to: SessionRef, text: string, shown: RegExp, sleep: (ms: number) => Promise<void>): Promise<"confirmed" | "unconfirmed" | "no agent"> {
-  const { rt, ref } = session(d.runtimes, to);
+  const { rt, ref } = { rt: d.runtime, ref: to };
   const before = count(await rt.read(ref, READ_BACK_LINES), shown);
   try {
-    if (!(await deliverOrThrow(rt, ref, text))) return "no agent";
+    // A goal-mode lane reads working until its goal ends: the command goes in whatever the status, never into a dialog.
+    if (!(await deliverOrThrow(rt, ref, text, { when: "any" }))) return "no agent";
   } catch (e) {
     if (!(e instanceof DeliveryUncertain)) throw e;
   }
@@ -73,26 +74,26 @@ function laneOrRefuse(d: Deps, key: string): Lane {
 }
 
 /**
- * Runs a goal command, refusing plainly when the lane's pane is gone before it or vanishes during it (herdr's
- * pane_not_found would otherwise surface as a stack trace).
+ * Runs a goal command, refusing plainly when the lane's pane is gone before it or vanishes during it (a not_found
+ * would otherwise surface as a stack trace).
  */
 async function goalCommandOrRefuse(d: Deps, lane: Lane, text: string, shown: RegExp, sleep: (ms: number) => Promise<void>, gone: string): Promise<"confirmed" | "unconfirmed" | "no agent"> {
-  if ((await statusOf(d.runtimes, lane.sessionRef)) === "gone") throw new Refusal(gone);
+  if ((await d.runtime.status(lane.sessionRef)) === "gone") throw new Refusal(gone);
   try {
     return await goalCommand(d, lane.sessionRef, text, shown, sleep);
   } catch (e) {
-    if (e instanceof ToolError && (await statusOf(d.runtimes, lane.sessionRef).catch(() => undefined)) === "gone") throw new Refusal(gone);
+    if (e instanceof ToolError && (await d.runtime.status(lane.sessionRef).catch(() => undefined)) === "gone") throw new Refusal(gone);
     throw e;
   }
 }
 
 /**
- * Whether a turn runs on the pane within ESCAPE_WATCH_MS: herdr may still read idle in the first moment of a turn (a
+ * Whether a turn runs on the pane within ESCAPE_WATCH_MS: the status may still read idle in the first moment of a turn (a
  * pause sent during the kickoff turn's first second), so one idle reading does not prove no turn will run.
  */
 async function turnRunning(d: Deps, to: SessionRef, sleep: (ms: number) => Promise<void>): Promise<boolean> {
   for (let waited = 0; ; waited += ESCAPE_WATCH_INTERVAL_MS) {
-    const st = await statusOf(d.runtimes, to);
+    const st = await d.runtime.status(to);
     if (st === "working") return true;
     if (st === "gone" || waited >= ESCAPE_WATCH_MS) return false;
     await sleep(ESCAPE_WATCH_INTERVAL_MS);
@@ -117,8 +118,6 @@ function clearPausedMarks(lane: Lane): void {
  */
 export async function pauseLane(d: Deps, key: string, note?: string, opts: PauseOptions = {}): Promise<PauseOutcome> {
   const lane = laneOrRefuse(d, key);
-  // seori migrate re-reads the lane after its checkpoint ask and defers on a pause that was already under way.
-  if (lane.migration === true) throw new Refusal(`lane ${key} is being migrated; wait for seori migrate to finish`);
   if (lane.status === "paused") return { lane, lines: [`PAUSED ${key} already`] };
   if (!PAUSABLE.has(lane.status)) throw new Refusal(`lane ${key} is ${lane.status}; only a working, waiting or ready lane can be paused`);
   const sleep = opts.sleep ?? Bun.sleep;
@@ -134,10 +133,10 @@ export async function pauseLane(d: Deps, key: string, note?: string, opts: Pause
   clearPausedMarks(fresh);
   fresh.log.push({ at: now, kind: "pause", text: note?.trim() || "paused" });
   d.store.saveLane(fresh);
-  // herdr reads a goal-mode omp as working until its goal ends; with the goal paused, working means a turn still runs.
+  // A goal-mode omp reads as working until its goal ends; with the goal paused, working means a turn still runs.
   if (!(await turnRunning(d, fresh.sessionRef, sleep))) return { lane: fresh, lines: [`PAUSED ${key} goal paused`] };
   try {
-    const { rt, ref } = session(d.runtimes, fresh.sessionRef);
+    const { rt, ref } = { rt: d.runtime, ref: fresh.sessionRef };
     await rt.keys(ref, ["escape"]);
   } catch (e) {
     const reason = e instanceof ToolError ? (e.result.stderr || e.result.stdout).trim() : String(e);
@@ -154,7 +153,6 @@ export async function pauseLane(d: Deps, key: string, note?: string, opts: Pause
  */
 export async function resumeLane(d: Deps, key: string, note?: string, opts: PauseOptions = {}): Promise<PauseOutcome> {
   const lane = laneOrRefuse(d, key);
-  if (lane.migration === true) throw new Refusal(`lane ${key} is being migrated; wait for seori migrate to finish`);
   if (lane.status !== "paused") throw new Refusal(`lane ${key} is ${lane.status}, not paused`);
   const goal = await goalCommandOrRefuse(d, lane, "/goal resume", RESUMED_SHOWN, opts.sleep ?? Bun.sleep, `lane ${key}'s pane ${refText(lane.sessionRef)} is gone; nothing to resume (duty marks the lane lost)`);
   if (goal !== "confirmed") throw new Unverified(`RESUME_UNVERIFIED ${key} /goal resume ${goal}; lane left paused`);

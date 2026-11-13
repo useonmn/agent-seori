@@ -14,7 +14,7 @@ export type WatchSource =
   | { readonly kind: "file"; readonly path: string }
   /** A GitHub PR's checks; one event when every check has finished (pass or fail), then the watch is done. */
   | { readonly kind: "checks"; readonly repo: string; readonly number: number }
-  /** A herdr pane's agent state; one event when it reaches `status`, then the watch is done. */
+  /** An hc terminal's agent state; one event when it reaches `status`, then the watch is done. */
   | { readonly kind: "pane"; readonly pane: string; readonly status: "idle" | "working" | "blocked" | "gone" };
 
 /** Who gets woken: the lead, or a lane by key. */

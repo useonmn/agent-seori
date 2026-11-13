@@ -1,5 +1,5 @@
 import { ConfigError, loadConfig } from "./config.ts";
-import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
+import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
 import { Refusal, send, tellLead, type Deps, type DutyEvent, type SendResult } from "./harness.ts";
 import { checkSignals, defaultSignalIo, type SignalIo } from "./signals.ts";
 import { recordCloseCost } from "./supervision.ts";
@@ -44,7 +44,7 @@ export async function closeLane(d: Deps, lane: Lane, note: string): Promise<void
   await recordCloseCost(d, lane).catch((e: unknown) => {
     process.stderr.write(`seori: lane ${lane.key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
   });
-  const { rt, ref } = session(d.runtimes, lane.sessionRef);
+  const { rt, ref } = { rt: d.runtime, ref: lane.sessionRef };
   if ((await rt.status(ref)) !== "gone") await rt.close(ref);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: note });
@@ -95,8 +95,7 @@ function eventDetail(e: unknown): string {
  * later pass. READY lanes without a Done line are the lead's to close.
  */
 export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Promise<DutyEvent[]> {
-  // A lane being migrated (seori migrate) is left alone, as dutyTick and superviseTick leave it.
-  const due = d.store.lanes().filter((l) => l.status === "ready" && l.done !== undefined && l.final && l.migration !== true);
+  const due = d.store.lanes().filter((l) => l.status === "ready" && l.done !== undefined && l.final);
   if (!due.length) return [];
   let closeAfterMin: number;
   try {
@@ -109,7 +108,7 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
   for (const lane of due) {
     if (d.now() - lane.final!.at < closeAfterMin * 60_000) continue;
     try {
-      const st = await statusOf(d.runtimes, lane.sessionRef);
+      const st = await d.runtime.status(lane.sessionRef);
       if (st === "working" || st === "blocked") {
         events.push({ lane: lane.key, action: "close-deferred", detail: `pane is ${st}` });
         continue;

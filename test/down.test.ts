@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DAEMON_SLOW_MS, DAEMON_START_MS, heartbeatSince } from "../src/cli.ts";
 import { heartbeatPath } from "../src/daemon.ts";
 import { down, recordPath, running, stopPath } from "../src/down.ts";
@@ -21,7 +21,7 @@ describe("seori down", () => {
   test("ends a running duty loop between ticks: exit 0, its record gone", async () => {
     const root = home();
     const duty = Bun.spawn([process.execPath, CLI, "duty", "--interval", "3600"], {
-      env: { ...process.env, SEORI_HOME: root, SEORI_HERDR_SESSION: "seori-test-none" }, stdout: "pipe", stderr: "ignore",
+      env: { ...process.env, SEORI_HOME: root, PATH: dirname(process.execPath) }, stdout: "pipe", stderr: "ignore",
     });
     try {
       await until("the duty record", () => existsSync(recordPath(root, "duty")), 15_000);

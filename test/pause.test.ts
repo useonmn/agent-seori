@@ -2,24 +2,24 @@ import { describe, expect, test } from "bun:test";
 import { Refusal } from "../src/harness.ts";
 import { ESCAPE_WATCH_MS, pauseLane, READ_BACK_TRIES, resumeLane, Unverified } from "../src/pause.ts";
 import type { Lane, LaneStatus } from "../src/store.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
 const noSleep = { sleep: async () => {} };
 
 function setup(status: LaneStatus = "working", extra: Partial<Lane> = {}) {
   const w = new World();
   const d = w.deps();
-  w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
-  const pane = w.addPane("w1:p5", "idle");
+  w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
+  const pane = w.addPane("t5", "idle");
   pane.agent = "omp";
   pane.screen = ["some output"];
   d.store.saveLane({
-    key: "fix-a", sessionRef: { runtime: "herdr", id: "w1:p5", container: "w1:t5" }, paneId: "w1:p5", tabId: "w1:t5", brief: "/dev/null", cwd: "/", status,
+    key: "fix-a", sessionRef: { runtime: "hc", id: "t5" }, paneId: "t5", tabId: "w1:t5", brief: "/dev/null", cwd: "/", status,
     createdAt: 0, lastActivityAt: 0, nudges: 2, log: [], ...extra,
   });
-  const reads = () => w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "read").length;
-  const keys = () => w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "send-keys").map((c) => c.argv.slice(2));
+  const reads = () => w.calls.filter((c) => c.argv[1] === "read").length;
+  const keys = () => w.calls.filter((c) => c.argv[1] === "keys").map((c) => c.argv.slice(2));
   return { w, d, pane, reads, keys };
 }
 
@@ -38,12 +38,12 @@ describe("seori pause", () => {
     expect(lane.log.at(-1)).toEqual({ at: 5_000, kind: "pause", text: "owner said wait" });
   });
 
-  test("the read-back uses recent-unwrapped lines of the lane's pane", async () => {
+  test("the read-back reads the last 200 lines of the lane's terminal", async () => {
     const { w, d, pane } = setup();
     pane.onPrompt = () => pane.screen!.push(" Goal mode paused.");
     await pauseLane(d, "fix-a", undefined, noSleep);
     const read = w.calls.find((c) => c.argv[1] === "read")!;
-    expect(read.argv).toEqual(["pane", "read", "w1:p5", "--source", "recent-unwrapped", "--lines", "200"]);
+    expect(read.argv).toEqual(["--json", "read", "t5", "--lines", "200"]);
     expect(d.store.lane("fix-a")!.log.at(-1)!.text).toBe("paused");
   });
 
@@ -53,9 +53,9 @@ describe("seori pause", () => {
     pane.onPrompt = () => pane.screen!.push(" Goal mode paused.");
     const out = await pauseLane(d, "fix-a", undefined, noSleep);
     expect(out.lines).toEqual(["PAUSED fix-a goal paused, running turn interrupted"]);
-    expect(keys()).toEqual([["w1:p5", "esc"]]);
-    const prompt = w.calls.findIndex((c) => c.argv[0] === "agent" && c.argv[1] === "prompt");
-    const esc = w.calls.findIndex((c) => c.argv[1] === "send-keys");
+    expect(keys()).toEqual([["t5", "esc"]]);
+    const prompt = w.calls.findIndex((c) => c.argv[1] === "send");
+    const esc = w.calls.findIndex((c) => c.argv[1] === "keys");
     expect(prompt).toBeLessThan(esc);
   });
 
@@ -104,7 +104,7 @@ describe("seori pause", () => {
 
   test("an uncertain delivery is read back like a sure one; unconfirmed stays unverified", async () => {
     const { w, d } = setup();
-    w.promptFails.set("w1:p5", "timeout");
+    w.promptFails.set("t5", "timeout");
     const err = await pauseLane(d, "fix-a", undefined, noSleep).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Unverified);
   });
@@ -128,12 +128,12 @@ describe("seori pause", () => {
   test("a turn that starts just after the goal is paused is still interrupted, once, within the watch window", async () => {
     const { d, pane, keys } = setup();
     pane.onPrompt = () => pane.screen!.push(" Goal mode paused.");
-    // herdr read idle when the pause was confirmed (the kickoff turn's first second); the turn shows up a moment later.
+    // hc read idle when the pause was confirmed (the kickoff turn's first second); the turn shows up a moment later.
     const slept: number[] = [];
     const sleep = async (ms: number) => { slept.push(ms); if (slept.length === 2) pane.status = "working"; };
     const out = await pauseLane(d, "fix-a", undefined, { sleep });
     expect(out.lines).toEqual(["PAUSED fix-a goal paused, running turn interrupted"]);
-    expect(keys()).toEqual([["w1:p5", "esc"]]);
+    expect(keys()).toEqual([["t5", "esc"]]);
     expect(d.store.lane("fix-a")!.status).toBe("paused");
   });
 
@@ -162,19 +162,19 @@ describe("seori pause", () => {
 
   test("a gone pane is a clear refusal and nothing is sent", async () => {
     const { w, d } = setup();
-    w.panes.delete("w1:p5");
+    w.panes.delete("t5");
     const err = await pauseLane(d, "fix-a", undefined, noSleep).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Refusal);
-    expect((err as Error).message).toBe("lane fix-a's pane w1:p5 is gone; nothing to pause");
+    expect((err as Error).message).toBe("lane fix-a's pane hc:t5 is gone; nothing to pause");
     expect(d.store.lane("fix-a")!.status).toBe("working");
   });
 
   test("a pane that vanishes during the read-back is a clear refusal too", async () => {
     const { w, d, pane } = setup();
-    pane.onPrompt = () => { w.panes.delete("w1:p5"); };
+    pane.onPrompt = () => { w.panes.delete("t5"); };
     const err = await pauseLane(d, "fix-a", undefined, noSleep).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Refusal);
-    expect((err as Error).message).toBe("lane fix-a's pane w1:p5 is gone; nothing to pause");
+    expect((err as Error).message).toBe("lane fix-a's pane hc:t5 is gone; nothing to pause");
   });
 });
 
@@ -216,22 +216,12 @@ describe("seori resume", () => {
     expect(pane.received).toEqual([]);
   });
 
-  test("a lane being migrated is refused for pause and resume, and nothing reaches its pane", async () => {
-    for (const status of ["working", "paused"] as const) {
-      const { d, pane } = setup(status, { migration: true, pausedFrom: "working" });
-      const act = status === "working" ? pauseLane : resumeLane;
-      expect(await act(d, "fix-a", undefined, noSleep).catch((e: unknown) => e)).toBeInstanceOf(Refusal);
-      expect(pane.received).toEqual([]);
-      expect(d.store.lane("fix-a")!.status).toBe(status);
-    }
-  });
-
   test("a gone pane is a clear refusal and the lane stays paused for duty to mark lost", async () => {
     const { w, d } = setup("paused", { pausedFrom: "working" });
-    w.panes.delete("w1:p5");
+    w.panes.delete("t5");
     const err = await resumeLane(d, "fix-a", undefined, noSleep).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Refusal);
-    expect((err as Error).message).toBe("lane fix-a's pane w1:p5 is gone; nothing to resume (duty marks the lane lost)");
+    expect((err as Error).message).toBe("lane fix-a's pane hc:t5 is gone; nothing to resume (duty marks the lane lost)");
     expect(d.store.lane("fix-a")!.status).toBe("paused");
   });
 });

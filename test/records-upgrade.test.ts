@@ -1,12 +1,13 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
-import type { SessionRef } from "../src/runtime/types.ts";
+import { HerdrRecord } from "../src/refs.ts";
 import { World } from "./fake.ts";
 
-// A lanes/<key>.json and a roles.json exactly as a binary from before runtimes existed wrote them.
+// Records a seori that ran on herdr wrote: a lane with only paneId/tabId (or a herdr sessionRef), bare role values and
+// an inbox file named after the pane. seori runs on hc only and refuses each with one line naming the file.
 const OLD_LANE = {
   key: "old-lane",
   paneId: "w1:p3",
@@ -20,77 +21,39 @@ const OLD_LANE = {
   log: [],
 };
 
-function oldHome() {
-  const w = new World();
-  const d = w.deps();
-  const laneFile = join(d.store.root, "lanes", "old-lane.json");
-  writeFileSync(laneFile, JSON.stringify(OLD_LANE));
-  writeFileSync(join(d.store.root, "lanes", "no-tab.json"), JSON.stringify({ ...OLD_LANE, key: "no-tab", tabId: "", createdAt: 2 }));
-  writeFileSync(join(d.store.root, "roles.json"), JSON.stringify({ lead: "w1:p1", duty: "w1:p2" }));
-  return { w, d, laneFile };
-}
+const home = () => new World().deps();
 
-async function captureLog(fn: () => Promise<unknown>): Promise<string> {
-  const lines: string[] = [];
-  const orig = console.log;
-  console.log = (...args: unknown[]) => void lines.push(args.join(" "));
-  try {
-    await fn();
-  } finally {
-    console.log = orig;
-  }
-  return lines.join("\n");
-}
-
-describe("records written before runtimes existed", () => {
-  test("lane() and lanes() read an old lane as the herdr pane it names; bare roles are herdr refs", () => {
-    const { d } = oldHome();
-    const want: SessionRef = { runtime: "herdr", id: "w1:p3", container: "w1:t3" };
-    const bare: SessionRef = { runtime: "herdr", id: "w1:p3" };
-    expect(d.store.lane("old-lane")?.sessionRef).toEqual(want);
-    expect(d.store.lanes().map((l) => l.sessionRef)).toEqual([want, bare]);
-    expect(d.store.roles()).toEqual({
-      lead: { runtime: "herdr", id: "w1:p1" },
-      duty: { runtime: "herdr", id: "w1:p2" },
-    });
-    expect(d.store.laneBySession({ runtime: "herdr", id: "w1:p3" })?.key).toBe("old-lane");
+describe("records a herdr seori wrote", () => {
+  test("a lane without sessionRef, or with a herdr one, is refused naming its file and pane", () => {
+    const d = home();
+    const file = join(d.store.root, "lanes", "old-lane.json");
+    writeFileSync(file, JSON.stringify(OLD_LANE));
+    expect(() => d.store.lane("old-lane")).toThrow(HerdrRecord);
+    expect(() => d.store.lanes()).toThrow(`${file} names the herdr pane w1:p3; seori runs on hc only`);
+    writeFileSync(file, JSON.stringify({ ...OLD_LANE, sessionRef: { runtime: "herdr", id: "w1:p3" } }));
+    expect(() => d.store.lane("old-lane")).toThrow(HerdrRecord);
   });
 
-  test("run twice, the result is identical; reading writes nothing, saving keeps paneId/tabId and saves the same bytes again", () => {
-    const { d, laneFile } = oldHome();
-    const before = readFileSync(laneFile, "utf8");
-    const first = { lane: d.store.lane("old-lane"), lanes: d.store.lanes(), roles: d.store.roles() };
-    const second = { lane: d.store.lane("old-lane"), lanes: d.store.lanes(), roles: d.store.roles() };
-    expect(second).toEqual(first);
-    expect(readFileSync(laneFile, "utf8")).toBe(before);
-    d.store.saveLane(first.lane!);
-    const saved = readFileSync(laneFile, "utf8");
-    expect(JSON.parse(saved)).toMatchObject({ paneId: "w1:p3", tabId: "w1:t3", sessionRef: first.lane!.sessionRef });
-    d.store.saveLane(d.store.lane("old-lane")!);
-    expect(readFileSync(laneFile, "utf8")).toBe(saved);
-    expect(d.store.lane("old-lane")).toEqual(first.lane!);
+  test("a bare role value is refused; an hc one reads back", () => {
+    const d = home();
+    const file = join(d.store.root, "roles.json");
+    writeFileSync(file, JSON.stringify({ lead: "w1:p1" }));
+    expect(() => d.store.roles()).toThrow(`${file} names the herdr pane w1:p1`);
+    writeFileSync(file, JSON.stringify({ lead: "hc:t1" }));
+    expect(d.store.roles()).toEqual({ lead: { runtime: "hc", id: "t1" } });
   });
 
-  test("roles.json keeps a herdr role bare and an hc role prefixed, so an older binary still reads it", () => {
-    const { d } = oldHome();
-    d.store.setRole("duty", { runtime: "hc", id: "t7" });
-    expect(JSON.parse(readFileSync(join(d.store.root, "roles.json"), "utf8"))).toEqual({ lead: "w1:p1", duty: "hc:t7" });
-    expect(d.store.roles().duty).toEqual({ runtime: "hc", id: "t7" });
-  });
-
-  test("a herdr inbox keeps its old file name; an hc inbox is prefixed, and both are listed back as refs", () => {
-    const { d } = oldHome();
-    d.store.enqueue({ runtime: "herdr", id: "w1:p3" }, { at: 1, from: "cli", text: "a" });
+  test("an inbox file without the hc-- prefix is refused; an hc one is listed back", () => {
+    const d = home();
     d.store.enqueue({ runtime: "hc", id: "t7" }, { at: 1, from: "cli", text: "b" });
-    expect(existsSync(join(d.store.root, "inbox", "w1_p3.jsonl"))).toBe(true);
-    expect(existsSync(join(d.store.root, "inbox", "hc--t7.jsonl"))).toBe(true);
-    expect(d.store.inboxPanes()).toEqual(expect.arrayContaining([{ runtime: "herdr", id: "w1:p3" }, { runtime: "hc", id: "t7" }]));
+    expect(d.store.inboxPanes()).toEqual([{ runtime: "hc", id: "t7" }]);
+    writeFileSync(join(d.store.root, "inbox", "w1_p3.jsonl"), `${JSON.stringify({ at: 1, from: "cli", text: "a" })}\n`);
+    expect(() => d.store.inboxPanes()).toThrow("names the herdr pane w1:p3");
   });
 
-  test("seori status shows the old lane and roles exactly as before", async () => {
-    const { d } = oldHome();
-    const out = (await captureLog(() => main(["status"], d))).split("\n");
-    expect(out[0]).toStartWith("lead=w1:p1 duty=w1:p2 ");
-    expect(out.find((l) => l.startsWith("old-lane"))).toMatch(/^old-lane\s+working\s+w1:p3\s/);
+  test("seori status refuses a herdr home with one line, exit 2 at the CLI", async () => {
+    const d = home();
+    writeFileSync(join(d.store.root, "roles.json"), JSON.stringify({ lead: "w1:p1" }));
+    await expect(main(["status"], d)).rejects.toThrow(HerdrRecord);
   });
 });

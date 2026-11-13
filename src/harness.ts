@@ -9,7 +9,7 @@ import { HcRuntime } from "./runtime/hc/index.ts";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Outbox } from "./outbox.ts";
 import {
-  choiceFor, defaultRuntimes, DeliveryUncertain, deliverOrThrow, Runtimes, session, shq, spawnExec, statusOf, ToolError, type AgentStatus, type Exec, type SessionRef,
+  DeliveryUncertain, deliverOrThrow, shq, spawnExec, ToolError, type AgentStatus, type Exec, type SessionRef, type SessionRuntime,
 } from "./runtime/index.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
@@ -26,7 +26,6 @@ import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
 import { refText, sameSession } from "./refs.ts";
 import { loadHooks, runHook } from "./hooks.ts";
-import { migrating } from "./migrate-journal.ts";
 
 export { KEY_RE, reservedKey };
 export { resolveTarget };
@@ -40,8 +39,8 @@ const LESSONS_RE = new RegExp(`^(?:${GLOBAL_LESSONS_HEADING}\\n(?:- .*\\n)*\\n)?
 
 export type Deps = {
   readonly store: Store;
-  /** Every session seori opens or talks to goes through these (src/runtime); records store each session's SessionRef. */
-  readonly runtimes: Runtimes;
+  /** Every session seori opens or talks to goes through this (hc, src/runtime/hc); records store each session's SessionRef. */
+  readonly runtime: SessionRuntime;
   readonly exec: Exec;
   readonly now: () => number;
   readonly agentCmd: string;
@@ -66,9 +65,12 @@ export const defaultDeps = (): Deps => {
   let agent: AgentProfile | undefined;
   const profile = (): AgentProfile => (agent ??= selectAgent(store.root).profile);
   const agentCmd = (): string => agentCommand(profile());
+  let hc: HcRuntime | undefined;
   return {
     store,
-    runtimes: defaultRuntimes(undefined, () => new HcRuntime(undefined, { agentCommand: agentCmd() }), choiceFor(store.root)),
+    get runtime() {
+      return (hc ??= new HcRuntime(undefined, { agentCommand: agentCmd() }));
+    },
     exec: spawnExec,
     now: Date.now,
     get agent() {
@@ -87,12 +89,12 @@ export const defaultDeps = (): Deps => {
   };
 };
 
-/** What selects this seori: its home, the herdr session it drives and the model it starts omp with. */
+/** What selects this seori: its home and the model it starts omp with. */
 const seoriVars = (home: string, env: Record<string, string | undefined>): [string, string][] =>
-  ([["SEORI_HOME", home], ["SEORI_HERDR_SESSION", env["SEORI_HERDR_SESSION"]], ["SEORI_MODEL", env["SEORI_MODEL"]]] as [string, string | undefined][])
+  ([["SEORI_HOME", home], ["SEORI_MODEL", env["SEORI_MODEL"]]] as [string, string | undefined][])
     .filter((kv): kv is [string, string] => Boolean(kv[1]));
 
-/** The environment every pane seori opens gets through herdr's --env (see seoriVars). */
+/** The environment every terminal seori opens gets (see seoriVars). */
 export function paneEnv(home: string, env: Record<string, string | undefined> = process.env): Record<string, string> {
   return Object.fromEntries(seoriVars(home, env));
 }
@@ -110,13 +112,6 @@ export function defaultSeoriCmd(home: string, env: Record<string, string | undef
 }
 
 export class Refusal extends Error {}
-
-export const INTEGRATION_MISSING = "herdr's omp integration is not installed; run: herdr integration install omp";
-
-/** seori reads agent status from herdr, which reports omp as always idle without its omp integration: refuse to start. */
-export async function requireOmpIntegration(d: Deps): Promise<void> {
-  if (!(await d.runtimes.default.agentIntegration())) throw new Refusal(INTEGRATION_MISSING);
-}
 
 /**
  * A ulw-plan lane started without ceiling flags: the configured defaults, with supervision.ulwPlan filling the token and
@@ -152,21 +147,11 @@ export async function requireWorkflowExtension(d: Deps, workflow: Workflow, from
 }
 
 /**
- * Starts the agent in a pane (on herdr via `herdr agent start`, named after the label and pane so names stay unique
- * across live agents), with `--model model` (a lane's own `seori start --model`, else SEORI_MODEL) when one is set.
+ * Starts the agent in a session, with `--model model` (a lane's own `seori start --model`, else SEORI_MODEL) when one
+ * is set.
  */
-export async function startAgent(d: Deps, label: string, ref: SessionRef, args: readonly string[] = [], model = d.model): Promise<void> {
-  await d.runtimes.for(ref).startAgent(ref, agentName(label, ref.id), [...args, ...(model ? ["--model", model] : [])]);
-}
-
-/**
- * herdr agent names: a lowercase letter first, then lowercase letters, digits, '-' or '_', at most 32 characters. Pane
- * ids may carry uppercase letters (`wC:p2`), so an uppercase letter becomes `_` plus its lowercase (unique, unlike plain
- * lowercasing), and the label is cut so the pane part, which makes the name unique among live agents, always fits.
- */
-export function agentName(label: string, paneId: string): string {
-  const pane = paneId.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`).replace(/[^a-z0-9_-]/g, "");
-  return `${label.slice(0, Math.max(1, 31 - pane.length))}-${pane}`;
+export async function startAgent(d: Deps, ref: SessionRef, args: readonly string[] = [], model = d.model): Promise<void> {
+  await d.runtime.startAgent(ref, [...args, ...(model ? ["--model", model] : [])]);
 }
 
 const sysctlMemoryLevel = (): string => execFileSync("sysctl", ["-n", "kern.memorystatus_level"], { encoding: "utf8", timeout: 2000 });
@@ -233,13 +218,12 @@ async function sendOrThrow(d: Deps, target: string, text: string, from: string):
 /**
  * An uncertain delivery is already recorded on the queued message (#89), so on the command-line path it is a result:
  * a sender who saw a failure would send again. `HELD`: it may or may not have reached the pane and is not resent.
- * `QUEUED`: typed text that only waits for its Enter.
  */
-async function settled<T extends SendResult | undefined>(delivery: Promise<T>): Promise<T | "QUEUED" | "HELD"> {
+async function settled<T extends SendResult | undefined>(delivery: Promise<T>): Promise<T | "HELD"> {
   try {
     return await delivery;
   } catch (e) {
-    if (e instanceof DeliveryUncertain) return e.typed ? "QUEUED" : "HELD";
+    if (e instanceof DeliveryUncertain) return "HELD";
     throw e;
   }
 }
@@ -251,8 +235,8 @@ async function settled<T extends SendResult | undefined>(delivery: Promise<T>): 
  */
 export async function sendToShell(d: Deps, target: string, text: string, from: string): Promise<SendResult> {
   const to = resolveTarget(d, target);
-  if ((await statusOf(d.runtimes, to)) !== "shell") return send(d, target, text, from);
-  const { rt, ref } = session(d.runtimes, to);
+  if ((await d.runtime.status(to)) !== "shell") return send(d, target, text, from);
+  const { rt, ref } = { rt: d.runtime, ref: to };
   if (await rt.typeIntoShell(ref, text)) return "DELIVERED";
   d.store.enqueue(to, { at: d.now(), from, text });
   return "QUEUED";
@@ -262,18 +246,13 @@ export async function sendToShell(d: Deps, target: string, text: string, from: s
  * Delivers a pane's queued messages as one batch. `held`: only messages held after an ambiguous delivery are left;
  * they wait for a person or the lead (#89). `queued` also when another flush of this pane holds its inbox lock: one
  * flush per pane at a time, across processes (#108). Throws DeliveryUncertain, having recorded the attempt on the
- * queued messages, when the batch may already have reached the pane, and Refusal when the pane is gone. A session
- * being migrated (seori migrate) is held: `queued`. One whose inbox was forwarded by a migration is flushed at its new
- * ref, the old entries merged in first.
+ * queued messages, when the batch may already have reached the pane, and Refusal when the pane is gone.
  */
-export async function flushInbox(d: Deps, from: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
-  const to = d.store.forwardOf(from) ?? from;
-  if (migrating(d.store.root, from) || migrating(d.store.root, to)) return "queued";
-  if (d.store.queued(to).length === 0 && !d.store.forwardPending(to)) return "delivered";
+export async function flushInbox(d: Deps, to: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
+  if (d.store.queued(to).length === 0) return "delivered";
   const release = d.store.lockInbox(to, d.now());
   if (!release) return "queued";
   try {
-    d.store.mergeForwarded(to);
     return await flushLocked(d, to);
   } finally {
     release();
@@ -285,39 +264,21 @@ async function flushLocked(d: Deps, to: SessionRef): Promise<"delivered" | "queu
   const all = d.store.queued(to);
   if (all.length === 0) return "delivered";
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
-  const status = await statusOf(d.runtimes, to);
+  const status = await d.runtime.status(to);
   // Before the held check, so a gone pane with only held messages says so instead of delivery-ambiguous forever (#108).
   if (status === "gone") throw new Refusal(`pane ${refText(to)} is gone; ${all.length} message(s) kept in its inbox`);
   if (queued.length === 0) return "held";
-  const typed = queued.filter((m) => m.attempt?.state === "typed");
-  if (status === "shell") {
-    // The agent the text was typed into is gone from the pane: an Enter later would go to another agent's empty input.
-    if (typed.length > 0) await holdTyped(d, to, typed, "the agent left the pane before its Enter");
-    return "no-agent";
-  }
+  if (status === "shell") return "no-agent";
   if (!readyToRead(d, to, status)) return "queued";
-  if (typed.length > 0) {
-    // An earlier pass typed these and only the Enter failed: press Enter, never type them again (#89), and only into
-    // the agent they were typed into (#108).
-    const { rt, ref } = session(d.runtimes, to);
-    const submitted = await rt.submitTyped(ref, typed[0]!.attempt);
-    if (submitted === "wait") return "no-agent";
-    if (submitted === "changed") {
-      await holdTyped(d, to, typed, "a different agent is in the pane than the one the text was typed into");
-      return typed.length === queued.length ? "held" : "queued";
-    }
-    settleInbox(d, to, typed);
-    // Messages queued after the typed batch were not delivered by this Enter; they wait for the next pass.
-    return typed.length === queued.length ? "delivered" : "queued";
-  }
   const body =
     queued.length === 1
       ? queued[0]!.text
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
   try {
-    const { rt, ref } = session(d.runtimes, to);
-    if (!(await deliverOrThrow(rt, ref, body))) return "no-agent";
+    const { rt, ref } = { rt: d.runtime, ref: to };
+    // Typed only under the status just read (hc compares and sends in one step): a goal-mode lane takes it while working.
+    if (!(await deliverOrThrow(rt, ref, body, { when: status === "working" ? "working" : "idle" }))) return "no-agent";
   } catch (e) {
     if (e instanceof DeliveryUncertain) await recordUncertain(d, to, queued, e);
     throw e;
@@ -342,20 +303,14 @@ function settleInbox(d: Deps, to: SessionRef, batch: readonly QueuedMessage[], a
 const NOTICE_FROM = "seori-delivery";
 
 /**
- * Records an uncertain delivery on the queued messages. Typed text only waits for its Enter. An ambiguous batch is
- * held and the lead is told once; held messages are never retried, so the notice is never repeated. A notice that
- * itself fails ambiguously is held without another notice, so this cannot loop.
+ * Records an uncertain delivery on the queued messages: the batch is held and the lead is told once; held messages are
+ * never retried, so the notice is never repeated. A notice that itself fails ambiguously is held without another
+ * notice, so this cannot loop.
  */
 async function recordUncertain(d: Deps, to: SessionRef, batch: readonly QueuedMessage[], e: DeliveryUncertain): Promise<void> {
   const detail = failureDetail(e);
-  settleInbox(d, to, batch, { at: d.now(), state: e.typed ? "typed" : "ambiguous", detail, ...(e.typed ? e.agent : {}) });
-  if (!e.typed) await noticeHeld(d, to, batch, `herdr said: ${detail}`);
-}
-
-/** Typed text whose agent left or changed (#108): it may sit in a lost input, so it is held like an ambiguous batch. */
-async function holdTyped(d: Deps, to: SessionRef, typed: readonly QueuedMessage[], why: string): Promise<void> {
-  settleInbox(d, to, typed, { at: d.now(), state: "ambiguous", detail: why });
-  await noticeHeld(d, to, typed, why);
+  settleInbox(d, to, batch, { at: d.now(), state: "ambiguous", detail });
+  await noticeHeld(d, to, batch, `hc said: ${detail}`);
 }
 
 async function noticeHeld(d: Deps, to: SessionRef, batch: readonly QueuedMessage[], why: string): Promise<void> {
@@ -373,7 +328,7 @@ async function noticeHeld(d: Deps, to: SessionRef, batch: readonly QueuedMessage
 
 // ---------- held entries (#108) ----------
 
-export type InboxEntry = { index: number; state: "queued" | "typed" | "held"; from: string; at: number; preview: string };
+export type InboxEntry = { index: number; state: "queued" | "held"; from: string; at: number; preview: string };
 
 const PREVIEW_CHARS = 60;
 
@@ -382,7 +337,7 @@ export function inboxList(d: Deps, target: string): { to: SessionRef; entries: I
   const to = resolveTarget(d, target);
   const entries = d.store.queued(to).map((m, i): InboxEntry => ({
     index: i + 1,
-    state: m.attempt?.state === "ambiguous" ? "held" : m.attempt?.state === "typed" ? "typed" : "queued",
+    state: m.attempt?.state === "ambiguous" ? "held" : "queued",
     from: m.from,
     at: m.at,
     preview: JSON.stringify(m.text.slice(0, PREVIEW_CHARS)) + (m.text.length > PREVIEW_CHARS ? "..." : ""),
@@ -392,7 +347,7 @@ export function inboxList(d: Deps, target: string): { to: SessionRef; entries: I
 
 /**
  * `ack` drops a held entry (it did arrive); `resend` clears its attempt so the next flush delivers it (it did not).
- * Only held entries: a typed one is in the pane's input already, and a queued one is delivered anyway. Runs under the
+ * Only held entries: a queued one is delivered anyway. Runs under the
  * inbox lock, so a flush in progress cannot overwrite the change.
  */
 export function releaseHeld(d: Deps, target: string, index: number, how: "ack" | "resend"): string {
@@ -441,7 +396,7 @@ export async function startLane(d: Deps, key: string, briefFile: string, opts: S
 
 /** `workflow`: the lane's workflow (src/workflow.ts); null starts stock omp goal mode whatever config.json says. */
 export type StartOptions = {
-  cwd?: string; workspace?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[]; model?: string;
+  cwd?: string; done?: string; thread?: string; ceilings?: Ceilings; activityPaths?: readonly string[]; model?: string;
   workflow?: Workflow | null;
 };
 
@@ -462,7 +417,6 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   if (opts.thread !== undefined && !opts.thread.trim()) throw new Refusal("--thread needs a lead channel id");
   if (opts.activityPaths?.some((p) => !p.trim())) throw new Refusal("--activity-path needs a path");
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
-  await requireOmpIntegration(d);
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
   if (workflow !== undefined) await requireWorkflowExtension(d, workflow, opts.workflow === undefined);
   const ceilings = opts.ceilings ?? (workflow === "ulw-plan" ? ulwPlanCeilings(loadConfig(d.store.root)) : undefined);
@@ -477,24 +431,16 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const source = readFileSync(briefFile, "utf8").replace(LESSONS_RE, "").replace(FOOTER_RE, "").trimEnd();
   await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
-  const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
   const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
-  const rt = d.runtimes.default;
-  const group = workspace ? workspace : await rt.createGroup(loadConfig(d.store.root).name, cwd);
-  const ref = await rt.create({ name: key, cwd, env, role: "lane", container: "tab", group, home: d.store.root });
+  const rt = d.runtime;
+  const ref = await rt.create({ name: key, cwd, env, role: "lane", group: loadConfig(d.store.root).name, home: d.store.root });
   let kickedAt = 0;
   let took = false;
   try {
-    await startAgent(d, key, ref, [], opts.model?.trim() ?? d.model);
-    await agentSessionReported(d, ref);
+    await startAgent(d, ref, [], opts.model?.trim() ?? d.model);
     if (!(await deliverOrThrow(rt, ref, d.agent.kickoff(briefPath, key, workflow === undefined ? undefined : workflowPrefix(workflow))))) throw new Error(`${d.agent.kind} was not in front of the pane to take the kickoff`);
     kickedAt = d.now();
     took = await kickoffTook(d, ref);
-    if (!took) {
-      // The kickoff can sit typed in the agent's input with its Enter lost (still loading under load): press only Enter.
-      await rt.submitTyped(ref);
-      took = await kickoffTook(d, ref);
-    }
   } catch (e) {
     await rt.close(ref).catch(() => undefined);
     throw new Refusal(`lane ${key} did not start, pane ${refText(ref)} closed: ${failureDetail(e)}`);
@@ -502,7 +448,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
 
   const now = d.now();
   const lane: Lane = {
-    key, sessionRef: ref, paneId: ref.id, tabId: ref.container ?? "", brief: briefPath, cwd,
+    key, sessionRef: ref, paneId: ref.id, tabId: "", brief: briefPath, cwd,
     status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
     ...(doneLine !== undefined ? { done: doneLine } : {}),
     ...(opts.thread !== undefined ? { thread: opts.thread.trim() } : {}),
@@ -517,28 +463,15 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   return { lane, kickedAt, took };
 }
 
-/** How long a lane start waits for omp's integration to report its session, then for omp to start on the kickoff. */
-export const AGENT_SESSION_WAIT_MS = 30_000;
+/** How long a lane start waits for omp to start on the kickoff. */
 export const KICKOFF_TAKE_MS = 20_000;
 const KICKOFF_POLL_MS = 500;
 
-/**
- * `herdr agent start` returns once herdr sees omp's screen ready, but omp can still be loading: its integration reports
- * the session later (up to 16 s after start on a loaded host), and a prompt typed before that can lose its
- * Enter. Waits for the session, at most AGENT_SESSION_WAIT_MS; the kickoff then goes in either way.
- */
-export async function agentSessionReported(d: Deps, ref: SessionRef): Promise<void> {
-  const until = d.now() + AGENT_SESSION_WAIT_MS;
-  const rt = d.runtimes.for(ref);
-  if (rt.kind === "hc") return; // hc reports no agent session id (agentSession() is always undefined): nothing to wait for
-  while (!(await rt.agentSession(ref)) && d.now() < until) await d.sleep(KICKOFF_POLL_MS);
-}
-
-/** Whether omp started on the kickoff (herdr reports it working, done or on a dialog) within KICKOFF_TAKE_MS. */
+/** Whether omp started on the kickoff (hc reports it working, done or on a dialog) within KICKOFF_TAKE_MS. */
 async function kickoffTook(d: Deps, ref: SessionRef): Promise<boolean> {
   const until = d.now() + KICKOFF_TAKE_MS;
   for (;;) {
-    const status = await statusOf(d.runtimes, ref);
+    const status = await d.runtime.status(ref);
     if (status === "working" || status === "done" || status === "blocked") return true;
     if (d.now() >= until) return false;
     await d.sleep(KICKOFF_POLL_MS);
@@ -602,9 +535,8 @@ export async function done(d: Deps, key: string): Promise<void> {
     const how = closed ? ` at ${new Date(closed.at).toISOString()} (${closed.text})` : "";
     throw new Refusal(`lane ${key} is already closed${how}; see its final state with: ${d.seoriCmd} status (record: ${join(d.store.root, "lanes", `${key}.json`)})`);
   }
-  if (lane.migration === true) throw new Refusal(`lane ${key} is being migrated; wait for seori migrate to finish`);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
-  const st = await statusOf(d.runtimes, lane.sessionRef);
+  const st = await d.runtime.status(lane.sessionRef);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
   if (lane.done !== undefined) {
     const failures = await checkSignals(d, lane);
@@ -628,9 +560,9 @@ function failureDetail(e: unknown): string {
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 }
 
-/** A lane duty still supervises: working or waiting, and not being migrated. */
+/** A lane duty still supervises: working or waiting. */
 const dutyOwned = (lane: Lane | undefined): lane is Lane =>
-  lane !== undefined && (lane.status === "working" || lane.status === "waiting") && lane.migration !== true;
+  lane !== undefined && (lane.status === "working" || lane.status === "waiting");
 
 /**
  * Re-reads the lane, applies `change` and saves it, but only while duty still owns it: a pause, report, ready or done
@@ -664,15 +596,14 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     } catch (e) {
       // One pane's failed delivery must never kill the loop for every other pane and lane.
       if (e instanceof Refusal) events.push({ pane: paneId, action: "inbox-target-gone" });
-      else if (e instanceof DeliveryUncertain && !e.typed) events.push({ pane: paneId, action: "delivery-ambiguous", detail: failureDetail(e) });
+      else if (e instanceof DeliveryUncertain) events.push({ pane: paneId, action: "delivery-ambiguous", detail: failureDetail(e) });
       else events.push({ pane: paneId, action: "flush-failed", detail: failureDetail(e) });
     }
   }
   for (const listed of d.store.lanes()) {
-    // A lane being migrated (seori migrate) is left alone: no nudge, no lost, no blocked mark.
     if (!dutyOwned(listed)) continue;
     try {
-      const st = await statusOf(d.runtimes, listed.sessionRef);
+      const st = await d.runtime.status(listed.sessionRef);
       const now = d.now();
       // Re-read: a pause, report, ready or done may have landed while the pane was read (or an earlier lane nudged).
       const lane = d.store.lane(listed.key);
@@ -783,7 +714,7 @@ export const ALERT_AFTER_MS = 2 * 60_000;
 
 export const ALERT_TEXT = {
   "lead-offline": "seori: the lead is offline; your message is kept and will be answered when it is back.",
-  // herdr reports `blocked` both for a question in the terminal and after a turn that ended in a provider error, so the
+  // `blocked` is reported both for a question in the terminal and after a turn that ended in a provider error, so the
   // text names both; the extension keeps redelivering in the error case.
   "lead-blocked": "seori: the lead is stuck (a question in its terminal, or its model is failing); your message is queued and will be retried.",
   "gave-up": "seori: the lead could not answer this after 3 tries; please check the terminal.",
@@ -890,7 +821,7 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   const lead = d.store.roles().lead;
   if (stuck.length && lead) {
     try {
-      if ((await statusOf(d.runtimes, lead)) === "blocked") due.push(...stuck.map((s): [typeof s, AlertWhy] => [s, "lead-blocked"]));
+      if ((await d.runtime.status(lead)) === "blocked") due.push(...stuck.map((s): [typeof s, AlertWhy] => [s, "lead-blocked"]));
     } catch (e) {
       events.push({ pane: refText(lead), action: "lead-status-failed", detail: failureDetail(e) });
     }

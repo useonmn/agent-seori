@@ -3,19 +3,18 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { canLaunch, canLaunchLine, guardLines, guardStatePath, guardTick, guardVerdict, hostLine, parseDfAvailableKb, parsePaneCount, readGuardState, sampleHost, type HostSample } from "../src/guard.ts";
+import { canLaunch, canLaunchLine, guardLines, guardStatePath, guardTick, guardVerdict, hostLine, parseDfAvailableKb, readGuardState, sampleHost, type HostSample } from "../src/guard.ts";
 import type { Deps } from "../src/harness.ts";
 import type { Lane } from "../src/store.ts";
 import type { Exec, ExecResult } from "../src/runtime/exec.ts";
-import { Herdr } from "../src/runtime/herdr/client.ts";
-import { defaultRuntimes } from "../src/runtime/index.ts";
-import { World, herdrRef } from "./fake.ts";
+import { HcRuntime } from "../src/runtime/hc/index.ts";
+import { World, paneRef } from "./fake.ts";
 
 const DF_MAC = `Filesystem     1024-blocks      Used Available Capacity  Mounted on
 /dev/disk3s5    971350180 600000000 104857600    86%    /System/Volumes/Data
 `;
 const dfOut = (availKb: number): string => `Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1000000000 1 ${availKb} 50% /\n`;
-const panesOut = (n: number): string => JSON.stringify({ id: "cli:pane:list", result: { panes: Array.from({ length: n }, (_, i) => ({ pane_id: `w1:p${i}` })) } });
+const panesOut = (n: number): string => JSON.stringify({ terminals: Array.from({ length: n }, (_, i) => ({ address: `t${i + 10}`, state: "live" })) });
 
 type Host = { df: ExecResult; panes: ExecResult };
 
@@ -29,12 +28,12 @@ function setup(): { w: World; d: Deps; host: Host; dfArgs: (readonly string[])[]
       dfArgs.push(argv);
       return host.df;
     }
-    if (cmd === "herdr" && argv.slice(-2).join(" ") === "pane list") return host.panes;
+    if (cmd === "hc" && argv.join(" ") === "--json ls") return host.panes;
     return w.exec(cmd, argv);
   };
-  const d: Deps = { ...base, exec, runtimes: defaultRuntimes(new Herdr(exec, "")) };
-  w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
+  const d: Deps = { ...base, exec, runtime: new HcRuntime(exec, { env: {} }) };
+  w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
   return { w, d, host, dfArgs };
 }
 
@@ -45,11 +44,6 @@ describe("parsing", () => {
     expect(parseDfAvailableKb(DF_MAC)).toBe(104857600);
     expect(parseDfAvailableKb("garbage")).toBeUndefined();
     expect(parseDfAvailableKb("")).toBeUndefined();
-  });
-  test("herdr pane list counts result.panes", () => {
-    expect(parsePaneCount(panesOut(4))).toBe(4);
-    expect(parsePaneCount("{}")).toBeUndefined();
-    expect(parsePaneCount("not json")).toBeUndefined();
   });
 });
 
@@ -84,7 +78,7 @@ describe("sampleHost", () => {
 
   test("open lanes' directories are measured and the least free volume wins; done lanes and missing dirs are skipped", async () => {
     const { d, host, dfArgs } = setup();
-    const lane = (key: string, cwd: string, status: Lane["status"]): Lane => ({ key, sessionRef: herdrRef(`w1:${key}`), paneId: `w1:${key}`, tabId: "t1", brief: "b", cwd, status, createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
+    const lane = (key: string, cwd: string, status: Lane["status"]): Lane => ({ key, sessionRef: paneRef(`w1:${key}`), paneId: `w1:${key}`, tabId: "t1", brief: "b", cwd, status, createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
     const a = mkdtempSync(join(tmpdir(), "seori-guard-a-"));
     const b = mkdtempSync(join(tmpdir(), "seori-guard-b-"));
     try {
@@ -105,23 +99,23 @@ describe("sampleHost", () => {
   test("an unreadable figure is undefined with its reason, never 0", async () => {
     const { d, host } = setup();
     host.df = { code: 1, stdout: "", stderr: "df: /x: No such file or directory\n" };
-    host.panes = { code: 1, stdout: "", stderr: "herdr: server not running" };
+    host.panes = { code: 1, stdout: "", stderr: "hc: server not running" };
     const s = await sampleHost(d);
     expect(s.diskFreeGb).toBeUndefined();
     expect(s.panes).toBeUndefined();
     expect(s.unreadable).toEqual([
       "disk free unreadable (df: df: /x: No such file or directory)",
-      "panes unreadable (herdr pane list: herdr: server not running)",
+      "panes unreadable (hc ls: hc: server not running)",
     ]);
     expect(hostLine(s)).toContain("disk free unknown, panes unknown");
   });
 
   test("a session-list failure that is not a tool result keeps its own cause", async () => {
     const { d } = setup();
-    Object.assign(d.runtimes.default, { list: async () => Promise.reject(new Error("spawn herdr ENOENT")) });
+    Object.assign(d.runtime, { list: async () => Promise.reject(new Error("spawn hc ENOENT")) });
     const s = await sampleHost(d);
     expect(s.panes).toBeUndefined();
-    expect(s.unreadable.join("\n")).toContain("spawn herdr ENOENT");
+    expect(s.unreadable.join("\n")).toContain("spawn hc ENOENT");
   });
 });
 
@@ -171,16 +165,16 @@ describe("guardTick", () => {
     w.host = { load1: 1, cores: 8, memFreePct: 4 };
     w.clock += 1000;
     expect(await guardTick(d)).toEqual([{ action: "guard-alert", detail: "memory free 4% < 10%" }]);
-    expect(w.panes.get("w1:p1")!.received.at(-1)).toContain("[HOST-GUARD ALERT] memory free 4% < 10%");
-    const told = w.panes.get("w1:p1")!.received.length;
+    expect(w.panes.get("t1")!.received.at(-1)).toContain("[HOST-GUARD ALERT] memory free 4% < 10%");
+    const told = w.panes.get("t1")!.received.length;
     expect(await guardTick(d)).toEqual([]);
-    expect(w.panes.get("w1:p1")!.received.length).toBe(told);
+    expect(w.panes.get("t1")!.received.length).toBe(told);
     expect(readGuardState(d.store.root)).toMatchObject({ alerting: true, since: w.clock, reasons: ["memory free 4% < 10%"] });
 
     w.host = { load1: 1, cores: 8, memFreePct: 60 };
     const clear = await guardTick(d);
     expect(clear).toEqual([{ action: "guard-clear", detail: "load 13% per core, memory free 60%, disk free 100 GB, panes 3" }]);
-    expect(w.panes.get("w1:p1")!.received.at(-1)).toContain("[HOST-GUARD CLEAR] load 13% per core");
+    expect(w.panes.get("t1")!.received.at(-1)).toContain("[HOST-GUARD CLEAR] load 13% per core");
     expect(await guardTick(d)).toEqual([]);
   });
 
@@ -196,34 +190,34 @@ describe("guardTick", () => {
 
   test("an alerting figure that turns unreadable keeps the alert: no false CLEAR, no second ALERT", async () => {
     const { w, d, host } = setup();
-    host.panes = { code: 0, stdout: JSON.stringify({ result: { panes: Array.from({ length: 31 }, (_, i) => ({ pane_id: `w1:p${i}` })) } }), stderr: "" };
+    host.panes = { code: 0, stdout: panesOut(31), stderr: "" };
     expect((await guardTick(d))[0]?.action).toBe("guard-alert");
-    host.panes = { code: 1, stdout: "", stderr: "herdr restarting" };
+    host.panes = { code: 1, stdout: "", stderr: "hc restarting" };
     expect(await guardTick(d)).toEqual([]);
     expect(readGuardState(d.store.root)?.alerting).toBe(true);
-    host.panes = { code: 0, stdout: JSON.stringify({ result: { panes: [{ pane_id: "w1:p1" }] } }), stderr: "" };
+    host.panes = { code: 0, stdout: panesOut(1), stderr: "" };
     expect((await guardTick(d))[0]?.action).toBe("guard-clear");
-    expect(w.panes.get("w1:p1")!.received.filter((t) => t.includes("HOST-GUARD"))).toHaveLength(2);
+    expect(w.panes.get("t1")!.received.filter((t) => t.includes("HOST-GUARD"))).toHaveLength(2);
   });
 
   test("a lead that cannot read now gets the alert queued once, never twice", async () => {
     const { w, d } = setup();
     w.host = { load1: 1, cores: 8, memFreePct: 4 };
-    w.panes.get("w1:p1")!.status = "working";
+    w.panes.get("t1")!.status = "working";
     expect((await guardTick(d))[0]?.action).toBe("guard-alert");
     expect(await guardTick(d)).toEqual([]);
-    expect(d.store.queued(herdrRef("w1:p1")).map((m) => m.text)).toEqual(["[HOST-GUARD ALERT] memory free 4% < 10%"]);
+    expect(d.store.queued(paneRef("t1")).map((m) => m.text)).toEqual(["[HOST-GUARD ALERT] memory free 4% < 10%"]);
   });
 
   test("a failed delivery is an event; the alert is kept in the lead inbox and not told again", async () => {
     const { w, d } = setup();
     w.host = { load1: 1, cores: 8, memFreePct: 4 };
-    w.panes.delete("w1:p1"); // the lead pane is gone
+    w.panes.delete("t1"); // the lead pane is gone
     const events = await guardTick(d);
     expect(events.map((e) => e.action)).toEqual(["guard-alert", "guard-delivery-failed"]);
     expect(readGuardState(d.store.root)?.alerting).toBe(true);
     expect(await guardTick(d)).toEqual([]);
-    expect(d.store.queued(herdrRef("w1:p1"))).toHaveLength(1);
+    expect(d.store.queued(paneRef("t1"))).toHaveLength(1);
   });
 
   test("a broken config.json is a guard-failed event, not a throw", async () => {
@@ -248,6 +242,6 @@ describe("guardLines", () => {
     expect(await guardLines(d, DEFAULT_CONFIG)).toEqual(["HOST load 13% per core, memory free 50%, disk free 100 GB, panes 3", "HOST_GUARD OK"]);
     w.host = { load1: 1, cores: 8, memFreePct: 4 };
     expect((await guardLines(d, DEFAULT_CONFIG))[1]).toBe("HOST_GUARD ALERT memory free 4% < 10%");
-    expect(w.panes.get("w1:p1")!.received).toEqual([]);
+    expect(w.panes.get("t1")!.received).toEqual([]);
   });
 });

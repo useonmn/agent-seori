@@ -8,10 +8,10 @@ import { loadHooks } from "./hooks.ts";
 import { HEARTBEAT_STALE_MS, type Deps } from "./harness.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
 import { ToolError } from "./runtime/index.ts";
-import { upgradeLane, type Lane, type StoredLane } from "./store.ts";
+import { checkedLane, type Lane, type StoredLane } from "./store.ts";
 import { WatchStore } from "./watch/store.ts";
 import { worklogLines, worklogPath, worklogRead } from "./worklog.ts";
-import { refText } from "./refs.ts";
+import { HerdrRecord, refText } from "./refs.ts";
 
 // `seori boot`: the read-only check a lead runs after a restart or a compaction, so it resumes from the record and not
 // from memory. It changes nothing: no lane or role write, no relaunch, no stopped watch, no closed message, and it
@@ -30,16 +30,16 @@ const iso = (at: number): string => new Date(at).toISOString();
 const ageText = (ms: number): string => `${Math.max(0, Math.floor(ms / 1000))}s`;
 
 /**
- * The default runtime's session list (herdr: `pane list`). Throws on a failed or unparsable list: a failed list is never
+ * The runtime's session list (`hc ls`). Throws on a failed or unparsable list: a failed list is never
  * an empty one, so no lane is called vanished on it.
  */
 async function listPanes(d: Deps): Promise<ListedPane[]> {
-  const rt = d.runtimes.default;
+  const rt = d.runtime;
   let sessions;
   try {
     sessions = await rt.list();
   } catch (e) {
-    if (e instanceof ToolError) throw new Error(`${rt.kind} pane list exited ${e.result.code}: ${(e.result.stderr || e.result.stdout).trim()}`);
+    if (e instanceof ToolError) throw new Error(`hc ls exited ${e.result.code}: ${(e.result.stderr || e.result.stdout).trim()}`);
     throw e;
   }
   return sessions.map((s) => ({ paneId: refText(s.ref), ...(s.agent ? { agent: s.agent } : {}), status: s.status ?? "unknown" }));
@@ -60,9 +60,9 @@ function scanLanes(root: string): { lanes: Lane[]; unreadable: string[] } {
       if (typeof lane?.key !== "string" || typeof lane.paneId !== "string" || typeof lane.status !== "string" || !Array.isArray(lane.log)) {
         throw new Error("not a lane record");
       }
-      lanes.push(upgradeLane(lane));
-    } catch {
-      unreadable.push(path);
+      lanes.push(checkedLane(lane, path));
+    } catch (e) {
+      unreadable.push(e instanceof HerdrRecord ? `${path} (${e.message})` : path);
     }
   }
   lanes.sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
@@ -145,7 +145,7 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
     lines.push(`PANES live=${panes.length} lanesOpen=${open.length} vanished=${vanished.length} unregistered=${unregistered.length}`);
     for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${refText(lane.sessionRef)} status=${lane.status}; lane record kept, nothing relaunched`);
     for (const p of unregistered) lines.push(`UNREGISTERED ${p.paneId} agent=${p.agent} status=${p.status}`);
-    const found = await driftCheck({ runtimes: d.runtimes, open, lanes, roles: Object.values(roles), liveIds: new Set(byId.keys()), group });
+    const found = await driftCheck({ runtime: d.runtime, open, lanes, roles: Object.values(roles), liveIds: new Set(byId.keys()), group });
     lines.push(...found.lines);
     drift = found.problems;
   }

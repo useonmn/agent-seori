@@ -7,15 +7,15 @@ import { dutyTick, ready, report, review, startLane } from "../src/harness.ts";
 import { hooksSettled, loadHooks, runHook, substitute } from "../src/hooks.ts";
 import type { Exec, ExecResult } from "../src/runtime/exec.ts";
 import { superviseTick } from "../src/supervision.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
 const head = "c".repeat(40);
 
 function setup(hooks?: unknown) {
   const w = new World();
   const d = w.deps();
-  const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
+  const lead = w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix it.");
   if (hooks !== undefined) writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ hooks }));
@@ -72,7 +72,7 @@ describe("lifecycle hooks", () => {
       onReady: ["h-ready", "{key}", "{text}", "{evidence}"],
       onLost: ["h-lost", "{key}", "{text}"],
     });
-    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
+    const lane = await startLane(d, "busy", brief, {});
     await report(d, "busy", "halfway");
     await ready(d, "busy", "all done", ["pr#1", "file"]);
     await hooksSettled(1000);
@@ -80,7 +80,7 @@ describe("lifecycle hooks", () => {
     expect(hookCalls(w, "h-ready")).toEqual([{ cmd: "h-ready", argv: ["busy", "all done", "pr#1 file"] }]);
     expect(lead.received.join("\n")).toContain("[READY busy]");
 
-    const second = await startLane(d, "gone", brief, { workspace: "w1" });
+    const second = await startLane(d, "gone", brief, {});
     w.panes.delete(second.paneId);
     expect(await dutyTick(d)).toContainEqual({ lane: "gone", action: "lost" });
     await hooksSettled(1000);
@@ -90,7 +90,7 @@ describe("lifecycle hooks", () => {
 
   test("a lane paused when its pane vanishes runs onLost too", async () => {
     const { w, d, brief } = setup({ onLost: ["h-lost", "{key}", "{text}"] });
-    const lane = await startLane(d, "pz", brief, { workspace: "w1" });
+    const lane = await startLane(d, "pz", brief, {});
     const rec = d.store.lane("pz")!;
     rec.status = "paused";
     rec.pausedFrom = "working";
@@ -104,7 +104,7 @@ describe("lifecycle hooks", () => {
   test("a failing hook writes one stderr line and never changes the result", async () => {
     const { w, d, brief } = setup({ onReport: ["h-report", "{key}"] });
     w.reviewer = () => ({ code: 7, stdout: "", stderr: "boom\nmore" });
-    await startLane(d, "busy", brief, { workspace: "w1" });
+    await startLane(d, "busy", brief, {});
     captureStderr();
     await report(d, "busy", "x");
     await hooksSettled(1000);
@@ -114,7 +114,7 @@ describe("lifecycle hooks", () => {
 
   test("a malformed hooks config in a lifecycle hook is one stderr line, not a thrown error", async () => {
     const { d, brief } = setup({ onReport: "nope" });
-    await startLane(d, "busy", brief, { workspace: "w1" });
+    await startLane(d, "busy", brief, {});
     captureStderr();
     await report(d, "busy", "x");
     await hooksSettled(1000);
@@ -161,7 +161,7 @@ describe("the reviewer is always omp", () => {
     expect(() => loadHooks(d.store.root)).toThrow(ConfigError);
     expect(() => loadHooks(d.store.root)).toThrow("config.json: hooks.reviewCommand is not supported: the reviewer is always omp");
     await expect(review(d, "o/r#7")).rejects.toThrow("hooks.reviewCommand is not supported");
-    expect(w.calls.map((c) => c.cmd).filter((cmd) => cmd !== "herdr")).toEqual([]);
+    expect(w.calls.map((c) => c.cmd).filter((cmd) => cmd !== "hc")).toEqual([]);
   });
 
   test("with lifecycle hooks configured, seori review runs omp with the reviewer argv", async () => {

@@ -3,17 +3,16 @@ import { writeFileSync } from "node:fs";
 import { flushInbox, releaseHeld } from "../src/harness.ts";
 import type { QueuedMessage, Store } from "../src/store.ts";
 import type { SessionRef } from "../src/runtime/types.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
-const PANE = herdrRef("w1:p2");
-const OLD = herdrRef("w1:p9");
+const PANE = paneRef("t2");
 
 function setup() {
   const w = new World();
   const d = w.deps();
-  w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
-  const pane = w.addPane("w1:p2", "idle");
+  w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
+  const pane = w.addPane("t2", "idle");
   return { w, d, pane };
 }
 
@@ -59,23 +58,12 @@ describe("an inbox rewrite never drops a message enqueued between its read and i
     expect(d.store.queued(PANE).map((m) => m.text)).toEqual(["late"]);
   });
 
-  test("a sender to a session forwarded into this one is not dropped by the settle either", async () => {
-    const { d, pane } = setup();
-    writeFileSync(`${d.store.inboxPath(OLD)}.forward`, "w1:p2\n");
-    d.store.enqueue(PANE, { at: 1, from: "cli", text: "first" });
-    const sender = racingSender(d.store, OLD, { at: 2, from: "lane-a", text: "late via forward" });
-    pane.onPrompt = () => sender.arm();
-    expect(await flushInbox(d, PANE)).toBe("delivered");
-    sender.finish();
-    expect(d.store.queued(PANE).map((m) => m.text)).toEqual(["late via forward"]);
-  });
-
   test("seori inbox ack keeps a message queued while it rewrote the inbox", () => {
     const { d } = setup();
     d.store.saveInbox(PANE, [{ at: 0, from: "cli", text: "held", attempt: { at: 1, state: "ambiguous" } }]);
     const sender = racingSender(d.store, PANE, { at: 2, from: "lane-a", text: "late" });
     sender.arm();
-    expect(releaseHeld(d, "w1:p2", 1, "ack")).toBe("w1:p2");
+    expect(releaseHeld(d, "hc:t2", 1, "ack")).toBe("hc:t2");
     sender.finish();
     expect(d.store.queued(PANE).map((m) => m.text)).toEqual(["late"]);
   });

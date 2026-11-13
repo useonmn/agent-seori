@@ -25,35 +25,35 @@ const lane = (key: string, sessionRef: SessionRef, status: Lane["status"] = "wor
 
 function setup() {
   const d = new World().deps();
-  writeFileSync(join(d.store.root, "roles.json"), JSON.stringify({ lead: "w1:p1", duty: "hc:t2" }));
-  d.store.saveLane(lane("t7", { runtime: "herdr", id: "w1:p5" }));
+  writeFileSync(join(d.store.root, "roles.json"), JSON.stringify({ lead: "hc:t1", duty: "hc:t2" }));
+  d.store.saveLane(lane("t7", { runtime: "hc", id: "t5" }));
   d.store.saveLane(lane("t8", { runtime: "hc", id: "t8" }, "done"));
   return d;
 }
 
-describe("resolveTarget: prefixed ref, role, open lane key, bare herdr pane", () => {
+describe("resolveTarget: hc ref, role, open lane key", () => {
   test.each([
     ["hc:t7", { runtime: "hc", id: "t7" }],
-    ["herdr:w1:p3", { runtime: "herdr", id: "w1:p3" }],
-    ["w1:p3", { runtime: "herdr", id: "w1:p3" }],
-    ["lead", { runtime: "herdr", id: "w1:p1" }],
+    ["hc:t3", { runtime: "hc", id: "t3" }],
+    ["lead", { runtime: "hc", id: "t1" }],
     ["duty", { runtime: "hc", id: "t2" }],
-    ["t7", { runtime: "herdr", id: "w1:p5" }],
+    ["t7", { runtime: "hc", id: "t5" }],
   ] as const)("%s", (target, want) => {
     expect(resolveTarget(setup(), target)).toEqual(want);
   });
 
   test("a lane named t7 wins over the hc terminal t7, which needs its prefix", () => {
     const d = setup();
-    expect(resolveTarget(d, "t7")).toEqual({ runtime: "herdr", id: "w1:p5" });
+    expect(resolveTarget(d, "t7")).toEqual({ runtime: "hc", id: "t5" });
     expect(resolveTarget(d, "hc:t7")).toEqual({ runtime: "hc", id: "t7" });
   });
 
   test.each([
     ["t8", "unknown target t8"],
     ["nobody", "unknown target nobody"],
-    ["hc:w1:p3", "not a session ref"],
-    ["herdr:t7", "not a session ref"],
+    ["hc:hc:t3", "not a session ref"],
+    ["w1:p3", "unknown target w1:p3"],
+    ["herdr:w1:p3", "unknown target herdr:w1:p3"],
   ])("%s is refused: %s", (target, why) => {
     expect(() => resolveTarget(setup(), target)).toThrow(Refusal);
     expect(() => resolveTarget(setup(), target)).toThrow(why);
@@ -66,18 +66,17 @@ describe("resolveTarget: prefixed ref, role, open lane key, bare herdr pane", ()
 });
 
 describe("seori role <lead|duty> [REF]", () => {
-  test("takes a bare herdr pane, a prefixed herdr ref or an hc ref and stores it as a ref", async () => {
+  test("takes an hc ref and stores it as a ref", async () => {
     const d = new World().deps();
-    await main(["role", "lead", "w1:p1"], d);
+    await main(["role", "lead", "hc:t1"], d);
     await main(["role", "duty", "hc:t2"], d);
-    expect(d.store.roles()).toEqual({ lead: { runtime: "herdr", id: "w1:p1" }, duty: { runtime: "hc", id: "t2" } });
-    await main(["role", "lead", "herdr:w1:p4"], d);
-    expect(d.store.roles().lead).toEqual({ runtime: "herdr", id: "w1:p4" });
+    expect(d.store.roles()).toEqual({ lead: { runtime: "hc", id: "t1" }, duty: { runtime: "hc", id: "t2" } });
   });
 
   test("a value that is no session ref is refused and nothing is stored", async () => {
     const d = new World().deps();
     await expect(main(["role", "lead", "t7"], d)).rejects.toThrow("t7 is not a session ref");
+    await expect(main(["role", "lead", "w1:p3"], d)).rejects.toThrow("w1:p3 is not a session ref");
     expect(d.store.roles()).toEqual({});
   });
 });

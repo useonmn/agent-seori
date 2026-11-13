@@ -335,7 +335,7 @@ describe("pane watches", () => {
     expect(t.store.get(w.id)?.status).toBe("done");
   });
 
-  test("an idle watch also fires when herdr reports the pane done", async () => {
+  test("an idle watch also fires when hc reports the pane done", async () => {
     const seq: PaneState[] = ["working", "done"];
     let i = 0;
     const t = setup({ paneStatus: async () => seq[Math.min(i++, seq.length - 1)] as PaneState });

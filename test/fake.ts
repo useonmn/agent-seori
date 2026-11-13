@@ -4,33 +4,53 @@ import { join } from "node:path";
 import { ompProfile } from "../src/agent/profile.ts";
 import type { Deps } from "../src/harness.ts";
 import type { Exec } from "../src/runtime/exec.ts";
-import { Herdr } from "../src/runtime/herdr/client.ts";
-import { defaultRuntimes } from "../src/runtime/index.ts";
+import { HcRuntime } from "../src/runtime/hc/index.ts";
 import type { AgentStatus } from "../src/runtime/types.ts";
 import type { MessengerAdapter, MessengerConfig, SendTarget } from "../src/messenger/adapter.ts";
 import { Store, type HostLoad } from "../src/store.ts";
 import type { SessionRef } from "../src/runtime/index.ts";
 
-/** A herdr pane as a SessionRef, the way a lane or role record stores it. */
-export const herdrRef = (id: string): SessionRef => ({ runtime: "herdr", id });
+/** An hc terminal as a SessionRef, the way a lane or role record stores it. */
+export const paneRef = (id: string): SessionRef => ({ runtime: "hc", id });
 
 
 /**
- * `agent` is the agent name `pane get` reports (default "pi"), `pgid` the foreground process group `pane process-info`
- * reports (default 101). `started` records the name and omp args of a `herdr agent start` into this pane. `screen` is
- * what `pane read` shows (its last `--lines` lines), `session` the omp session path `pane get` reports as
- * `agent_session`, and `onPrompt` runs after each `agent prompt` reached the pane (to change the screen, say).
- * The first `agent prompt` after a `herdr agent start` is the lane kickoff: the next `pane get` reports `working` once
- * (omp took it), unless `kickoffLost` (its Enter was lost: omp stays idle until a `pane send-keys ... enter`). An omp
- * started with `herdr agent start` reports a session unless the world's `sessionLate` is set.
+ * One terminal of the fake hc. `status` is what `hc get` reports (`shell`: nothing reported, a shell in front; `gone`
+ * is never stored, the terminal is removed instead). `agent` is the reporting app (default "omp"), `pgid` the
+ * foreground pid (default 101). `started` records the omp args of an agent start typed into its shell, `ran` every
+ * other command typed there, `received` every message sent to the agent. `screen` is what `hc read` shows (its last
+ * `--lines` lines), `session` the omp session path the runtime reports, and `onPrompt` runs after each message reached
+ * the agent (to change the screen, say). The first message after an agent start is the lane kickoff: the next `get`
+ * reports `working` once (omp took it). `labels` are the terminal's hc labels (default seori.group=seori).
  */
 type Pane = {
   status: AgentStatus; received: string[]; ran: string[];
   foreground?: string | { name: string; argv: string[] }[] | undefined; agent?: string; pgid?: number;
-  started?: { name: string; args: string[] };
+  started?: { args: string[] };
   screen?: string[]; session?: string; onPrompt?: (text: string) => void;
-  kickoffLost?: boolean; kicked?: boolean; workingReads?: number;
+  kicked?: boolean; workingReads?: number; labels: Record<string, string>;
 };
+
+/** The words of a command line shq quoted (`'a b'`, `'it'\''s'`), as the shell would split it. */
+export function shellWords(line: string): string[] {
+  const words: string[] = [];
+  let cur: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (c === "'") {
+      const end = line.indexOf("'", i + 1);
+      cur = (cur ?? "") + line.slice(i + 1, end);
+      i = end;
+    } else if (c === "\\") {
+      cur = (cur ?? "") + line[++i];
+    } else if (c === " ") {
+      if (cur !== undefined) words.push(cur);
+      cur = undefined;
+    } else cur = (cur ?? "") + c;
+  }
+  if (cur !== undefined) words.push(cur);
+  return words;
+}
 
 /** omp's `--mode json` output for a run whose final assistant message is `text`. */
 export function ompJson(text: string, opts: { stopReason?: string; provider?: string; model?: string } = {}): string {
@@ -47,31 +67,24 @@ export function ompJson(text: string, opts: { stopReason?: string; provider?: st
 
 export class World {
   panes = new Map<string, Pane>();
-  /** what `workspace list` reports; `workspace create` adds its workspace (always w1) with the label it was given */
-  workspaces: { workspace_id: string; label: string }[] = [];
   calls: { cmd: string; argv: readonly string[] }[] = [];
   clock = 1_000_000;
   host: HostLoad = { load1: 1, cores: 8, memFreePct: 50 };
   next = 1;
-  /** pane id -> herdr error text returned by `agent prompt` (exit 1) */
+  /** pane id -> error text of a failed `hc send` to its agent (exit 1, no JSON: it may or may not have arrived) */
   promptFails = new Map<string, string>();
-  /** herdr error text returned by every `agent start` (exit 1); undefined: start succeeds */
-  startFails: string | undefined;
-  /** every agent started from now on loses its kickoff's Enter; `kickoffDead`: and an Enter does not help either */
-  kickoffLost = false;
-  kickoffDead = false;
-  /** an omp started from now on reports no session (herdr's integration has not reported it yet) */
-  sessionLate = false;
-  /** what `herdr integration status` reports for omp */
-  ompIntegration = true;
+  /** an agent start from now on never reports a status (omp does not come up) */
+  startFails = false;
+  /** an agent started from now on never reports working on its kickoff (omp does not take it) */
+  kickoffIgnored = false;
   /** what `omp plugin list --json` prints; undefined: the command fails */
   ompPlugins: unknown;
-  /** pane id -> called with the 1-based count of `pane get` calls for that pane, before it answers */
+  /** pane id -> called with the 1-based count of `hc get` calls for that pane, before it answers */
   getHook = new Map<string, (n: number) => void>();
   private gets = new Map<string, number>();
-  /** `pane process-info` fails (exit 1) for every pane */
+  /** `hc get` reports no foreground for every pane (an unreadable foreground counts as a shell in front) */
   processInfoFails = false;
-  /** number of upcoming `pane send-keys` calls that fail (exit 1) */
+  /** number of upcoming `hc keys` calls that fail (exit 1) */
   keyFails = 0;
   gh: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 1, stdout: "" });
   reviewer: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({ code: 0, stdout: ompJson("VERDICT: CLEAR") });
@@ -103,8 +116,8 @@ export class World {
     writeFileSync(path, JSON.stringify({ pid, host: hostname(), at: this.clock }));
   }
 
-  addPane(id: string, status: AgentStatus = "idle"): Pane {
-    const p = { status, received: [], ran: [] };
+  addPane(id: string, status: AgentStatus = "idle", labels: Record<string, string> = { "seori.group": "seori" }): Pane {
+    const p: Pane = { status, received: [], ran: [], labels };
     this.panes.set(id, p);
     return p;
   }
@@ -115,88 +128,97 @@ export class World {
     if (cmd === "omp" && argv[0] === "plugin") {
       return this.ompPlugins === undefined ? { code: 1, stdout: "", stderr: "unknown command plugin" } : { code: 0, stdout: JSON.stringify(this.ompPlugins), stderr: "" };
     }
-    if (cmd !== "herdr") return { stderr: "", ...this.reviewer(argv) };
-    const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify({ result }), stderr: "" });
-    const [group, verb, id] = argv;
-    if (group === "integration" && verb === "status") {
-      const omp = this.ompIntegration ? "current (v10)" : "not installed";
-      return { code: 0, stdout: `pi: not installed (/h/.pi/x.ts)\nomp: ${omp} (/h/.omp/agent/extensions/herdr-omp-agent-state.ts)\n`, stderr: "" };
+    if (cmd !== "hc") return { stderr: "", ...this.reviewer(argv) };
+    const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify(result), stderr: "" });
+    const fail = (kind: string, code: number) => ({ code, stdout: "", stderr: JSON.stringify({ error: { kind, message: kind } }) });
+    const args = argv[0] === "--json" ? argv.slice(1) : argv;
+    const [verb, id] = args;
+    const status = (p: Pane) => (p.status === "shell" ? null : { app: p.agent ?? "omp", state: p.status === "unknown" ? "error" : p.status });
+    if (verb === "run") {
+      const labels: Record<string, string> = {};
+      const dash = args.indexOf("--");
+      args.slice(0, dash).forEach((a, i) => {
+        const v = args[i + 1];
+        if (a === "--label" && v !== undefined) labels[v.split("=")[0]!] = v.split("=").slice(1).join("=");
+      });
+      const address = `t${++this.next}`;
+      this.addPane(address, "shell", labels);
+      return ok({ address, state: "live" });
     }
-    if (group === "agent" && verb === "start") {
-      const paneId = String(argv[argv.indexOf("--pane") + 1]);
-      const target = this.panes.get(paneId);
-      if (!target) return { code: 1, stdout: "", stderr: `pane_not_found ${paneId}` };
-      if (target.status !== "shell") return { code: 1, stdout: "", stderr: '{"error":{"code":"agent_pane_busy"}}' };
-      if (this.startFails) return { code: 1, stdout: "", stderr: this.startFails };
-      const dash = argv.indexOf("--");
-      target.started = { name: String(id), args: dash < 0 ? [] : argv.slice(dash + 1).map(String) };
-      target.agent = "omp";
-      target.status = "idle";
-      if (this.kickoffLost || this.kickoffDead) target.kickoffLost = true;
-      // herdr's omp integration reports the session of the omp it started (the file need not exist here)
-      if (!this.sessionLate) target.session ??= `/h/.omp/agent/sessions/${String(id)}.jsonl`;
-      return ok({ agent: { name: id, agent: "omp", agent_status: "idle", pane_id: paneId }, type: "agent_started" });
-    }
-    if (group === "pane" && verb === "process-info") {
-      const target = this.panes.get(String(argv[3]));
-      if (!target || this.processInfoFails) return { code: 1, stdout: "", stderr: "process-info failed" };
-      const fg = target.foreground ?? (target.status === "shell" ? "-bash" : "omp");
-      const procs = typeof fg === "string" ? [{ name: fg, argv: [fg] }] : fg;
-      return ok({ process_info: { pane_id: argv[3], shell_pid: 100, foreground_process_group_id: target.pgid ?? 101, foreground_processes: procs.map((x, i) => ({ ...x, pid: 101 + i })) } });
-    }
-    if (group === "workspace" && verb === "list") return ok({ type: "workspace_list", workspaces: this.workspaces });
-    if ((group === "tab" || group === "workspace") && verb === "create") {
-      if (group === "workspace") this.workspaces.push({ workspace_id: "w1", label: String(argv[argv.indexOf("--label") + 1]) });
-      const pane = `w1:p${++this.next}`;
-      this.addPane(pane, "shell");
-      return ok({ root_pane: { pane_id: pane, tab_id: `w1:t${this.next}`, workspace_id: "w1" } });
-    }
-    if (group === "pane" && verb === "split") {
-      const pane = `w1:p${++this.next}`;
-      this.addPane(pane, "shell");
-      return ok({ pane: { pane_id: pane, tab_id: "w1:t1", workspace_id: "w1" } });
+    if (verb === "ls") {
+      const want = args.flatMap((a, i) => (a === "--label" ? [String(args[i + 1])] : []));
+      const rows = [...this.panes].filter(([, p]) => want.every((kv) => `${kv.split("=")[0]}=${p.labels[kv.split("=")[0]!]}` === kv));
+      return ok({
+        terminals: rows.map(([address, p]) => ({
+          address, state: "live", status: status(p), ...(p.status === "shell" ? {} : { agent: p.agent ?? "omp" }),
+        })),
+      });
     }
     const pane = id ? this.panes.get(id) : undefined;
-    if (!pane) return { code: 1, stdout: "", stderr: `pane_not_found ${id}` };
-    if (group === "pane" && verb === "get") {
+    if (!pane) return fail("not_found", 3);
+    if (verb === "get") {
       const n = (this.gets.get(id!) ?? 0) + 1;
       this.gets.set(id!, n);
       this.getHook.get(id!)?.(n);
-      const agentSession = pane.session ? { agent_session: { agent: "omp", kind: "path", source: "herdr:omp", value: pane.session } } : {};
-      const status = pane.workingReads ? (pane.workingReads--, "working") : pane.status;
-      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: status, ...agentSession } });
+      const fg = pane.foreground ?? (pane.status === "shell" ? "-bash" : "omp");
+      const first = typeof fg === "string" ? { name: fg, argv: [fg] } : fg[0];
+      const foreground = this.processInfoFails || first === undefined ? null : { ...first, pid: pane.pgid ?? 101 };
+      const reported = pane.workingReads ? (pane.workingReads--, { app: pane.agent ?? "omp", state: "working" }) : status(pane);
+      return ok({ address: id, state: "live", pid: 100, status: reported, foreground, labels: pane.labels, turn: 0, cols: 200 });
     }
-    if (group === "pane" && verb === "read") {
-      const lines = Number(argv[argv.indexOf("--lines") + 1]);
-      return { code: 0, stdout: (pane.screen ?? []).slice(-lines).join("\n") + "\n", stderr: "" };
+    if (verb === "read") {
+      const lines = Number(args[args.indexOf("--lines") + 1]);
+      return ok({ text: (pane.screen ?? []).slice(-lines).join("\n") });
     }
-    if (group === "pane" && verb === "run") { pane.ran.push(String(argv[3])); return ok({}); }
-    if (group === "pane" && verb === "send-text") { pane.received.push(String(argv[3])); return ok({}); }
-    if (group === "pane" && verb === "send-keys") {
+    if (verb === "keys") {
       if (this.keyFails > 0) { this.keyFails--; return { code: 1, stdout: "", stderr: "key press failed" }; }
-      if (pane.kicked && pane.kickoffLost && !this.kickoffDead && argv.includes("enter")) { pane.kickoffLost = false; pane.workingReads = 1; }
       return ok({});
     }
-    if (group === "agent" && verb === "prompt") {
-      const fail = this.promptFails.get(id!);
-      if (fail) return { code: 1, stdout: "", stderr: fail };
-      pane.received.push(String(argv[3]));
+    if (verb === "send") {
+      const text = String(args.at(-1));
+      if (pane.status === "shell") {
+        // Typed at the shell prompt: an agent start (`omp ...`, which reports idle once up) or any other command.
+        const words = shellWords(text);
+        if (words[0] !== "omp") { pane.ran.push(text); return ok({ started: null }); }
+        pane.started = { args: words.slice(1) };
+        if (this.startFails) return ok({ started: null });
+        pane.agent = "omp";
+        pane.status = "idle";
+        pane.session ??= "/h/.omp/agent/sessions/omp.jsonl";
+        return ok({ started: null });
+      }
+      const fail1 = this.promptFails.get(id!);
+      if (fail1) return { code: 1, stdout: "", stderr: fail1 };
+      const gate = args.indexOf("--if");
+      if (gate >= 0 && args[gate + 1] !== pane.status) return fail("status_mismatch", 10);
+      if (pane.status === "blocked" && !args.includes("--force")) return fail("blocked", 9);
+      pane.received.push(text);
       if (pane.started && !pane.kicked) {
         pane.kicked = true;
-        if (!pane.kickoffLost) pane.workingReads = 1;
+        if (!this.kickoffIgnored) pane.workingReads = 1;
       }
-      pane.onPrompt?.(String(argv[3]));
-      return ok({});
+      pane.onPrompt?.(text);
+      return ok({ started: true, status: pane.status, turn: 1 });
     }
-    if (group === "pane" && verb === "close") { this.panes.delete(id!); return ok({}); }
-    return { code: 1, stdout: "", stderr: `unhandled ${argv.join(" ")}` };
+    if (verb === "kill") { this.panes.delete(id!); return ok({}); }
+    return { code: 1, stdout: "", stderr: `unhandled ${args.join(" ")}` };
   };
+
+  /**
+   * The hc adapter over this world, on the world clock. hc reports no omp session file, so `agentSession` is the
+   * pane's `session` here: supervision's token and cost ceilings are tested on it.
+   */
+  runtime(exec: Exec = this.exec): HcRuntime {
+    const rt = new HcRuntime(exec, { env: process.env, sleep: async (ms) => void (this.clock += ms), now: () => this.clock, log: () => {} });
+    rt.agentSession = async (ref) => this.panes.get(ref.id)?.session;
+    return rt;
+  }
 
   deps(): Deps {
     const root = mkdtempSync(join(tmpdir(), "seori-test-"));
     return {
       store: new Store(root),
-      runtimes: defaultRuntimes(new Herdr(this.exec, "", join(root, "messages"))),
+      runtime: this.runtime(),
       exec: this.exec,
       now: () => this.clock,
       agent: ompProfile,

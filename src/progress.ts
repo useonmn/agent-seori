@@ -9,10 +9,10 @@ import type { Lane } from "./store.ts";
 // newest report as a threaded reply under that message, at most every config.progressEveryMin minutes and only when the
 // report changed, so the owner sees the work move without asking.
 
-/** herdr pane ids (`w1:p2`, `wC:p1`): meaningless to the owner, and they say which pane to type into. */
-const PANE_ID_RE = /\bw[0-9A-Za-z]+:p[0-9A-Za-z]+\b/g;
+/** hc terminal refs (`hc:t7`, `hc:t1b`): meaningless to the owner, and they say which terminal to type into. */
+const PANE_ID_RE = /\bhc:t[0-9a-z]+\b/g;
 
-/** The text as it goes to a messenger: the home directory shown as `~` and herdr pane ids replaced with `<pane>`. */
+/** The text as it goes to a messenger: the home directory shown as `~` and hc terminal refs replaced with `<pane>`. */
 export function scrubForOwner(text: string, home: string = homedir()): string {
   const h = home.replace(/\/+$/, "");
   const noHome = h && h !== "/" ? text.split(h).join("~") : text;

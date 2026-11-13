@@ -6,9 +6,9 @@ import { main, upCheck } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { recordPath } from "../src/down.ts";
 import { AGENT_OMP_CONFIG, agentOmpConfig, ompMemoryDb, Refusal, startLane } from "../src/harness.ts";
-import { World, herdrRef } from "./fake.ts";
+import { World, paneRef } from "./fake.ts";
 
-// Several seori instances on one PC, each with its own $SEORI_HOME: its own name (herdr label), one set of panes per
+// Several seori instances on one PC, each with its own $SEORI_HOME: its own name (seori.group label), one set of panes per
 // home, and its own omp memory.
 
 const named = (root: string, name: string) => writeFileSync(join(root, "config.json"), JSON.stringify({ name }));
@@ -28,7 +28,7 @@ async function captureLog(fn: () => Promise<unknown>): Promise<string> {
 const opened = (w: World) => w.calls.filter((c) => ["create", "split", "start", "run"].includes(String(c.argv[1]))).length;
 
 describe("instance name", () => {
-  test("config.json name: default seori, any script, and a name herdr could not take as a label is an error", () => {
+  test("config.json name: default seori, any script, and a name that needs quoting as a label is an error", () => {
     const root = mkdtempSync(join(tmpdir(), "seori-name-"));
     expect(loadConfig(root).name).toBe("seori");
     named(root, "바리-2");
@@ -45,37 +45,31 @@ describe("instance name", () => {
     expect(loadConfig(root).name).toBe("seori");
   });
 
-  test("a lane with no workspace to join opens one under the instance's name", async () => {
+  test("a lane's terminal is labelled with the instance's name as its group", async () => {
     const w = new World();
     const d = w.deps();
     named(d.store.root, "seori-two");
     const brief = join(d.store.root, "brief.md");
     writeFileSync(brief, "Do it.");
-    const prev = process.env["HERDR_WORKSPACE_ID"];
-    delete process.env["HERDR_WORKSPACE_ID"];
-    try {
-      await startLane(d, "fix", brief);
-    } finally {
-      if (prev !== undefined) process.env["HERDR_WORKSPACE_ID"] = prev;
-    }
-    expect(w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv.slice(0, 4)).toEqual(["workspace", "create", "--label", "seori-two"]);
+    const lane = await startLane(d, "fix", brief);
+    expect(w.panes.get(lane.sessionRef.id)!.labels["seori.group"]).toBe("seori-two");
   });
 });
 
 describe("seori up, once per home", () => {
-  test("opens the workspace under the instance's name; a second up prints ALREADY UP, exits 0 and opens nothing", async () => {
+  test("opens the terminals under the instance's name; a second up prints ALREADY UP, exits 0 and opens nothing", async () => {
     const w = new World();
-    const d = w.deps();
+    const d = { ...w.deps(), platform: "darwin" }; // terminals, not systemd units
     named(d.store.root, "seori-two");
     w.heartbeat(d.store.root, 0);
     const first = await captureLog(() => main(["up", "--cwd", d.store.root], d));
     expect(first).toEndWith(" name=seori-two");
-    expect(w.workspaces).toEqual([{ workspace_id: "w1", label: "seori-two" }]);
+    expect(new Set([...w.panes.values()].map((p) => p.labels["seori.group"]))).toEqual(new Set(["seori-two"]));
     const before = opened(w);
     let code: number | undefined;
     const again = await captureLog(async () => { code = await main(["up", "--cwd", d.store.root], d); });
     expect(code).toBe(0);
-    expect(again).toBe(`ALREADY UP name=seori-two home=${d.store.root} lead=${d.store.roles().lead!.id} running=none; nothing opened`);
+    expect(again).toBe(`ALREADY UP name=seori-two home=${d.store.root} lead=hc:${d.store.roles().lead!.id} running=none; nothing opened`);
     expect(opened(w)).toBe(before);
   });
 
@@ -84,22 +78,21 @@ describe("seori up, once per home", () => {
     mkdirSync(join(d.store.root, "run"));
     writeFileSync(recordPath(d.store.root, "daemon-loop"), JSON.stringify({ pid: 4242 }));
     writeFileSync(recordPath(d.store.root, "duty"), JSON.stringify({ pid: 4343 }));
-    d.store.setRole("lead", herdrRef("w1:p1"));
+    d.store.setRole("lead", paneRef("t1"));
     const line = await upCheck(d, "seori", (pid) => pid === 4242);
     expect(line).toStartWith(`ALREADY UP name=seori home=${d.store.root} lead=gone running=daemon-loop; nothing opened`);
     expect(await upCheck(d, "seori", () => false)).toBeUndefined();
   });
 
-  test("another home's workspace under the same name is refused; a stale lead id in another instance's workspace is not this home", async () => {
+  test("another home's terminals under the same name are refused; a stale lead id in another instance's group is not this home", async () => {
     const w = new World();
     const d = w.deps();
-    w.addPane("w9:p1", "idle"); // the other instance's lead, whose id this home recorded before a herdr restart
-    d.store.setRole("lead", herdrRef("w9:p1"));
-    w.workspaces.push({ workspace_id: "w9", label: "bari" });
+    w.addPane("t9", "idle", { "seori.group": "bari" }); // the other instance's lead, whose id this home recorded before an hc restart
+    d.store.setRole("lead", paneRef("t9"));
     expect(await upCheck(d, "seori", () => false)).toBeUndefined();
-    w.workspaces.push({ workspace_id: "w3", label: "seori" });
+    w.addPane("t3", "idle", { "seori.group": "seori" });
     await expect(upCheck(d, "seori", () => false)).rejects.toThrow(Refusal);
-    await expect(upCheck(d, "seori", () => false)).rejects.toThrow(/labelled "seori" \(w3\).*config\.json/);
+    await expect(upCheck(d, "seori", () => false)).rejects.toThrow(/labelled seori\.group="seori" \(seori\).*config\.json/);
   });
 });
 

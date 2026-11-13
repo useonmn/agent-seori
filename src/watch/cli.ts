@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { Refusal } from "../harness.ts";
+import { parseRef } from "../runtime/types.ts";
 import { Store } from "../store.ts";
 import { sameOwner, type Watch, type WatchOwner, type WatchSource, WAKE_BUDGET, WAKE_WINDOW_MS, WatchStore } from "./store.ts";
 
@@ -100,6 +101,7 @@ function sourceOf(f: AddFlags): WatchSource {
   }
   const status = f.status as (typeof PANE_STATUSES)[number] | undefined;
   if (status === undefined || !PANE_STATUSES.includes(status)) throw new Refusal(`--pane needs --status ${PANE_STATUSES.join("|")}`);
+  if (parseRef(f.pane!) === undefined) throw new Refusal(`--pane takes an hc terminal ref (hc:t7), not ${f.pane}`);
   return { kind: "pane", pane: f.pane!, status };
 }
 

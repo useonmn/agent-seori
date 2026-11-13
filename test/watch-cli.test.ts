@@ -33,7 +33,7 @@ function setup() {
   const w = new World();
   const d = w.deps();
   const lane = (key: string, status: Lane["status"] = "working") =>
-    d.store.saveLane({ key, sessionRef: { runtime: "herdr", id: "w1:p9", container: "w1:t9" }, paneId: "w1:p9", tabId: "w1:t9", brief: "b", cwd: "/", status, createdAt: w.clock, lastActivityAt: w.clock, nudges: 0, log: [] });
+    d.store.saveLane({ key, sessionRef: { runtime: "hc", id: "t9" }, paneId: "t9", tabId: "w1:t9", brief: "b", cwd: "/", status, createdAt: w.clock, lastActivityAt: w.clock, nudges: 0, log: [] });
   return { w, d, lane, watches: () => new WatchStore(d.store.root) };
 }
 
@@ -62,8 +62,8 @@ describe("seori watch add", () => {
     expect(watches().get(idOf(mine.out))).toMatchObject({ owner: { kind: "lane", key: "fix-login" }, source: { kind: "checks", repo: "acme/app", number: 12 } });
     const lead = await run(["watch", "add", "--file", "notes.txt", "--for", "lead"], d);
     expect(watches().get(idOf(lead.out))).toMatchObject({ owner: { kind: "lead" }, source: { kind: "file", path: resolve("notes.txt") } });
-    const other = await run(["watch", "add", "--pane", "w1:p3", "--status", "idle", "--for", "other-lane"], d);
-    expect(watches().get(idOf(other.out))).toMatchObject({ owner: { kind: "lane", key: "other-lane" }, source: { kind: "pane", pane: "w1:p3", status: "idle" } });
+    const other = await run(["watch", "add", "--pane", "hc:t3", "--status", "idle", "--for", "other-lane"], d);
+    expect(watches().get(idOf(other.out))).toMatchObject({ owner: { kind: "lane", key: "other-lane" }, source: { kind: "pane", pane: "hc:t3", status: "idle" } });
   });
 
   test("--timeout and --persistent set the expiry", async () => {
@@ -80,8 +80,8 @@ describe("seori watch add", () => {
     await expect(main(["watch", "add", "--name", "x"], d)).rejects.toThrow(/exactly one of/);
     await expect(main(["watch", "add", "--file", "a", "--command", "b"], d)).rejects.toThrow(/exactly one of/);
     await expect(main(["watch", "add", "--checks", "acme/app"], d)).rejects.toThrow(/OWNER\/REPO#N/);
-    await expect(main(["watch", "add", "--pane", "w1:p1"], d)).rejects.toThrow(/--status/);
-    await expect(main(["watch", "add", "--pane", "w1:p1", "--status", "done"], d)).rejects.toThrow(/--status/);
+    await expect(main(["watch", "add", "--pane", "hc:t1"], d)).rejects.toThrow(/--status/);
+    await expect(main(["watch", "add", "--pane", "hc:t1", "--status", "done"], d)).rejects.toThrow(/--status/);
     await expect(main(["watch", "add", "--file", "a", "--for", "gone-lane"], d)).rejects.toThrow(/is done/);
     await expect(main(["watch", "add", "--file", "a", "--for", "nope"], d)).rejects.toThrow(/no lane nope/);
     await expect(main(["watch", "add", "--file", "a", "--timeout", "2 hours"], d)).rejects.toThrow(Refusal);

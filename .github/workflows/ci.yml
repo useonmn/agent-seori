@@ -21,7 +21,7 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      # The e2e suites need a real herdr, omp and SEORI_E2E_OMP=1, or hc and SEORI_E2E_HC=1; without them they skip.
+      # The e2e suites need hc and SEORI_E2E_HC=1; without them they skip.
       - run: bun test ./test/ --timeout 60000
 
   e2e-hc:
@@ -48,4 +48,4 @@ jobs:
       - name: hc e2e
         env:
           SEORI_E2E_HC: "1"
-        run: bun test test/e2e-hc.test.ts test/e2e-hc-cli.test.ts test/e2e-migrate.test.ts --timeout 120000
+        run: bun test test/e2e-hc.test.ts test/e2e-hc-cli.test.ts --timeout 120000

@@ -2,22 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
-import { agentName, defaultSeoriCmd, done, paneEnv, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
-import { deliverOrThrow, session } from "../src/runtime/index.ts";
-import { refText } from "../src/refs.ts";
-import { ompJson, World, herdrRef } from "./fake.ts";
+import { defaultSeoriCmd, done, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { deliverOrThrow } from "../src/runtime/index.ts";
+import { ompJson, World, paneRef } from "./fake.ts";
 
 /** The harness's delivery to one stored pane id, through its runtime. */
 const deliverTo = (d: ReturnType<World["deps"]>, paneId: string, text: string): Promise<boolean> => {
-  const { rt, ref } = session(d.runtimes, herdrRef(paneId));
-  return deliverOrThrow(rt, ref, text);
+  return deliverOrThrow(d.runtime, paneRef(paneId), text);
 };
 
 function setup() {
   const w = new World();
   const d = w.deps();
-  const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", herdrRef("w1:p1"));
+  const lead = w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix the flaky login test.");
   return { w, d, lead, brief };
@@ -36,92 +34,49 @@ async function captureLog(fn: () => Promise<unknown>): Promise<string> {
 }
 
 describe("seori command for agents and loop panes", () => {
-  test("carries the herdr session and model when set, so loops and lanes drive the same herdr and omp model", () => {
-    const cmd = defaultSeoriCmd("/h o", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "anthropic/claude-haiku-5-5" });
-    expect(cmd).toStartWith("SEORI_HOME='/h o' SEORI_HERDR_SESSION='iso' SEORI_MODEL='anthropic/claude-haiku-5-5' bun ");
+  test("carries the home and model when set, so loops and lanes drive the same omp model", () => {
+    const cmd = defaultSeoriCmd("/h o", { SEORI_MODEL: "anthropic/claude-haiku-5-5" });
+    expect(cmd).toStartWith("SEORI_HOME='/h o' SEORI_MODEL='anthropic/claude-haiku-5-5' bun ");
     expect(defaultSeoriCmd("/h", {})).toStartWith("SEORI_HOME='/h' bun ");
   });
 
-  test("the pane environment carries the home and the herdr session and model", () => {
-    expect(paneEnv("/h", { SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" })).toEqual({ SEORI_HOME: "/h", SEORI_HERDR_SESSION: "iso", SEORI_MODEL: "m" });
+  test("the pane environment carries the home and model", () => {
+    expect(paneEnv("/h", { SEORI_MODEL: "m" })).toEqual({ SEORI_HOME: "/h", SEORI_MODEL: "m" });
     expect(paneEnv("/h", {})).toEqual({ SEORI_HOME: "/h" });
   });
 });
 
-test("agent names are valid for herdr: uppercase pane ids stay unique, long keys are cut to 32 characters", () => {
-  const valid = /^[a-z][a-z0-9_-]{0,31}$/;
-  expect(agentName("lead", "w1:p2")).toBe("lead-w1p2");
-  expect(agentName("smoke", "wC:p2")).toBe("smoke-w_cp2");
-  expect(agentName("smoke", "wC:p2")).not.toBe(agentName("smoke", "wc:p2"));
-  const long = agentName("a".repeat(41), "wAB:p12");
-  expect(long).toMatch(valid);
-  expect(long.endsWith("-w_a_bp12")).toBe(true);
-});
-
 describe("lanes", () => {
-  test("start opens a tab, starts omp with herdr agent start, then sends the /goal kickoff, and tells the lead", async () => {
+  test("start opens a terminal, types omp at its shell, then sends the /goal kickoff, and tells the lead", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
+    const lane = await startLane(d, "fix-login", brief, {});
     const pane = w.panes.get(lane.paneId)!;
-    const herdrCalls = w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "agent").map((c) => c.argv.slice(0, 3));
-    expect(herdrCalls.slice(0, 2)).toEqual([["agent", "start", `fix-login-${lane.paneId.replace(":", "")}`], ["agent", "prompt", lane.paneId]]);
-    expect(w.calls.find((c) => c.argv[1] === "start")!.argv).toEqual(["agent", "start", pane.started!.name, "--kind", "omp", "--pane", lane.paneId, "--timeout", "60000", "--"]);
+    const sends = w.calls.filter((c) => c.cmd === "hc" && c.argv[1] === "send").map((c) => c.argv.at(-1));
+    expect(sends[0]).toBe("'omp'");
+    expect(pane.started).toEqual({ args: [] });
     expect(pane.ran).toEqual([]);
     expect(pane.received).toEqual([
       `/goal Read your brief at ${lane.brief} and execute it. Your lane key is fix-login. ` +
         `The work is finished only when the brief's exit condition holds and you have sent seori ready.`,
     ]);
     expect(await Bun.file(lane.brief).text()).toContain("seori ready fix-login --text");
-    expect(lead.received).toEqual([`[START fix-login] lane opened in ${lane.paneId}`]);
-    await expect(startLane(d, "fix-login", brief, { workspace: "w1" })).rejects.toThrow(Refusal);
+    expect(lead.received).toEqual([`[START fix-login] lane opened in hc:${lane.paneId}`]);
+    await expect(startLane(d, "fix-login", brief, {})).rejects.toThrow(Refusal);
   });
 
-  test("the kickoff waits until omp's integration reports the session (omp loaded), at most 30 s", async () => {
+  test("a kickoff omp has not started on is reported on stderr; the lane stays open", async () => {
     const { w, d, brief } = setup();
-    w.sessionLate = true;
-    const id = `w1:p${w.next + 1}`;
-    w.getHook.set(id, (n) => { if (n === 3) w.panes.get(id)!.session = "/h/.omp/agent/sessions/x.jsonl"; });
-    const t0 = w.clock;
-    await startLane(d, "fix-login", brief, { workspace: "w1" });
-    const order = w.calls.filter((c) => (c.argv[0] === "pane" && c.argv[1] === "get") || (c.argv[0] === "agent" && c.argv[1] === "prompt")).map((c) => c.argv[1]);
-    // three reads until the session shows, then deliver's own read of the status right before the prompt
-    expect(order.slice(0, 5)).toEqual(["get", "get", "get", "get", "prompt"]);
-    expect(w.clock - t0).toBe(1000);
-
-    const late = setup();
-    late.w.sessionLate = true;
-    const t1 = late.w.clock;
-    const lane = await startLane(late.d, "fix-login", late.brief, { workspace: "w1" });
-    expect(late.w.clock - t1).toBe(30_000);
-    expect(late.w.panes.get(lane.paneId)!.received).toHaveLength(1);
-  });
-
-  test("a kickoff whose Enter was lost gets one Enter, never typed again; the lane starts", async () => {
-    const { w, d, lead, brief } = setup();
-    w.kickoffLost = true;
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
-    const pane = w.panes.get(lane.paneId)!;
-    expect(pane.received).toHaveLength(1);
-    expect(pane.kickoffLost).toBe(false);
-    expect(w.calls.filter((c) => c.argv[1] === "send-keys").map((c) => c.argv.slice(2))).toEqual([[lane.paneId, "enter"]]);
-    expect(d.store.lane("fix-login")?.status).toBe("working");
-    expect(lead.received).toEqual([`[START fix-login] lane opened in ${lane.paneId}`]);
-  });
-
-  test("a kickoff omp still has not started after the Enter is reported on stderr; the lane stays open", async () => {
-    const { w, d, brief } = setup();
-    w.kickoffDead = true;
+    w.kickoffIgnored = true;
     const errors: string[] = [];
     const write = process.stderr.write;
     process.stderr.write = ((s: string) => (errors.push(String(s)), true)) as typeof process.stderr.write;
     let lane;
     try {
-      lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
+      lane = await startLane(d, "fix-login", brief, {});
     } finally {
       process.stderr.write = write;
     }
-    expect(errors).toEqual([`seori: lane fix-login: omp in ${lane.paneId} has not started on the kickoff; check that pane\n`]);
-    expect(w.calls.filter((c) => c.argv[1] === "send-keys")).toHaveLength(1);
+    expect(errors).toEqual([`seori: lane fix-login: omp in hc:${lane.paneId} has not started on the kickoff; check that pane\n`]);
     expect(w.panes.has(lane.paneId)).toBe(true);
     expect(d.store.lane("fix-login")?.status).toBe("working");
   });
@@ -129,35 +84,35 @@ describe("lanes", () => {
   test("start --model goes to that lane's omp only and is stored on it; other lanes keep SEORI_MODEL; empty is refused", async () => {
     const { w, d, brief } = setup();
     const dm = { ...d, model: "m1" };
-    const args = ["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force", "--model", "m-hard"];
+    const args = ["start", "fix-login", "--brief", brief, "--force", "--model", "m-hard"];
     expect(await main(args, dm)).toBe(0);
     const hard = dm.store.lane("fix-login")!;
     expect(hard.model).toBe("m-hard");
     expect(w.panes.get(hard.paneId)!.started!.args).toEqual(["--model", "m-hard"]);
-    const plain = await startLane(dm, "fix-other", brief, { workspace: "w1" });
+    const plain = await startLane(dm, "fix-other", brief, {});
     expect("model" in plain).toBe(false);
     expect(w.panes.get(plain.paneId)!.started!.args).toEqual(["--model", "m1"]);
-    await expect(startLane(dm, "fix-empty", brief, { workspace: "w1", model: " " })).rejects.toThrow("--model needs a model name");
+    await expect(startLane(dm, "fix-empty", brief, { model: " " })).rejects.toThrow("--model needs a model name");
   });
 
   test("SEORI_MODEL goes to the lane's omp as --model", async () => {
     const { w, d, brief } = setup();
-    const lane = await startLane({ ...d, model: "anthropic/claude-x" }, "fix-login", brief, { workspace: "w1" });
+    const lane = await startLane({ ...d, model: "anthropic/claude-x" }, "fix-login", brief, {});
     expect(w.panes.get(lane.paneId)!.started!.args).toEqual(["--model", "anthropic/claude-x"]);
   });
 
   test("a failed agent start or kickoff closes the pane and saves no lane", async () => {
     const { w, d, lead, brief } = setup();
-    w.startFails = '{"error":{"code":"agent_start_timeout"}}';
-    await expect(startLane(d, "no-start", brief, { workspace: "w1" })).rejects.toThrow(/lane no-start did not start, pane w1:p\d+ closed: .*agent_start_timeout/);
-    w.startFails = undefined;
     const before = new Set(w.panes.keys());
-    w.promptFails.set(`w1:p${w.next + 1}`, '{"error":{"code":"agent_blocked"}}');
-    await expect(startLane(d, "no-kickoff", brief, { workspace: "w1" })).rejects.toThrow(/lane no-kickoff did not start, .*agent_blocked/);
+    w.startFails = true;
+    await expect(startLane(d, "no-start", brief, {})).rejects.toThrow(/lane no-start did not start, pane hc:t\d+ closed: .*did not report a status/);
+    w.startFails = false;
+    w.promptFails.set(`t${w.next + 1}`, "connection reset");
+    await expect(startLane(d, "no-kickoff", brief, {})).rejects.toThrow(/lane no-kickoff did not start, .*connection reset/);
     expect([...w.panes.keys()]).toEqual([...before]);
     expect(d.store.lane("no-start")).toBeUndefined();
     expect(d.store.lane("no-kickoff")).toBeUndefined();
-    expect(w.calls.filter((c) => c.argv[1] === "close")).toHaveLength(2);
+    expect(w.calls.filter((c) => c.argv[1] === "kill")).toHaveLength(2);
     expect(lead.received).toEqual([]);
   });
 
@@ -165,10 +120,10 @@ describe("lanes", () => {
     const { w, d } = setup();
     const copy = d.store.briefPath("fix-login");
     writeFileSync(copy, "Fix the flaky login test.\n");
-    w.startFails = '{"error":{"code":"agent_start_timeout"}}';
-    await expect(startLane(d, "fix-login", copy, { workspace: "w1" })).rejects.toThrow(Refusal);
-    w.startFails = undefined;
-    const lane = await startLane(d, "fix-login", copy, { workspace: "w1" });
+    w.startFails = true;
+    await expect(startLane(d, "fix-login", copy, {})).rejects.toThrow(Refusal);
+    w.startFails = false;
+    const lane = await startLane(d, "fix-login", copy, {});
     expect(lane.brief).toBe(copy);
     const text = readFileSync(copy, "utf8");
     expect(text.split("## Lane rules (added by seori for lane ")).toHaveLength(2);
@@ -177,89 +132,21 @@ describe("lanes", () => {
 
   test("a brief elsewhere stays unchanged at its source path", async () => {
     const { d, brief } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
+    const lane = await startLane(d, "fix-login", brief, {});
     expect(readFileSync(brief, "utf8")).toBe("Fix the flaky login test.");
     expect(readFileSync(lane.brief, "utf8")).toStartWith("Fix the flaky login test.\n\n## Lane rules");
   });
 
   test("start --activity-path given twice stores both values on the lane", async () => {
     const { d, brief } = setup();
-    const args = ["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force", "--activity-path", "out", "--activity-path", "/data/run.log"];
+    const args = ["start", "fix-login", "--brief", brief, "--force", "--activity-path", "out", "--activity-path", "/data/run.log"];
     expect(await main(args, d)).toBe(0);
     expect(d.store.lane("fix-login")!.activityPaths).toEqual(["out", "/data/run.log"]);
   });
 
-  test("start and up refuse without herdr's omp integration, before opening anything", async () => {
-    const { w, d, brief } = setup();
-    w.ompIntegration = false;
-    await expect(main(["start", "fix-login", "--brief", brief, "--workspace", "w1"], d)).rejects.toThrow(INTEGRATION_MISSING);
-    await expect(main(["up", "--cwd", d.store.root], d)).rejects.toThrow(INTEGRATION_MISSING);
-    expect(w.calls.map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["integration status", "integration status"]);
-    expect(d.store.lane("fix-login")).toBeUndefined();
-  });
-
-  test("up starts the lead (with the channel extension) and duty omp with herdr agent start; loops and daemon use pane run", async () => {
-    const w = new World();
-    const d = { ...w.deps(), model: "m1" };
-    w.heartbeat(d.store.root, 0); // the daemon's first heartbeat, which up waits for before it starts the duty loop
-    const prev = process.env["SEORI_HERDR_SESSION"];
-    const prevConfig = process.env["PI_CONFIG_FILES"];
-    process.env["SEORI_HERDR_SESSION"] = "iso";
-    delete process.env["PI_CONFIG_FILES"];
-    let out: string;
-    try {
-      out = await captureLog(() => main(["up", "--cwd", d.store.root], d));
-    } finally {
-      if (prev === undefined) delete process.env["SEORI_HERDR_SESSION"];
-      else process.env["SEORI_HERDR_SESSION"] = prev;
-      if (prevConfig === undefined) delete process.env["PI_CONFIG_FILES"];
-      else process.env["PI_CONFIG_FILES"] = prevConfig;
-    }
-    const { lead, duty } = d.store.roles();
-    const prompts = join(d.store.root, "prompts");
-    expect(w.panes.get(lead!.id)!.started).toEqual({
-      name: `lead-${lead!.id.replace(":", "")}`,
-      args: ["-e", LEAD_EXTENSION, "--append-system-prompt", join(prompts, "lead.md"), "--model", "m1"],
-    });
-    expect(existsSync(LEAD_EXTENSION)).toBe(true);
-    // Only the lead loads the extension: duty here, lanes and the reviewer elsewhere never pass -e.
-    expect(w.panes.get(duty!.id)!.started).toEqual({ name: `duty-${duty!.id.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "duty.md"), "--model", "m1"] });
-    // herdr agent start has no --env: the extension's environment is set on the lead's workspace shell.
-    const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
-    // Only the lead's omp gets lead-omp.yml: advisor.syncBacklog strict, so the agent-end review ends before agent_end.
-    // The lead and duty both get agent-omp.yml: no setup wizard in an agent pane.
-    const leadConfig = join(prompts, "lead-omp.yml");
-    const agentConfig = join(prompts, "agent-omp.yml");
-    expect(create.slice(-8)).toEqual([
-      "--env", `SEORI_HOME=${d.store.root}`, "--env", "SEORI_CMD=seori", "--env", "SEORI_HERDR_SESSION=iso", "--env", `PI_CONFIG_FILES=${agentConfig}${delimiter}${leadConfig}`,
-    ]);
-    expect(readFileSync(leadConfig, "utf8")).toBe("advisor:\n  syncBacklog: strict\n");
-    // A home other than ~/.seori keeps its agents' omp memory in itself.
-    expect(readFileSync(agentConfig, "utf8")).toBe(
-      `startup:\n  setupWizard: false\nmnemopi:\n  dbPath: ${JSON.stringify(join(d.store.root, "omp", "memories", "mnemopi.db"))}\n`,
-    );
-    const dutyTab = w.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create")!.argv;
-    expect(dutyTab.at(-1)).toBe(`PI_CONFIG_FILES=${agentConfig}`);
-    const others = w.calls.filter((c) => c.argv !== create && c.argv !== dutyTab);
-    expect(others.some((c) => c.argv.some((arg) => arg.startsWith("PI_CONFIG_FILES=")))).toBe(false);
-    // The daemon starts first, so the duty loop's first tick finds its heartbeat instead of reporting an outage.
-    expect(w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "run").map((c) => [c.argv[2], c.argv[3]])).toEqual([
-      ["w1:p6", "seori daemon-loop"],
-      ["w1:p4", "seori duty --interval 60"],
-      ["w1:p5", "seori loop"],
-    ]);
-    expect(out).toBe(`UP lead=${lead!.id} duty=${duty!.id} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root} name=seori`);
-    expect(create.slice(0, 3)).toEqual(["workspace", "create", "--label"]);
-    expect(create[3]).toBe("seori");
-    // Every pane gets seori's environment from herdr, so its commands need no shell env prefix.
-    const splits = w.calls.filter((c) => (c.argv[0] === "tab" && c.argv[1] === "create") || (c.argv[0] === "pane" && c.argv[1] === "split"));
-    expect(splits).toHaveLength(4);
-    for (const c of splits) expect(c.argv).toEqual(expect.arrayContaining([`SEORI_HOME=${d.store.root}`, "SEORI_HERDR_SESSION=iso"]));
-  });
-
   test("up appends the lead's omp config to a PI_CONFIG_FILES already in the environment", async () => {
     const w = new World();
-    const d = w.deps();
+    const d = { ...w.deps(), platform: "darwin" }; // terminals, not systemd units
     w.heartbeat(d.store.root, 0);
     const prev = process.env["PI_CONFIG_FILES"];
     process.env["PI_CONFIG_FILES"] = "/etc/omp/a.yml";
@@ -269,9 +156,9 @@ describe("lanes", () => {
       if (prev === undefined) delete process.env["PI_CONFIG_FILES"];
       else process.env["PI_CONFIG_FILES"] = prev;
     }
-    const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
+    const create = w.calls.find((c) => c.argv[1] === "run" && c.argv.includes("seori.role=lead"))!.argv;
     const prompts = join(d.store.root, "prompts");
-    expect(create.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}${delimiter}${join(prompts, "lead-omp.yml")}`);
+    expect(create.find((a) => a.startsWith("PI_CONFIG_FILES="))).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}${delimiter}${join(prompts, "lead-omp.yml")}`);
   });
 
   test("a lane's omp gets agent-omp.yml (no setup wizard) but not the lead's settings it inherits from the lead's shell", async () => {
@@ -280,31 +167,31 @@ describe("lanes", () => {
     const prev = process.env["PI_CONFIG_FILES"];
     process.env["PI_CONFIG_FILES"] = ["/etc/omp/a.yml", join(prompts, "agent-omp.yml"), join(prompts, "lead-omp.yml")].join(delimiter);
     try {
-      await startLane(d, "fix-login", brief, { workspace: "w1" });
+      await startLane(d, "fix-login", brief, {});
     } finally {
       if (prev === undefined) delete process.env["PI_CONFIG_FILES"];
       else process.env["PI_CONFIG_FILES"] = prev;
     }
-    const tab = w.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create")!.argv;
-    expect(tab.at(-1)).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}`);
+    const run = w.calls.find((c) => c.argv[1] === "run" && c.argv.includes("seori.role=lane"))!.argv;
+    expect(run.find((a) => a.startsWith("PI_CONFIG_FILES="))).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}`);
     expect(readFileSync(join(prompts, "agent-omp.yml"), "utf8")).toStartWith("startup:\n  setupWizard: false\n");
   });
 
   test("start refuses the role names lead and duty as lane keys before it writes or opens anything", async () => {
     const { w, d, lead, brief } = setup();
     for (const key of ["lead", "duty"]) {
-      await expect(startLane(d, key, brief, { workspace: "w1" })).rejects.toThrow(`lane key "${key}" is reserved for the ${key} role`);
+      await expect(startLane(d, key, brief, {})).rejects.toThrow(`lane key "${key}" is reserved for the ${key} role`);
       expect(d.store.lane(key)).toBeUndefined();
       expect(existsSync(d.store.briefPath(key))).toBe(false);
     }
     expect(w.calls).toEqual([]);
     expect(lead.received).toEqual([]);
-    expect(d.store.roles().lead).toEqual(herdrRef("w1:p1"));
+    expect(d.store.roles().lead).toEqual(paneRef("t1"));
   });
 
   test("ready requires evidence, then reaches the lead; done closes only a ready lane", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "fix-login", brief, { workspace: "w1" });
+    const lane = await startLane(d, "fix-login", brief, {});
     await expect(done(d, "fix-login")).rejects.toThrow("not ready");
     await expect(ready(d, "fix-login", "fixed", [])).rejects.toThrow("evidence");
     await ready(d, "fix-login", "fixed", ["https://github.com/o/r/pull/1"]);
@@ -316,7 +203,7 @@ describe("lanes", () => {
 
   test("done on a lane that is already closed says so and where to see its final state, touching nothing", async () => {
     const { w, d, brief } = setup();
-    await startLane(d, "fix-login", brief, { workspace: "w1" });
+    await startLane(d, "fix-login", brief, {});
     await ready(d, "fix-login", "fixed", ["https://github.com/o/r/pull/1"]);
     await done(d, "fix-login");
     const before = JSON.stringify(d.store.lane("fix-login"));
@@ -334,7 +221,7 @@ describe("lanes", () => {
 describe("pane messaging", () => {
   test("a busy lead is never interrupted: messages queue and arrive as one batch when it goes idle", async () => {
     const { d, lead, brief } = setup();
-    await startLane(d, "a-lane", brief, { workspace: "w1" });
+    await startLane(d, "a-lane", brief, {});
     lead.received.length = 0;
     lead.status = "working";
     await report(d, "a-lane", "tests red, investigating");
@@ -342,38 +229,37 @@ describe("pane messaging", () => {
     expect(lead.received).toEqual([]);
     lead.status = "idle";
     const events = await dutyTick(d);
-    expect(events).toContainEqual({ pane: "w1:p1", action: "flushed" });
+    expect(events).toContainEqual({ pane: "hc:t1", action: "flushed" });
     expect(lead.received).toHaveLength(1);
     expect(lead.received[0]).toContain("2 messages arrived while you were busy");
     expect(lead.received[0]).toContain("[REPORT a-lane] tests red, investigating");
     expect(lead.received[0]).toContain("second note");
   });
 
-  test("a blocked lead gets nothing typed: the message queues without agent prompt or send-text", async () => {
+  test("a blocked lead gets nothing typed: the message queues without an hc send", async () => {
     const { w, d, lead } = setup();
     lead.status = "blocked";
     expect(await send(d, "lead", "note", "cli")).toBe("QUEUED");
     expect(lead.received).toEqual([]);
-    expect(w.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "prompt")).toEqual([]);
-    expect(w.calls.filter((c) => c.argv[1] === "send-text")).toEqual([]);
+    expect(w.calls.filter((c) => c.argv[1] === "send")).toEqual([]);
   });
 
-  test("an open lane in goal mode takes messages while working, through agent prompt", async () => {
+  test("an open lane in goal mode takes messages while working, through hc send --if working", async () => {
     const { w, d, brief } = setup();
-    const lane = await startLane(d, "a-lane", brief, { workspace: "w1" });
+    const lane = await startLane(d, "a-lane", brief, {});
     const pane = w.panes.get(lane.paneId)!;
     pane.status = "working";
     pane.received.length = 0;
     w.calls.length = 0;
     expect(await send(d, "a-lane", "rebase on main first", "lead")).toBe("DELIVERED");
     expect(pane.received).toEqual(["rebase on main first"]);
-    expect(w.calls).toContainEqual({ cmd: "herdr", argv: ["agent", "prompt", lane.paneId, "rebase on main first"] });
+    expect(w.calls).toContainEqual({ cmd: "hc", argv: ["--json", "send", lane.paneId, "--if", "working", "--", "rebase on main first"] });
     expect(d.store.queued(lane.sessionRef)).toEqual([]);
   });
 
   test("a working lead still queues, and a blocked lane gets nothing typed", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "a-lane", brief, { workspace: "w1" });
+    const lane = await startLane(d, "a-lane", brief, {});
     lead.status = "working";
     lead.received.length = 0;
     expect(await send(d, "lead", "note", "a-lane")).toBe("QUEUED");
@@ -384,50 +270,13 @@ describe("pane messaging", () => {
     w.calls.length = 0;
     expect(await send(d, "a-lane", "note", "lead")).toBe("QUEUED");
     expect(pane.received).toEqual([]);
-    expect(w.calls.filter((c) => c.argv[1] === "prompt" || c.argv[1] === "send-text")).toEqual([]);
+    expect(w.calls.filter((c) => c.argv[1] === "send")).toEqual([]);
   });
 
-  test("an omp pane that herdr refuses `agent prompt` for (agent_not_ready) still gets the text typed in", async () => {
-    const { w, d, lead } = setup();
-    w.promptFails.set("w1:p1", '{"error":{"code":"agent_not_ready"}}');
-    expect(await send(d, "lead", "hello\n\nlead", "cli")).toBe("DELIVERED");
-    expect(lead.received).toEqual(["hello / lead"]);
-    expect(w.calls).toContainEqual({ cmd: "herdr", argv: ["pane", "send-keys", "w1:p1", "enter"] });
-  });
-
-  test("a failing Enter is retried without typing the text again; after 3 failures it is thrown", async () => {
-    const { w, d, lead } = setup();
-    const enters = () => w.calls.filter((c) => c.argv[1] === "send-keys").length;
-    w.promptFails.set("w1:p1", '{"error":{"code":"agent_not_ready"}}');
-    w.keyFails = 2;
-    await deliverTo(d, "w1:p1", "once");
-    expect(lead.received).toEqual(["once"]);
-    expect(enters()).toBe(3);
-    w.keyFails = 5;
-    await expect(deliverTo(d, "w1:p1", "twice")).rejects.toThrow("key press failed");
-    expect(lead.received).toEqual(["once", "twice"]);
-    expect(enters()).toBe(6);
-  });
-
-  test("another `agent prompt` failure for a message that merely mentions agent_not_ready is still thrown", async () => {
-    const { w, d, lead } = setup();
-    w.promptFails.set("w1:p1", "herdr exploded");
-    await expect(deliverTo(d, "w1:p1", "a lane quoted agent_not_ready here")).rejects.toThrow("herdr exploded");
-    expect(lead.received).toEqual([]);
-  });
-
-  test("the typed fallback trims leading and trailing newlines instead of leaving a dangling ' / '", async () => {
-    const { w, d, lead } = setup();
-    w.promptFails.set("w1:p1", '{"error":{"code":"agent_not_ready"}}');
-    await deliverTo(d, "w1:p1", "\n\nhello\nworld\n\n");
-    expect(lead.received).toEqual(["hello / world"]);
-  });
-
-  test("agent_not_ready on a pane that is now a plain shell types nothing and reports not delivered", async () => {
+  test("a pane that is now a plain shell gets nothing typed and the message is reported not delivered", async () => {
     const { w, d } = setup();
-    const shell = w.addPane("w1:p7", "shell");
-    w.promptFails.set("w1:p7", '{"error":{"code":"agent_not_ready"}}');
-    await expect(deliverTo(d, "w1:p7", "rm -rf nothing")).resolves.toBe(false);
+    const shell = w.addPane("t7", "shell");
+    await expect(deliverTo(d, "t7", "rm -rf nothing")).resolves.toBe(false);
     expect(shell.received).toEqual([]);
   });
 
@@ -440,7 +289,7 @@ describe("pane messaging", () => {
 describe("duty loop", () => {
   test("nudges a silent lane at 10 and 20 minutes, escalates at 40, and ignores WAITING lanes", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "quiet", brief, { workspace: "w1" });
+    const lane = await startLane(d, "quiet", brief, {});
     const pane = w.panes.get(lane.paneId)!;
     pane.status = "idle";
     const at = async (min: number) => { w.clock = lane.createdAt + min * 60_000; return dutyTick(d); };
@@ -453,7 +302,7 @@ describe("duty loop", () => {
     expect(lead.received.at(-1)).toContain("[ESCALATE quiet] no report for 40 min after 2 nudges");
     expect(await at(90)).toEqual([]);
 
-    const waiting = await startLane(d, "blocked-on-ci", brief, { workspace: "w1" });
+    const waiting = await startLane(d, "blocked-on-ci", brief, {});
     w.panes.get(waiting.paneId)!.status = "idle";
     await report(d, "blocked-on-ci", "WAITING: CI", "waiting");
     w.clock += 60 * 60_000;
@@ -462,30 +311,30 @@ describe("duty loop", () => {
 
   test("a failing inbox flush on one pane does not stop the loop for the other panes", async () => {
     const { w, d, lead } = setup();
-    const broken = w.addPane("w1:p9", "idle");
-    w.promptFails.set("w1:p9", "herdr exploded");
-    d.store.enqueue(herdrRef("w1:p9"), { at: w.clock, from: "cli", text: "to broken" });
-    d.store.enqueue(herdrRef("w1:p1"), { at: w.clock, from: "cli", text: "to lead" });
+    const broken = w.addPane("t9", "idle");
+    w.promptFails.set("t9", "hc exploded");
+    d.store.enqueue(paneRef("t9"), { at: w.clock, from: "cli", text: "to broken" });
+    d.store.enqueue(paneRef("t1"), { at: w.clock, from: "cli", text: "to lead" });
     const events = await dutyTick(d);
-    expect(events).toContainEqual({ pane: "w1:p9", action: "delivery-ambiguous", detail: expect.stringContaining("herdr exploded") });
-    expect(events).toContainEqual({ pane: "w1:p1", action: "flushed" });
+    expect(events).toContainEqual({ pane: "hc:t9", action: "delivery-ambiguous", detail: expect.stringContaining("hc exploded") });
+    expect(events).toContainEqual({ pane: "hc:t1", action: "flushed" });
     // Inbox panes come in directory order, which differs between file systems: the notice and "to lead" arrive as two
     // deliveries or as one batch. What matters is that both reach the lead, the notice exactly once.
     const toLead = lead.received.join("\n");
     expect(toLead).toContain("to lead");
-    expect(toLead.split("[DELIVERY-AMBIGUOUS w1:p9]")).toHaveLength(2);
+    expect(toLead.split("[DELIVERY-AMBIGUOUS hc:t9]")).toHaveLength(2);
     expect(broken.received).toEqual([]);
   });
 
   test("a failing lane-phase delivery is recorded as lane-failed and does not stop the other lanes", async () => {
     const { w, d, brief } = setup();
-    const lost = await startLane(d, "lost-lane", brief, { workspace: "w1" });
-    const stuck = await startLane(d, "stuck-lane", brief, { workspace: "w1" });
-    const fine = await startLane(d, "fine-lane", brief, { workspace: "w1" });
+    const lost = await startLane(d, "lost-lane", brief, {});
+    const stuck = await startLane(d, "stuck-lane", brief, {});
+    const fine = await startLane(d, "fine-lane", brief, {});
     w.panes.delete(lost.paneId);
     w.panes.get(stuck.paneId)!.status = "idle";
     w.panes.get(fine.paneId)!.status = "idle";
-    w.promptFails.set("w1:p1", "lead exploded");
+    w.promptFails.set("t1", "lead exploded");
     w.promptFails.set(stuck.paneId, "stuck exploded");
     w.clock = fine.createdAt + 10 * 60_000;
     const events = await dutyTick(d);
@@ -495,36 +344,20 @@ describe("duty loop", () => {
     expect(w.panes.get(fine.paneId)!.received.at(-1)).toContain("No report from you for 10 minutes");
   });
 
-  test("a LOST notice whose Enter failed once still reaches the lead on the next tick, exactly once", async () => {
-    const { w, d, lead, brief } = setup();
-    const gone = await startLane(d, "gone-lane", brief, { workspace: "w1" });
-    lead.received.length = 0;
-    w.panes.delete(gone.paneId);
-    w.promptFails.set("w1:p1", '{"error":{"code":"agent_not_ready"}}');
-    w.keyFails = 3;
-    expect(await dutyTick(d)).toContainEqual({ lane: "gone-lane", action: "lane-failed", detail: expect.stringContaining("key press failed") });
-    expect(lead.received.filter((m) => m.includes("[LOST gone-lane]"))).toHaveLength(1);
-    const events = await dutyTick(d);
-    expect(events).toContainEqual({ pane: "w1:p1", action: "flushed" });
-    expect(lead.received.filter((m) => m.includes("[LOST gone-lane]"))).toHaveLength(1);
-    expect(await dutyTick(d)).toEqual([]);
-    expect(lead.received.filter((m) => m.includes("[LOST gone-lane]"))).toHaveLength(1);
-  });
-
-  test("the delivery-ambiguous detail is herdr's first output line, never the queued message", async () => {
+  test("the delivery-ambiguous detail is hc's first output line, never the queued message", async () => {
     const { w, d } = setup();
-    w.addPane("w1:p9", "idle");
-    w.promptFails.set("w1:p9", "herdr exploded\nsecond line");
-    d.store.enqueue(herdrRef("w1:p9"), { at: w.clock, from: "cli", text: "SECRET queued message" });
+    w.addPane("t9", "idle");
+    w.promptFails.set("t9", "hc exploded\nsecond line");
+    d.store.enqueue(paneRef("t9"), { at: w.clock, from: "cli", text: "SECRET queued message" });
     const events = await dutyTick(d);
-    expect(events).toEqual([{ pane: "w1:p9", action: "delivery-ambiguous", detail: "herdr exploded" }]);
+    expect(events).toEqual([{ pane: "hc:t9", action: "delivery-ambiguous", detail: "hc --json send t9 --if idle -- <text> failed (1): hc exploded" }]);
   });
 
   test("the duty loop prints a delivery-ambiguous line with the reason", async () => {
     const { w, d } = setup();
-    w.addPane("w1:p9", "idle");
-    w.promptFails.set("w1:p9", "herdr exploded");
-    d.store.enqueue(herdrRef("w1:p9"), { at: w.clock, from: "cli", text: "to broken" });
+    w.addPane("t9", "idle");
+    w.promptFails.set("t9", "hc exploded");
+    d.store.enqueue(paneRef("t9"), { at: w.clock, from: "cli", text: "to broken" });
     const lines: string[] = [];
     const log = console.log;
     console.log = (...a: unknown[]) => void lines.push(a.join(" "));
@@ -534,13 +367,13 @@ describe("duty loop", () => {
       console.log = log;
     }
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toStartWith("DUTY w1:p9 delivery-ambiguous: ");
-    expect(lines[0]).toContain("herdr exploded");
+    expect(lines[0]).toStartWith("DUTY hc:t9 delivery-ambiguous: ");
+    expect(lines[0]).toContain("hc exploded");
   });
 
   test("kill switch: a stopped duty loop flushes, nudges and escalates nothing; resume delivers what was held", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "quiet", brief, { workspace: "w1" });
+    const lane = await startLane(d, "quiet", brief, {});
     w.panes.get(lane.paneId)!.status = "idle";
     lead.status = "working";
     expect(await send(d, "lead", "held note", "cli")).toBe("QUEUED");
@@ -564,14 +397,14 @@ describe("duty loop", () => {
 
     await main(["duty", "resume"], d);
     const events = await dutyTick(d);
-    expect(events).toContainEqual({ pane: "w1:p1", action: "flushed" });
+    expect(events).toContainEqual({ pane: "hc:t1", action: "flushed" });
     expect(events).toContainEqual({ lane: "quiet", action: "nudge-1" });
     expect(lead.received).toEqual(["held note"]);
   });
 
-  test("a lane herdr reports working is still nudged when silent, through agent prompt; a report resets the ladder", async () => {
+  test("a lane hc reports working is still nudged when silent, through hc send; a report resets the ladder", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
+    const lane = await startLane(d, "busy", brief, {});
     const pane = w.panes.get(lane.paneId)!;
     pane.status = "working";
     w.calls.length = 0;
@@ -581,7 +414,7 @@ describe("duty loop", () => {
     w.clock = lane.createdAt + 10 * 60_000;
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "nudge-1" });
     expect(pane.received.at(-1)).toContain("No report from you for 10 minutes");
-    expect(w.calls.some((c) => c.cmd === "herdr" && c.argv[0] === "agent" && c.argv[1] === "prompt" && c.argv[2] === lane.paneId)).toBe(true);
+    expect(w.calls.some((c) => c.cmd === "hc" && c.argv[1] === "send" && c.argv[2] === lane.paneId)).toBe(true);
 
     await report(d, "busy", "tests green locally");
     expect(d.store.lane("busy")!.nudges).toBe(0);
@@ -599,8 +432,8 @@ describe("duty loop", () => {
 
   test("a lane whose pane is blocked, or that reported WAITING while working, is not nudged", async () => {
     const { w, d, brief } = setup();
-    const blocked = await startLane(d, "dialog", brief, { workspace: "w1" });
-    const waiting = await startLane(d, "on-ci", brief, { workspace: "w1" });
+    const blocked = await startLane(d, "dialog", brief, {});
+    const waiting = await startLane(d, "on-ci", brief, {});
     w.panes.get(blocked.paneId)!.status = "blocked";
     w.panes.get(waiting.paneId)!.status = "working";
     await report(d, "on-ci", "WAITING: CI", "waiting");
@@ -609,12 +442,12 @@ describe("duty loop", () => {
     expect(await dutyTick(d)).toEqual([]);
     expect(d.store.lane("dialog")!.nudges).toBe(0);
     expect(d.store.lane("on-ci")!.nudges).toBe(0);
-    expect(w.calls.filter((c) => c.argv[1] === "prompt" && (c.argv[2] === blocked.paneId || c.argv[2] === waiting.paneId))).toEqual([]);
+    expect(w.calls.filter((c) => c.argv[1] === "send" && (c.argv[2] === blocked.paneId || c.argv[2] === waiting.paneId))).toEqual([]);
   });
 
   test("a report from a paused lane is forwarded but never ends the pause", async () => {
     const { d, lead, brief } = setup();
-    await startLane(d, "held", brief, { workspace: "w1" });
+    await startLane(d, "held", brief, {});
     const lane = d.store.lane("held")!;
     d.store.saveLane({ ...lane, status: "paused", pausedFrom: "working" });
     await report(d, "held", "WAITING: ci", "waiting");
@@ -624,7 +457,7 @@ describe("duty loop", () => {
 
   test("a vanished pane is reported LOST", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
+    const lane = await startLane(d, "busy", brief, {});
     w.panes.delete(lane.paneId);
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
     expect(lead.received.at(-1)).toContain("[LOST busy]");
@@ -632,23 +465,19 @@ describe("duty loop", () => {
 
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */
   const duringStatusRead = (d: ReturnType<World["deps"]>, paneId: string, during: () => void): void => {
-    const forRef = d.runtimes.for.bind(d.runtimes);
-    d.runtimes.for = (ref) => {
-      const rt = forRef(ref);
-      if (refText(ref) !== paneId) return rt;
-      return Object.assign(Object.create(rt), {
-        status: async (r: typeof ref) => {
-          const st = await rt.status(r);
-          during();
-          return st;
-        },
-      });
+    const rt = d.runtime;
+    const status = rt.status.bind(rt);
+    rt.status = async (ref) => {
+      const st = await status(ref);
+      if (ref.id === paneId) during();
+      return st;
     };
   };
 
+
   test("a lane paused while dutyTick reads its pane keeps the pause and is not nudged", async () => {
     const { w, d, brief } = setup();
-    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
+    const lane = await startLane(d, "busy", brief, {});
     w.panes.get(lane.paneId)!.status = "idle";
     w.clock = lane.createdAt + 10 * 60_000;
     duringStatusRead(d, lane.paneId, () => {
@@ -662,7 +491,7 @@ describe("duty loop", () => {
 
   test("a lane closed while dutyTick reads its gone pane stays done, not lost", async () => {
     const { w, d, lead, brief } = setup();
-    const lane = await startLane(d, "busy", brief, { workspace: "w1" });
+    const lane = await startLane(d, "busy", brief, {});
     w.panes.delete(lane.paneId);
     duringStatusRead(d, lane.paneId, () => {
       const cur = d.store.lane("busy")!;
@@ -782,11 +611,11 @@ describe("review + merge gate", () => {
 
   test("send, report and ready refuse an empty message; a value flag given last is refused; --help prints the usage", async () => {
     const { d } = setup();
-    await expect(main(["send", "w1:p1", "--text", ""], d)).rejects.toThrow("the message is empty");
-    await expect(main(["send", "w1:p1", "--text", "  "], d)).rejects.toThrow("the message is empty");
+    await expect(main(["send", "hc:t1", "--text", ""], d)).rejects.toThrow("the message is empty");
+    await expect(main(["send", "hc:t1", "--text", "  "], d)).rejects.toThrow("the message is empty");
     await expect(main(["report", "fix-x", "--text", ""], d)).rejects.toThrow("the message is empty");
     await expect(main(["ready", "fix-x", "--text", ""], d)).rejects.toThrow("the message is empty");
-    await expect(main(["send", "w1:p1", "--text"], d)).rejects.toThrow("--text needs a value");
+    await expect(main(["send", "hc:t1", "--text"], d)).rejects.toThrow("--text needs a value");
     let code = -1;
     const out = await captureLog(async () => { code = await main(["send", "--help"], d); });
     expect(code).toBe(0);
