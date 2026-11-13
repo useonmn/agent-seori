@@ -410,6 +410,25 @@ export async function msgThread(w: Where, change: ThreadChange, d: MsgDeps): Pro
   return adapterFor(d, w.source).thread(w.target, change);
 }
 
+/**
+ * `seori msg show <id>`: one message by its lead channel id, from the lead channel when it is stored there (with what it
+ * replies to), else read from the messenger. `ok` false: the messenger could not give it (the first line says why).
+ */
+export async function msgShow(root: string, id: string, d: MsgDeps): Promise<{ readonly ok: boolean; readonly lines: string[] }> {
+  const row = new Channel(root).inbound().find((r) => r.id === id);
+  if (row?.kind === "messenger") {
+    const reply = row.replyTo ? ` (reply to ${row.replyTo.id})` : "";
+    return { ok: true, lines: [`MESSAGE ${id} from ${row.from} at ${new Date(row.at).toISOString()}${reply}`, row.text] };
+  }
+  const parts = replyTarget(id).split(":");
+  if (parts.length < 3 || parts.some((p) => !p)) throw new Refusal(`msg show takes a lead channel id source:chat:message, got "${id}"`);
+  const [source, ...rest] = parts;
+  const message = rest.pop()!;
+  const got = await adapterFor(d, source!).fetchMessage(rest.join(":"), message);
+  if ("unavailable" in got) return { ok: false, lines: [`UNAVAILABLE ${id}: ${got.unavailable}`] };
+  return { ok: true, lines: [`MESSAGE ${id} from ${got.from} at ${new Date(got.at).toISOString()}`, got.text] };
+}
+
 /** The lines `seori msg thread` prints: what the messenger did (or SKIPPED when it did nothing), then one NOTE per limit. */
 export function threadLine(label: string, r: ThreadResult): string[] {
   const did = [

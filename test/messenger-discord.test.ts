@@ -211,6 +211,17 @@ describe("DiscordAdapter receive", () => {
     expect(m.identifies).toBe(1);
   });
 
+  test("a reply carries the id and text of the message it replies to", async () => {
+    const m = mock();
+    m.afterReady = [
+      ["MESSAGE_CREATE", msg("110", { type: 19, content: "yes", message_reference: { message_id: "99", channel_id: "C1" }, referenced_message: { id: "99", content: "Shall I ship?" } })],
+      ["MESSAGE_CREATE", msg("111", { type: 19, message_reference: { message_id: "98", channel_id: "C1" }, referenced_message: null })],
+      ["MESSAGE_CREATE", msg("112")],
+    ];
+    const got = await collect(adapter(m, home()), 3);
+    expect(got.map((x) => x.replyTo)).toEqual([{ id: "discord:C1:99", text: "Shall I ship?" }, { id: "discord:C1:98" }, undefined]);
+  });
+
   test("a rejected onMessage is redelivered with the same id (resume replays from the committed seq)", async () => {
     const m = mock();
     const root = home();

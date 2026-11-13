@@ -166,6 +166,8 @@ seori msg flush                              send every open draft now, oldest f
 seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
 seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                             columns: id  state  age  kind  sender-or-watch-name  text
+seori msg show <id>                          print a message by its lead channel id: from the lead channel, else read from
+                                            the messenger (UNAVAILABLE, exit 1, when it cannot: Telegram bots read none)
 seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             setup: print the sender of the next DM to the bot; --write makes them the owner;

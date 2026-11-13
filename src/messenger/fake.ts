@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  type ActionNotes, type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain, type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
+  type ActionNotes, type FetchedMessage, type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain, type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
 } from "./adapter.ts";
 
 // A messenger made of files under $SEORI_HOME/messenger/fake/, so tests and humans can drive the whole channel without a
@@ -9,7 +9,7 @@ import {
 // write ok|timeout|error to send-mode to make sends succeed, end uncertain, or fail.
 
 /** One line of in.jsonl. */
-export type FakeInboundRow = { msgId: string; chat: string; thread?: string; from: string; text: string; at?: number };
+export type FakeInboundRow = { msgId: string; chat: string; thread?: string; from: string; text: string; at?: number; replyTo?: { id: string; text?: string } };
 /** One line of out.jsonl. */
 export type FakeOutboundRow = { messageId: string; chat: string; thread?: string; replyTo?: string; text: string; at: number };
 export type FakeSendMode = "ok" | "timeout" | "error";
@@ -117,6 +117,7 @@ export class FakeAdapter implements MessengerAdapter {
       from: r.from,
       at: typeof r.at === "number" ? r.at : this.now(),
       text: r.text,
+      ...(r.replyTo && typeof r.replyTo.id === "string" ? { replyTo: r.replyTo } : {}),
     };
   }
 
@@ -163,6 +164,21 @@ export class FakeAdapter implements MessengerAdapter {
   async typing(target: ThreadTarget): Promise<ActionNotes> {
     this.act("typing", { ...target });
     return [];
+  }
+
+  /** A message the owner sent (in.jsonl) or seori sent (out.jsonl, from "seori"). */
+  async fetchMessage(chat: string, message: string): Promise<FetchedMessage> {
+    for (const line of this.lines()) {
+      let r: Partial<FakeInboundRow>;
+      try {
+        r = JSON.parse(line) as Partial<FakeInboundRow>;
+      } catch {
+        continue;
+      }
+      if (r.chat === chat && r.msgId === message && typeof r.text === "string") return { from: String(r.from), at: r.at ?? 0, text: r.text };
+    }
+    const sent = this.sent().find((r) => r.chat === chat && r.messageId === message);
+    return sent ? { from: "seori", at: sent.at, text: sent.text } : { unavailable: "not found" };
   }
 
   async thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult> {

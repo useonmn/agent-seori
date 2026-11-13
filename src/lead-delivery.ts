@@ -1,4 +1,4 @@
-import { type IdState, type InboundRow, MAX_DELIVERIES } from "./channel.ts";
+import { type IdState, type InboundRow, MAX_DELIVERIES, type MessengerRow } from "./channel.ts";
 
 // When extensions/lead-channel.ts hands a lead-channel id to omp, and how. Pure: no clock, no files, no omp, so the
 // rules the reviews of the monitor-vs-loop prototypes asked for are unit-tested here
@@ -158,6 +158,13 @@ const HEADERS: Record<Header, string> = {
  * The one custom message the lead sees for a decision: how to answer, then each messenger message grouped by header,
  * then the watch events, which need no answer (the extension closes them once seen).
  */
+/** " (reply to <id>: \"<text>\")" for a reply, its text cut to 200 characters; without the text, how to read it. */
+function replyNote(row: MessengerRow, cmd: string): string {
+  const r = row.replyTo;
+  if (!r) return "";
+  return r.text !== undefined ? ` (reply to ${r.id}: ${JSON.stringify(r.text.slice(0, 200))})` : ` (reply to ${r.id}; ${cmd} msg show ${r.id} reads it)`;
+}
+
 export function renderDelivery(deliver: Decision["deliver"], cmd: string): string {
   const lines: string[] = [];
   const messages = deliver.filter((d) => d.row.kind === "messenger");
@@ -171,7 +178,7 @@ export function renderDelivery(deliver: Decision["deliver"], cmd: string): strin
       const group = messages.filter((d) => d.header === header);
       if (!group.length) continue;
       lines.push("", HEADERS[header]);
-      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}: ${row.text}`);
+      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}${replyNote(row, cmd)}: ${row.text}`);
     }
   } else lines.push("seori lead channel: events from your watches.");
   const events = deliver.filter((d) => d.row.kind === "watch");

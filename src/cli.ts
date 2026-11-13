@@ -15,7 +15,7 @@ import { loadMessengers, type ThreadChange, type ThreadStatus } from "./messenge
 import { adapterFor } from "./messenger/index.ts";
 import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
 import {
-  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgReact, msgSend, msgThread, msgTyping, parseTo,
+  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgReact, msgSend, msgShow, msgThread, msgTyping, parseTo,
   threadLine, whereLabel, whereOf,
 } from "./msg.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
@@ -130,6 +130,8 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
                                               name a job's thread with its status emoji in front (🔄 ⏸ ✅), close or reopen it;
                                               --of ID: the thread that message came in. NOTE lines say what the platform
                                               cannot do (Slack: status as a reaction on the first message, no close)
+  seori msg show <id>                          print a message by its lead channel id (from the lead channel, else read from
+                                              the messenger; UNAVAILABLE exit 1 when it cannot, e.g. Telegram)
   seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
   seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                               setup: print the sender of the next DM to the bot; --write makes them the owner;
@@ -637,6 +639,11 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     }
   }
   if (sub === "react" || sub === "edit" || sub === "typing" || sub === "thread") return msgAction(root, d, a, sub);
+  if (sub === "show") {
+    const r = await msgShow(root, need(a.pos[2], "message id"), msgDepsFor(root, d.now));
+    console.log(r.lines.join("\n"));
+    return r.ok ? 0 : 1;
+  }
   throw new Refusal(`unknown msg command ${sub}\n\n${USAGE}`);
 }
 
