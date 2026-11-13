@@ -4,6 +4,7 @@ import { driftCheck } from "./boot-checks.ts";
 import { Channel } from "./channel.ts";
 import { ConfigError, configPath, loadConfig } from "./config.ts";
 import { heartbeatPath, healthPath } from "./daemon.ts";
+import { loadHooks } from "./hooks.ts";
 import { HEARTBEAT_STALE_MS, type Deps } from "./harness.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
 import { ToolError } from "./runtime/index.ts";
@@ -103,6 +104,7 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
   let group: string | undefined;
   try {
     group = loadConfig(root).name;
+    loadHooks(root);
     lines.push(existsSync(configPath(root)) ? `CONFIG ok ${configPath(root)}` : "CONFIG defaults (no config.json)");
   } catch (e) {
     if (!(e instanceof ConfigError)) throw e;
