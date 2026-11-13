@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type GuardThresholds, type SeoriConfig } from "./config.ts";
 import { tellLead, type Deps, type DutyEvent } from "./harness.ts";
@@ -8,8 +9,8 @@ import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
 // and tells the lead once when the host crosses a threshold and once when it recovers (the duty tick's guardTick).
 
 /**
- * One reading of the host. `loadPct` is the 1-minute load per core in percent (100 = every core busy). Disk is the free
- * space on $SEORI_HOME's volume. A figure that could not be read is undefined, with the reason in `unreadable`; it is
+ * One reading of the host. `loadPct` is the 1-minute load per core in percent (100 = every core busy). Disk is the least free
+ * space on the volumes lanes work on (open lane directories, else $HOME). A figure that could not be read is undefined, with the reason in `unreadable`; it is
  * never guessed as 0 or as fine. `loadPct` is undefined when the host reports no load average: shown as unknown, it never alerts.
  */
 export type HostSample = {
@@ -51,7 +52,17 @@ export function parsePaneCount(stdout: string): number | undefined {
 }
 
 /**
- * Reads the host: load and memory from Deps.host, free disk of $SEORI_HOME's volume from `df -k -P`, and the live pane
+ * Where new work lands: the working directory of every open lane that still exists, or the user's home directory
+ * (where repos and worktrees live) when no lane is open. $SEORI_HOME is not measured: it only holds small state files
+ * and may sit on a small tmpfs (e.g. under /tmp), which says nothing about the room lanes have to work.
+ */
+function workPaths(d: Deps): string[] {
+  const cwds = d.store.lanes().filter((l) => l.status !== "done" && existsSync(l.cwd)).map((l) => l.cwd);
+  return cwds.length > 0 ? [...new Set(cwds)] : [homedir()];
+}
+
+/**
+ * Reads the host: load and memory from Deps.host, free disk of the work volumes (lane directories, else $HOME) from `df -k -P`, and the live pane
  * count from the runtime's session list (herdr: `pane list`, in seori's herdr session when SEORI_HERDR_SESSION is set).
  */
 export async function sampleHost(d: Deps): Promise<HostSample> {
@@ -59,10 +70,14 @@ export async function sampleHost(d: Deps): Promise<HostSample> {
   const unreadable: string[] = [];
 
   let diskFreeGb: number | undefined;
-  const df = await d.exec("df", ["-k", "-P", d.store.root]).catch((e: unknown) => ({ code: 127, stdout: "", stderr: e instanceof Error ? e.message : String(e) }));
-  const kb = df.code === 0 ? parseDfAvailableKb(df.stdout) : undefined;
-  if (kb !== undefined) diskFreeGb = kb / KB_PER_GB;
-  else unreadable.push(`disk free unreadable (df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)})`);
+  let diskFault: string | undefined;
+  for (const path of workPaths(d)) {
+    const df = await d.exec("df", ["-k", "-P", path]).catch((e: unknown) => ({ code: 127, stdout: "", stderr: e instanceof Error ? e.message : String(e) }));
+    const kb = df.code === 0 ? parseDfAvailableKb(df.stdout) : undefined;
+    if (kb !== undefined) diskFreeGb = Math.min(diskFreeGb ?? Infinity, kb / KB_PER_GB);
+    else diskFault ??= `df: ${df.code === 0 ? "unexpected output" : why(df.stderr, df.stdout)}`;
+  }
+  if (diskFreeGb === undefined) unreadable.push(`disk free unreadable (${diskFault ?? "df: no path to measure"})`);
 
   let panes: number | undefined;
   const rt = d.runtimes.default;
