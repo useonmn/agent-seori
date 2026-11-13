@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { lockFile } from "../store.ts";
 
@@ -183,25 +183,36 @@ export class WatchStore {
     }
     const name = input.name ?? input.source.kind;
     if (input.name !== undefined && live.some((w) => w.name === name)) throw new WatchRefusal(`a live watch is already named ${name}`);
-    // Two adds in the same millisecond may draw the same suffix: the next free one is taken, never an existing watch's id.
+    // Two adds (even in two processes) may draw the same suffix: each candidate is claimed with link(2), which fails
+    // with EEXIST instead of replacing an existing watch, and the next suffix is tried. The file is never half-written.
     const first = Math.floor(Math.random() * ID_SUFFIXES);
-    const id = Array.from({ length: ID_SUFFIXES }, (_, i) => `w${now.toString(36)}${((first + i) % ID_SUFFIXES).toString(36).padStart(2, "0")}`).find((c) => !existsSync(this.path(c)));
-    if (id === undefined) throw new WatchRefusal(`no free watch id left for this millisecond; try again`);
-    const w: Watch = {
-      id,
-      name,
-      source: input.source,
-      owner: input.owner,
-      persistent,
-      createdAt: now,
-      expiresAt: now + (persistent ? PERSISTENT_TTL_MS : timeout),
-      status: "active",
-      wakes: [],
-      mutedEvents: 0,
-      restarts: 0,
-    };
-    this.save(w);
-    return w;
+    for (let i = 0; i < ID_SUFFIXES; i++) {
+      const id = `w${now.toString(36)}${((first + i) % ID_SUFFIXES).toString(36).padStart(2, "0")}`;
+      const w: Watch = {
+        id,
+        name,
+        source: input.source,
+        owner: input.owner,
+        persistent,
+        createdAt: now,
+        expiresAt: now + (persistent ? PERSISTENT_TTL_MS : timeout),
+        status: "active",
+        wakes: [],
+        mutedEvents: 0,
+        restarts: 0,
+      };
+      const tmp = `${this.path(id)}.${process.pid}.claim`;
+      writeFileSync(tmp, `${JSON.stringify(w, null, 2)}\n`);
+      try {
+        linkSync(tmp, this.path(id));
+        return w;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      } finally {
+        rmSync(tmp, { force: true });
+      }
+    }
+    throw new WatchRefusal(`no free watch id left for this millisecond; try again`);
   }
 
   /** Appends one event; past EVENTS_MAX_BYTES the log is rotated first, so a chatty watch cannot fill the disk. */

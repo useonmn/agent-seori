@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { EVENTS_MAX_BYTES, WatchStore } from "../src/watch/store.ts";
@@ -21,6 +21,28 @@ describe("WatchStore.add", () => {
       const b = store.add({ owner: { kind: "lead" }, source: { kind: "file", path: "/tmp/b" } }, 1_000);
       expect(a.id).not.toBe(b.id);
       expect(store.list().map((w) => (w.source.kind === "file" ? w.source.path : "")).sort()).toEqual(["/tmp/a", "/tmp/b"]);
+    } finally {
+      random.mockRestore();
+    }
+  });
+});
+
+describe("WatchStore.add id claim", () => {
+  test("never replaces an entry another process created at the id it drew after the free-id check", () => {
+    const dir = mkdtempSync(join(tmpdir(), "seori-watch-store-"));
+    const store = new WatchStore(dir);
+    const random = spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const first = store.add({ owner: { kind: "lead" }, source: { kind: "file", path: "/tmp/a" } }, 1_000);
+      rmSync(join(store.dir, `${first.id}.json`));
+      // A dangling symlink is invisible to existsSync but still occupies the name: it stands for a file a concurrent
+      // add creates right after this add's free-id check.
+      const taken = join(store.dir, `${first.id}.json`);
+      symlinkSync(join(store.dir, "nowhere"), taken);
+      const b = store.add({ owner: { kind: "lead" }, source: { kind: "file", path: "/tmp/b" } }, 1_000);
+      expect(b.id).not.toBe(first.id);
+      expect(lstatSync(taken).isSymbolicLink()).toBe(true);
+      expect(store.get(b.id)?.id).toBe(b.id);
     } finally {
       random.mockRestore();
     }
