@@ -1,6 +1,6 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Deps, done, Refusal } from "../src/harness.ts";
 import { migrate } from "../src/migrate.ts";
@@ -159,6 +159,43 @@ describe("seori migrate follow-ups", () => {
     expect(d.store.lane("k")!.migration).toBeUndefined();
     expect(d.store.lane("k")!.status).toBe("paused");
     expect(d.store.lane("k")!.sessionRef).toEqual(OLD);
+  });
+
+  test("a throw while the checkpoint is captured lifts the hold and drops the journal: nothing had moved yet", async () => {
+    const { d, opts } = migrateWorld("idle");
+    rmSync(d.store.briefPath("k"));
+    await expect(migrate(d, { lane: "k" }, opts())).rejects.toThrow(/ENOENT|no such file/);
+    expect(readJournal(d.store.root, "k")).toBeUndefined();
+    expect(d.store.lane("k")!.migration).toBeUndefined();
+    expect(d.store.lane("k")!.sessionRef).toEqual(OLD);
+  });
+
+  test("a rollback whose replacement could not be closed says so on the MIGRATE_ROLLBACK line", async () => {
+    const { r, d, lines, opts } = migrateWorld("idle", { agentReportsAs: "done" });
+    r.rt.close = async () => {
+      throw new Error("hc core unavailable");
+    };
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(3);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("MIGRATE_ROLLBACK k hc:t1 never reached idle or working");
+    expect(lines[0]).toContain("replacement hc:t1 NOT closed: hc core unavailable");
+    expect(r.terminals()["t1"]).toBeDefined();
+  });
+
+  test("a failed close of the old session after the switch keeps the journal and names how to finish", async () => {
+    const { w, d, opts } = migrateWorld("idle");
+    const real = w.exec;
+    w.exec = async (cmd, argv) => {
+      if (cmd === "herdr" && argv[0] === "pane" && argv[1] === "close") throw new Error("herdr socket gone");
+      return real(cmd, argv);
+    };
+    const err = (await migrate(d, { lane: "k" }, opts()).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain(join(d.store.root, "migrate", "k.json"));
+    expect(err.message).toContain("seori migrate --to hc");
+    expect(err.message).toContain("herdr socket gone");
+    expect(readJournal(d.store.root, "k")!.phase).toBe("switched");
+    expect(d.store.lane("k")!.sessionRef).toMatchObject(NEW);
   });
 
   test("done refuses a lane being migrated", async () => {
