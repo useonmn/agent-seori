@@ -33,7 +33,11 @@ describe("talking with others: config", () => {
     expect([loadConfig(root).talkWithOthers, loadConfig(root).agentTurnLimit]).toEqual([true, 6]);
     writeFileSync(join(root, "config.json"), JSON.stringify({ talkWithOthers: false, agentTurnLimit: 2 }));
     expect([loadConfig(root).talkWithOthers, loadConfig(root).agentTurnLimit]).toEqual([false, 2]);
-    for (const bad of [{ talkWithOthers: "yes" }, { agentTurnLimit: -1 }, { agentTurnLimit: 1.5 }, { agentTurnLimit: "6" }]) {
+    expect(loadConfig(root).trusted).toEqual([]);
+    writeFileSync(join(root, "config.json"), JSON.stringify({ trusted: [{ source: "slack", id: "U9", name: "Dev" }, { source: "fake", id: "u3" }] }));
+    expect(loadConfig(root).trusted).toEqual([{ source: "slack", id: "U9", name: "Dev" }, { source: "fake", id: "u3" }]);
+    const badTrusted = [{ trusted: {} }, { trusted: [{ source: "slack" }] }, { trusted: [{ source: "", id: "U9" }] }, { trusted: [{ source: "slack", id: "U9", name: 3 }] }, { trusted: [{ source: "slack", id: "U9", role: "admin" }] }];
+    for (const bad of [{ talkWithOthers: "yes" }, { agentTurnLimit: -1 }, { agentTurnLimit: 1.5 }, { agentTurnLimit: "6" }, ...badTrusted]) {
       writeFileSync(join(root, "config.json"), JSON.stringify(bad));
       expect(() => loadConfig(root)).toThrow(ConfigError);
     }

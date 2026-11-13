@@ -492,6 +492,20 @@ describe("talking with people and agents other than the owner", () => {
     expect((new Channel(root).inbound() as MessengerRow[]).map((r) => [r.id, r.loopStopped])).toEqual([["x:c:1", undefined], ["x:c:2", undefined]]);
   });
 
+  test("a message from a trusted id is delivered labelled trusted with its configured name", async () => {
+    const root = fakeConfig({ trusted: [{ source: "fake", id: "u3", name: "Dev" }, { source: "other", id: "u2" }] });
+    const { rows } = await run(root, [
+      { msgId: "1", chat: "dm3", dm: true, from: "u3", name: "dev-bot", text: "please fix the build" },
+      { msgId: "2", chat: "dm2", dm: true, from: "u2", text: "trusted on another messenger only" },
+    ]);
+    expect(rows.map((r) => [r.id, r.sender])).toEqual([
+      ["fake:dm3:1", { kind: "trusted", id: "u3", name: "Dev" }],
+      ["fake:dm2:2", { kind: "person", id: "u2" }],
+    ]);
+    const text = renderDelivery(new DeliverySchedule().decide(new Channel(root).states(), 10, true, { kind: "scan" }).deliver, "seori");
+    expect(text).toContain('[fake:dm3:1] fake from trusted Dev (u3): "please fix the build"');
+  });
+
   test("the owner's messages need no mention and are labelled owner", async () => {
     const root = fakeConfig();
     const { rows } = await run(root, [{ msgId: "1", chat: "c", from: "u1", text: "do it" }]);

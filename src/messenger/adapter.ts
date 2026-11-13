@@ -22,10 +22,11 @@ export type InboundMessage = {
 };
 
 /**
- * owner: the configured owner (never a bot). agent: an author the platform marks as a bot or app (Slack bot_id or
+ * owner: the configured owner (never a bot). trusted: a non-owner listed in config.json `trusted` for this messenger
+ * (set by src/daemon.ts, never by an adapter). agent: an author the platform marks as a bot or app (Slack bot_id or
  * subtype bot_message, Discord author.bot, Telegram from.is_bot). person: anyone else.
  */
-export type SenderKind = "owner" | "person" | "agent";
+export type SenderKind = "owner" | "trusted" | "person" | "agent";
 export type Sender = { readonly kind: SenderKind; readonly id: string; readonly name?: string };
 
 export type ReplyRef = { readonly id: string; readonly text?: string };
