@@ -58,6 +58,15 @@ describe("seori migrate: one lane herdr -> hc", () => {
     expect(d.store.queued(NEW).map((m) => m.text)).toEqual(["held", "typed"]);
   });
 
+  test("a lane started with a workflow gets the same workflow in its replacement's kickoff", async () => {
+    const { r, d, opts } = migrateWorld();
+    d.store.saveLane({ ...d.store.lane("k")!, workflow: "ulw" });
+    expect(await migrate(d, { lane: "k" }, opts())).toBe(0);
+    const kickoff = r.sent().find((s) => s.id === "t1" && s.text.startsWith("/goal "))!.text;
+    expect(kickoff).toStartWith("/goal ulw Read your brief at ");
+    expect(d.store.lane("k")!.workflow).toBe("ulw");
+  });
+
   test("rollback: the replacement never reaches idle or working -> exit 3, replacement closed, lane and inbox untouched", async () => {
     const { w, r, d, lines, opts } = migrateWorld("idle", { agentReportsAs: "done" });
     d.store.saveInbox(OLD, [msg("one", 1)]);

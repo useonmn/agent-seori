@@ -64,6 +64,8 @@ export class World {
   sessionLate = false;
   /** what `herdr integration status` reports for omp */
   ompIntegration = true;
+  /** what `omp plugin list --json` prints; undefined: the command fails */
+  ompPlugins: unknown;
   /** pane id -> called with the 1-based count of `pane get` calls for that pane, before it answers */
   getHook = new Map<string, (n: number) => void>();
   private gets = new Map<string, number>();
@@ -110,6 +112,9 @@ export class World {
   exec: Exec = async (cmd, argv) => {
     this.calls.push({ cmd, argv });
     if (cmd === "gh") return { ...this.gh(argv), stderr: "" };
+    if (cmd === "omp" && argv[0] === "plugin") {
+      return this.ompPlugins === undefined ? { code: 1, stdout: "", stderr: "unknown command plugin" } : { code: 0, stdout: JSON.stringify(this.ompPlugins), stderr: "" };
+    }
     if (cmd !== "herdr") return { stderr: "", ...this.reviewer(argv) };
     const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify({ result }), stderr: "" });
     const [group, verb, id] = argv;

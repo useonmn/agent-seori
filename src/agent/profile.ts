@@ -19,8 +19,8 @@ export type AgentProfile = {
   readonly kind: AgentKind;
   /** The launch command when SEORI_AGENT_CMD is unset. */
   readonly command: string;
-  /** The prompt delivered into a new lane's agent that starts its goal; it names the lane key. */
-  kickoff(briefPath: string, key: string): string;
+  /** The prompt delivered into a new lane's agent that starts its goal; it names the lane key and its workflow, if any. */
+  kickoff(briefPath: string, key: string, workflow?: string): string;
   /** Environment for every agent pane of the home `root` (lead, duty, lanes), on top of paneEnv. */
   agentEnv(root: string): Record<string, string>;
   /** Environment for the lead's pane (replaces agentEnv there). */
@@ -86,8 +86,8 @@ export function leadOmpConfig(root: string): string {
 export const ompProfile: AgentProfile = {
   kind: "omp",
   command: "omp",
-  kickoff: (briefPath, key) =>
-    `/goal Read your brief at ${briefPath} and execute it. Your lane key is ${key}. ` +
+  kickoff: (briefPath, key, workflow) =>
+    `/goal ${workflow ? `${workflow} ` : ""}Read your brief at ${briefPath} and execute it. Your lane key is ${key}. ` +
     `The work is finished only when the brief's exit condition holds and you have sent seori ready.`,
   agentEnv: (root) => ({ PI_CONFIG_FILES: agentOmpConfigFiles(root) }),
   leadEnv: (root) => ({ PI_CONFIG_FILES: leadOmpConfig(root) }),

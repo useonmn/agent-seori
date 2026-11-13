@@ -60,7 +60,7 @@ function laneSubject(d: Deps, key: string): Subject {
     logTail: lane.log.slice(-20).map((e) => `- ${new Date(e.at).toISOString()} ${e.kind}: ${e.text}`),
     open: (rt, briefPath, resume) => {
       const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
-      const kickoff = resume === undefined ? d.agent.kickoff(briefPath, key) : undefined;
+      const kickoff = resume === undefined ? d.agent.kickoff(briefPath, key, lane.workflow) : undefined;
       return openOn(d, rt, { name: key, cwd: lane.cwd, env, role: "lane" }, key, resumeArgs(resume), kickoff, lane.model ?? d.model);
     },
     setHold: (on) => save(({ migration: _, ...l }) => (on ? { ...l, migration: true } : l)),
