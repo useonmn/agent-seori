@@ -910,7 +910,14 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const me = running(d.store.root, "duty");
       try {
         while (!me.stopped.aborted) {
-          await tick();
+          try {
+            await tick();
+          } catch (e) {
+            // A record left from herdr refuses the pass with one line naming its file; the loop keeps running so the
+            // pass goes through once that file is cleaned up.
+            if (!(e instanceof HerdrRecord)) throw e;
+            console.error(`DUTY ERROR ${e.message}`);
+          }
           await sleepUnless(interval, me.stopped);
         }
       } finally {

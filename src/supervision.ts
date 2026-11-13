@@ -25,8 +25,7 @@ export type LaneUsage = { tokens?: number; costUsd?: number };
  * unreadable or no assistant message carries that number; damaged lines (a torn last write) are skipped.
  */
 export async function laneUsage(d: Deps, lane: Lane): Promise<LaneUsage> {
-  const { rt, ref } = { rt: d.runtime, ref: lane.sessionRef };
-  const path = await rt.agentSession(ref);
+  const path = await d.runtime.agentSession(lane.sessionRef);
   if (!path) return {};
   let text: string;
   try {

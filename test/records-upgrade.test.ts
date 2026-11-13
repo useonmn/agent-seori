@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
+import { dutyTick, send } from "../src/harness.ts";
 import { HerdrRecord } from "../src/refs.ts";
 import { World } from "./fake.ts";
 
@@ -22,6 +23,25 @@ const OLD_LANE = {
 };
 
 const home = () => new World().deps();
+
+describe("closed herdr history next to live hc work", () => {
+  test("a done or lost herdr lane is skipped, an empty herdr inbox too, and duty still delivers to the hc lane", async () => {
+    const w = new World();
+    const d = w.deps();
+    const lead = w.addPane("t1", "idle");
+    d.store.setRole("lead", { runtime: "hc", id: "t1" });
+    writeFileSync(join(d.store.root, "lanes", "old-done.json"), JSON.stringify({ ...OLD_LANE, key: "old-done", status: "done" }));
+    writeFileSync(join(d.store.root, "lanes", "old-lost.json"), JSON.stringify({ ...OLD_LANE, key: "old-lost", status: "lost", sessionRef: { runtime: "herdr", id: "w1:p4" } }));
+    writeFileSync(join(d.store.root, "inbox", "w1_p3.jsonl"), "");
+    lead.status = "working";
+    expect(await send(d, "lead", "for the lead", "cli")).toBe("QUEUED");
+    expect(d.store.lanes()).toEqual([]);
+    expect(d.store.lane("old-done")).toBeUndefined();
+    lead.status = "idle";
+    expect(await dutyTick(d)).toContainEqual({ pane: "hc:t1", action: "flushed" });
+    expect(lead.received).toEqual(["for the lead"]);
+  });
+});
 
 describe("records a herdr seori wrote", () => {
   test("a lane without sessionRef, or with a herdr one, is refused naming its file and pane", () => {

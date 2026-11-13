@@ -136,22 +136,21 @@ export const reservedKey = (key: string): string | undefined =>
 /** A lane file as any binary wrote it: one from a herdr seori has no `sessionRef`, or a herdr one. */
 export type StoredLane = Omit<Lane, "sessionRef"> & { sessionRef?: { runtime: string; id: string } };
 
-/** The lane of an hc record; a record of a herdr pane is refused (HerdrRecord) with the file it came from. */
-export const checkedLane = (raw: StoredLane, file: string): Lane => {
+/**
+ * The lane of an hc record. A closed (done or lost) herdr record is history with nothing to address: undefined, so it
+ * never blocks the hc lanes. An open one is refused (HerdrRecord) with the file it came from.
+ */
+export const checkedLane = (raw: StoredLane, file: string): Lane | undefined => {
   const ref = raw.sessionRef;
-  if (ref?.runtime !== "hc") throw new HerdrRecord(file, ref?.id ?? raw.paneId);
-  return raw as Lane;
+  if (ref?.runtime === "hc") return raw as Lane;
+  if (raw.status === "done" || raw.status === "lost") return undefined;
+  throw new HerdrRecord(file, ref?.id ?? raw.paneId);
 };
 
 // Inbox files: one JSONL queue per session, `hc--t7.jsonl`. A file without that prefix is a herdr pane's queue.
 const HC_INBOX_PREFIX = "hc--";
 
 const inboxName = (ref: SessionRef): string => `${HC_INBOX_PREFIX}${ref.id}`;
-
-const inboxRef = (stem: string, file: string): SessionRef => {
-  if (!stem.startsWith(HC_INBOX_PREFIX)) throw new HerdrRecord(file, stem.replaceAll("_", ":"));
-  return { runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) };
-};
 
 const readQueue = (path: string): QueuedMessage[] =>
   existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as QueuedMessage) : [];
@@ -289,7 +288,8 @@ export class Store {
       .flatMap((f) => {
         const file = join(this.root, "lanes", f);
         const raw = this.readJson<StoredLane>(file);
-        return raw === undefined ? [] : [checkedLane(raw, file)];
+        const lane = raw && checkedLane(raw, file);
+        return lane === undefined ? [] : [lane];
       })
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
   }
@@ -373,13 +373,23 @@ export class Store {
     return lockFile(`${this.inboxPath(ref)}.lock`, now);
   }
 
-  /** Sessions with queued messages. */
+  /**
+   * Sessions with queued messages. A herdr pane's inbox (no `hc--` prefix) that is empty is skipped; one that still
+   * holds entries is refused (HerdrRecord), since nothing on hc can deliver them.
+   */
   inboxPanes(): SessionRef[] {
-    return readdirSync(join(this.root, "inbox"))
+    const dir = join(this.root, "inbox");
+    return readdirSync(dir)
       .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => inboxRef(f.slice(0, -".jsonl".length), join(this.root, "inbox", f)))
+      .flatMap((f): SessionRef[] => {
+        const stem = f.slice(0, -".jsonl".length);
+        if (stem.startsWith(HC_INBOX_PREFIX)) return [{ runtime: "hc", id: stem.slice(HC_INBOX_PREFIX.length) }];
+        if (readQueue(join(dir, f)).length > 0) throw new HerdrRecord(join(dir, f), stem.replaceAll("_", ":"));
+        return [];
+      })
       .filter((r) => this.queued(r).length > 0);
   }
+
 
   private receiptPath(pr: string, sha: string): string {
     return join(this.root, "receipts", `${pr.replaceAll("/", "__").replace("#", "_")}@${sha}.json`);

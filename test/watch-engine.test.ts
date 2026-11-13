@@ -328,10 +328,10 @@ describe("pane watches", () => {
     const seq: PaneState[] = ["working", "working", "idle"];
     let i = 0;
     const t = setup({ paneStatus: async () => seq[Math.min(i++, seq.length - 1)] as PaneState });
-    const w = t.add({ name: "p", source: { kind: "pane", pane: "p1", status: "idle" } });
+    const w = t.add({ name: "p", source: { kind: "pane", pane: "hc:t1", status: "idle" } });
     t.engine().start();
     await until("event", () => t.delivered.length === 1);
-    expect(t.texts()).toEqual([`[watch p ${w.id}] pane p1 is idle`]);
+    expect(t.texts()).toEqual([`[watch p ${w.id}] pane hc:t1 is idle`]);
     expect(t.store.get(w.id)?.status).toBe("done");
   });
 
@@ -339,10 +339,10 @@ describe("pane watches", () => {
     const seq: PaneState[] = ["working", "done"];
     let i = 0;
     const t = setup({ paneStatus: async () => seq[Math.min(i++, seq.length - 1)] as PaneState });
-    const w = t.add({ name: "p", source: { kind: "pane", pane: "p1", status: "idle" } });
+    const w = t.add({ name: "p", source: { kind: "pane", pane: "hc:t1", status: "idle" } });
     t.engine().start();
     await until("event", () => t.delivered.length === 1);
-    expect(t.texts()).toEqual([`[watch p ${w.id}] pane p1 is done`]);
+    expect(t.texts()).toEqual([`[watch p ${w.id}] pane hc:t1 is done`]);
     expect(t.store.get(w.id)?.status).toBe("done");
   });
 
@@ -354,7 +354,7 @@ describe("pane watches", () => {
         return "done";
       },
     });
-    const w = t.add({ name: "p", source: { kind: "pane", pane: "p1", status: "blocked" } });
+    const w = t.add({ name: "p", source: { kind: "pane", pane: "hc:t1", status: "blocked" } });
     t.engine().start();
     await until("several polls", () => polls >= 5);
     expect(t.delivered).toEqual([]);
@@ -363,10 +363,20 @@ describe("pane watches", () => {
 
   test("a missing pane finishes the watch too", async () => {
     const t = setup({ paneStatus: async () => "gone" });
-    const w = t.add({ name: "p", source: { kind: "pane", pane: "p9", status: "blocked" } });
+    const w = t.add({ name: "p", source: { kind: "pane", pane: "hc:t9", status: "blocked" } });
     t.engine().start();
     await until("event", () => t.delivered.length === 1);
-    expect(t.texts()).toEqual([`[watch p ${w.id}] pane p9 is gone`]);
+    expect(t.texts()).toEqual([`[watch p ${w.id}] pane hc:t9 is gone`]);
+  });
+
+  test("a watch saved with a herdr pane id is stopped once, without asking the runtime", async () => {
+    let polls = 0;
+    const t = setup({ paneStatus: async () => (polls++, "idle") });
+    const w = t.add({ name: "p", source: { kind: "pane", pane: "w1:p3", status: "idle" } });
+    t.engine().start();
+    await until("stopped", () => t.store.get(w.id)?.status === "stopped");
+    expect(t.store.get(w.id)?.reason).toBe("not an hc terminal");
+    expect(polls).toBe(0);
   });
 });
 

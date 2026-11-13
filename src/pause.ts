@@ -51,8 +51,8 @@ const count = (screen: string, shown: RegExp): number => screen.match(shown)?.le
  * (omp may redraw an earlier status in place, so presence alone proves nothing). An uncertain delivery is read back
  * like a sure one: the screen decides.
  */
-async function goalCommand(d: Deps, to: SessionRef, text: string, shown: RegExp, sleep: (ms: number) => Promise<void>): Promise<"confirmed" | "unconfirmed" | "no agent"> {
-  const { rt, ref } = { rt: d.runtime, ref: to };
+async function goalCommand(d: Deps, ref: SessionRef, text: string, shown: RegExp, sleep: (ms: number) => Promise<void>): Promise<"confirmed" | "unconfirmed" | "no agent"> {
+  const rt = d.runtime;
   const before = count(await rt.read(ref, READ_BACK_LINES), shown);
   try {
     // A goal-mode lane reads working until its goal ends: the command goes in whatever the status, never into a dialog.
@@ -136,8 +136,7 @@ export async function pauseLane(d: Deps, key: string, note?: string, opts: Pause
   // A goal-mode omp reads as working until its goal ends; with the goal paused, working means a turn still runs.
   if (!(await turnRunning(d, fresh.sessionRef, sleep))) return { lane: fresh, lines: [`PAUSED ${key} goal paused`] };
   try {
-    const { rt, ref } = { rt: d.runtime, ref: fresh.sessionRef };
-    await rt.keys(ref, ["escape"]);
+    await d.runtime.keys(fresh.sessionRef, ["escape"]);
   } catch (e) {
     const reason = e instanceof ToolError ? (e.result.stderr || e.result.stdout).trim() : String(e);
     return { lane: fresh, lines: [`PAUSED ${key} goal paused; the running turn could not be interrupted (${reason})`] };
