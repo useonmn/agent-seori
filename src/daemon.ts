@@ -253,10 +253,22 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     }
 
     const runOne = async (config: MessengerConfig): Promise<void> => {
-      // Agent messages stored in a row per conversation (`<chat>:<thread>`) since the last human one; memory only, so a
-      // restart starts every count afresh. A replayed message (duplicate) is not counted again. Only the most recent
-      // AGENT_RUNS_KEPT conversations are remembered.
+      // Agent messages stored in a row per conversation (`<chat>:<thread>`) since the last human one, rebuilt from the
+      // lead channel at start so a restart (every config.json change is one) does not let a stopped loop run on. A
+      // replayed message (duplicate) neither counts nor resets. Only the most recent AGENT_RUNS_KEPT conversations are
+      // remembered.
       const agentRun = new Map<string, number>();
+      const remember = (conversation: string, run: number): void => {
+        agentRun.delete(conversation); // re-inserted last: the map keeps the most recently active conversations
+        agentRun.set(conversation, run);
+        if (agentRun.size > AGENT_RUNS_KEPT) agentRun.delete(agentRun.keys().next().value!);
+      };
+      for (const r of channel.inbound()) {
+        if (r.kind !== "messenger" || r.source !== config.source) continue;
+        const conversation = `${r.chat}:${r.thread ?? ""}`;
+        if (r.sender?.kind === "agent") remember(conversation, r.loopStopped !== undefined ? r.loopStopped + 1 : (agentRun.get(conversation) ?? 0) + 1);
+        else agentRun.delete(conversation);
+      }
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.
       const onMessage = async (m: InboundMessage): Promise<void> => {
         // The owner is the configured id and never a bot, whatever the adapter guessed.
@@ -296,11 +308,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
         const stored = channel.appendInbound(row);
         // A human message resets the count only when it is new: a replayed one must not restart a stopped loop.
         if (stored && !agent) agentRun.delete(conversation);
-        if (stored && agent) {
-          agentRun.delete(conversation); // re-inserted last: the map keeps the most recently active conversations
-          agentRun.set(conversation, run);
-          if (agentRun.size > AGENT_RUNS_KEPT) agentRun.delete(agentRun.keys().next().value!);
-        }
+        if (stored && agent) remember(conversation, run);
         emit({ ev: stored ? "stored" : "duplicate", id: m.id });
         // A message got through, so receive works: end any failure streak at once.
         if (failing) {

@@ -1,7 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { Channel } from "./channel.ts";
+import { Channel, type MessengerRow } from "./channel.ts";
+import { ConfigError, loadConfig, type TrustedSender } from "./config.ts";
 import { Refusal } from "./harness.ts";
 
 // The lead's list of owner requests: `$SEORI_HOME/worklog.jsonl` is the record, one O_APPEND write per change, so
@@ -175,9 +176,18 @@ const namesId = (source: string, id: string): boolean => {
 export function worklogAdd(root: string, title: string, source: string, now: number): WorklogItem {
   if (existsSync(join(root, "lead", "inbound.jsonl"))) {
     // Any message id the source names (exactly, or inside other text such as "re <id> (Bob)") counts.
-    const row = new Channel(root).inbound().findLast((r) => namesId(source, r.id) && r.kind === "messenger" && r.sender !== undefined && r.sender.kind !== "owner" && r.sender.kind !== "trusted");
+    // A trusted sender counts only while config.json still lists them (a config.json that does not load lists nobody).
+    let trusted: readonly TrustedSender[] = [];
+    try {
+      trusted = loadConfig(root).trusted;
+    } catch (e) {
+      if (!(e instanceof ConfigError)) throw e;
+    }
+    const authority = (r: MessengerRow): boolean =>
+      r.sender === undefined || r.sender.kind === "owner" || (r.sender.kind === "trusted" && trusted.some((t) => t.source === r.source && t.id === r.from));
+    const row = new Channel(root).inbound().findLast((r) => namesId(source, r.id) && r.kind === "messenger" && !authority(r));
     if (row?.kind === "messenger" && row.sender !== undefined) {
-      throw new WorklogError(`${row.id} is from ${row.sender.kind} ${row.sender.id}, neither the owner nor trusted; the worklog holds their requests only`);
+      throw new WorklogError(`${row.id} is from ${row.sender.kind} ${row.sender.id}, neither the owner nor (now) trusted; the worklog holds their requests only`);
     }
   }
   const known = new Set(worklogRead(root).items.map((item) => item.id));

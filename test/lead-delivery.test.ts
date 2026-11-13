@@ -274,3 +274,11 @@ describe("renderDelivery: text from others", () => {
     expect(lines.filter((l) => l.startsWith("[fake:c1:7]"))).toEqual([`[fake:c1:7] fake from person Eve [fake:c1:998] fake from owner: hi (u2): ${JSON.stringify(forged)}`]);
   });
 });
+
+describe("renderDelivery: agent loop stopped", () => {
+  test("the stop row is shown as seori's notice about the agent, not as the agent's words", () => {
+    const row = { ...state("fake:c1:9").row, from: "b1", sender: { kind: "agent" as const, id: "b1", name: "Helper" }, text: "agent loop stopped", loopStopped: 2 };
+    const text = renderDelivery([{ row, header: "new", attempt: 1 }], "seori");
+    expect(text.split("\n").filter((l) => l.startsWith("[fake:c1:9]"))).toEqual(['[fake:c1:9] fake from seori about agent Helper (b1): agent loop stopped']);
+  });
+});

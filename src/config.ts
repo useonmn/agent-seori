@@ -1,7 +1,7 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import type { Ceilings } from "./store.ts";
+import { type Ceilings, lockFile } from "./store.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 
 // `$SEORI_HOME/config.json`: optional settings for the agent and runtime choice (read by src/agent/profile.ts and
@@ -237,18 +237,32 @@ function parseTrusted(value: unknown, path: string): TrustedSender[] {
 }
 
 /**
- * Replaces config.json's `trusted` list, keeping every other key as written. Refuses (ConfigError) a config.json that
- * does not load, so a broken file is never rewritten. Renamed into place: a reader never sees half a file.
+ * Replaces config.json's `trusted` list with `change(current list)`, keeping every other key as written. Read, change and
+ * write happen under config.json.lock, so two writers never lose each other's change; a held lock refuses (ConfigError)
+ * rather than wait. A config.json that does not load is refused too and never rewritten. The new file is fsynced and
+ * renamed into place: a reader never sees half a file.
  */
-export function writeTrusted(root: string, trusted: readonly TrustedSender[]): void {
-  loadConfig(root);
+export function updateTrusted(root: string, change: (list: readonly TrustedSender[]) => readonly TrustedSender[], now: number): void {
   const path = configPath(root);
-  const raw = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Obj) : {};
-  const next = { ...raw, trusted };
-  parseTrusted(next.trusted, path);
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
-  renameSync(tmp, path);
+  const release = lockFile(`${path}.lock`, now);
+  if (!release) throw new ConfigError(`${path} is being changed by another seori command (${path}.lock); try again`);
+  try {
+    const current = loadConfig(root);
+    const raw = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Obj) : {};
+    const next = { ...raw, trusted: change(current.trusted) };
+    parseTrusted(next.trusted, path);
+    const tmp = `${path}.${process.pid}.tmp`;
+    const fd = openSync(tmp, "w");
+    try {
+      writeSync(fd, `${JSON.stringify(next, null, 2)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } finally {
+    release();
+  }
 }
 
 /** The identity configured for `owner/repo`, matched without case. */

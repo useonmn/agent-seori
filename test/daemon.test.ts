@@ -527,6 +527,26 @@ describe("talking with people and agents other than the owner", () => {
     expect((new Channel(root).inbound() as MessengerRow[]).map((r) => [r.id, r.loopStopped])).toEqual([["x:c:a1", undefined], ["x:c:h1", undefined], ["x:c:a2", undefined], ["x:c:a3", 1]]);
   });
 
+  test("the agent-loop count survives a restart: it is rebuilt from the lead channel", async () => {
+    const root = home([{ source: "x", owner: "u1" }]);
+    writeFileSync(join(root, "config.json"), JSON.stringify({ agentTurnLimit: 1 }));
+    new Channel(root).appendInbound({ id: "x:c:a1", kind: "messenger", source: "x", chat: "c", from: "b1", sender: { kind: "agent", id: "b1" }, at: 1, text: "before the restart" });
+    const one: MessengerAdapter = {
+      ...noActions,
+      source: "x",
+      async receive(signal, onMessage) {
+        await onMessage({ ...msg("x:c:a2", "b1"), sender: { kind: "agent", id: "b1" } });
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
+    };
+    const d = start(root, { adapterFor: () => one });
+    await until("a2", () => d.events.some((e) => e.ev === "stored" && e.id === "x:c:a2"));
+    await d.stop();
+    expect((new Channel(root).inbound() as MessengerRow[]).map((r) => [r.id, r.loopStopped])).toEqual([["x:c:a1", undefined], ["x:c:a2", 1]]);
+  });
+
   test("a config.json that does not load keeps the daemon owner-only and is reported", async () => {
     const root = fakeConfig({ talkWithOthers: "yes" });
     const { d, rows } = await run(root, [
