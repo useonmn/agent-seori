@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { dutyTick, ready, report, review, startLane } from "../src/harness.ts";
 import { hooksSettled, loadHooks, runHook, substitute } from "../src/hooks.ts";
+import type { Exec, ExecResult } from "../src/runtime/exec.ts";
 import { superviseTick } from "../src/supervision.ts";
 import { World, herdrRef } from "./fake.ts";
 
@@ -123,11 +124,34 @@ describe("lifecycle hooks", () => {
   test("a hook that never finishes does not keep hooksSettled from returning; it is named as timed out", async () => {
     const { w, d } = setup({ onReady: ["slow-hook"] });
     const exec = w.exec;
-    const hanging: typeof exec = (cmd, argv) => (cmd === "slow-hook" ? new Promise(() => {}) : exec(cmd, argv));
+    let exit: ((r: ExecResult) => void) | undefined;
+    const hanging: typeof exec = (cmd, argv) => (cmd === "slow-hook" ? new Promise((resolve) => (exit = resolve)) : exec(cmd, argv));
     captureStderr();
-    void runHook({ ...d, exec: hanging }, "onReady", {});
+    const hook = runHook({ ...d, exec: hanging }, "onReady", {});
     await hooksSettled(50);
     expect(stderr).toEqual(["seori: hook onReady failed (timed out after 50 ms)\n"]);
+    // Let it finish, so it is not still pending in the next test.
+    exit!({ code: 0, stdout: "", stderr: "" });
+    await hook;
+  });
+
+  test("a hook still running at the deadline is killed before its timed-out line, and its exit adds no second line", async () => {
+    const { w, d } = setup({ onReady: ["slow-hook"] });
+    const exec = w.exec;
+    const events: string[] = [];
+    let exit: ((r: ExecResult) => void) | undefined;
+    const hanging: Exec = (cmd, argv, options) => {
+      if (cmd !== "slow-hook") return exec(cmd, argv);
+      options?.onSpawn?.({ kill: () => events.push("kill") });
+      return new Promise((resolve) => (exit = resolve));
+    };
+    process.stderr.write = ((s: string | Uint8Array) => (events.push(String(s)), true)) as typeof process.stderr.write;
+    const hook = runHook({ ...d, exec: hanging }, "onReady", {});
+    await hooksSettled(50);
+    // The killed hook settles now (SIGTERM is exit 143); that exit must not print a second line.
+    exit!({ code: 143, stdout: "", stderr: "" });
+    await hook;
+    expect(events).toEqual(["kill", "seori: hook onReady failed (timed out after 50 ms)\n"]);
   });
 });
 
