@@ -12,14 +12,16 @@ export type Hooks = {
   readonly onReady?: ArgvTemplate;
   readonly onReport?: ArgvTemplate;
   readonly onLost?: ArgvTemplate;
+  /** Runs once when a lane closes with a known reading: `{key}`, `{tokens}`, `{cost}`, `{closeKey}` (off unless set). */
+  readonly recordCost?: ArgvTemplate;
   /** Speech to text: `{file}` is an audio file path; the command prints the transcript on stdout. */
   readonly transcribe?: ArgvTemplate;
 };
 
 export type HookName = keyof Hooks;
-export type HookVars = Partial<Record<"key" | "text" | "evidence" | "file", string>>;
+export type HookVars = Partial<Record<"key" | "text" | "evidence" | "file" | "tokens" | "cost" | "closeKey", string>>;
 
-const NAMES: readonly HookName[] = ["onReady", "onReport", "onLost", "transcribe"];
+const NAMES: readonly HookName[] = ["onReady", "onReport", "onLost", "recordCost", "transcribe"];
 
 function template(name: string, value: unknown): ArgvTemplate {
   if (!Array.isArray(value) || value.length === 0)
@@ -63,10 +65,10 @@ export function loadHooks(root: string): Hooks {
   return hooks;
 }
 
-/** Substitutes `{key}`, `{text}`, `{evidence}`, `{file}` inside each element. */
+/** Substitutes `{key}`, `{text}`, `{evidence}`, `{file}`, `{tokens}`, `{cost}`, `{closeKey}` inside each element. */
 export function substitute(argv: ArgvTemplate, vars: HookVars): string[] {
   return argv.map((element) =>
-    element.replace(/\{(key|text|evidence|file)\}/g, (whole, k: keyof HookVars) => vars[k] ?? whole),
+    element.replace(/\{(key|text|evidence|file|tokens|cost|closeKey)\}/g, (whole, k: keyof HookVars) => vars[k] ?? whole),
   );
 }
 

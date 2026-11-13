@@ -2,6 +2,7 @@ import { ConfigError, loadConfig } from "./config.ts";
 import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
 import { Refusal, send, tellLead, type Deps, type DutyEvent, type SendResult } from "./harness.ts";
 import { checkSignals, defaultSignalIo, type SignalIo } from "./signals.ts";
+import { recordCloseCost } from "./supervision.ts";
 import type { Lane } from "./store.ts";
 
 // The done flow of a lane started with a Done line (`seori start --done`): the lane's READY is a claim; seori closes
@@ -35,8 +36,14 @@ export const claimLeadLine = (seori: string, key: string, closeAfterMin: number)
 export const objectionText = (reasons: readonly string[]): string =>
   `[LEAD] not done: ${reasons.join("; ")}; keep working and send ready again when fixed`;
 
-/** Closes the lane's pane (unless already gone) and records the close with `note` in its log. */
+/**
+ * Closes the lane's pane (unless already gone) and records the close with `note` in its log. What the lane spent is
+ * recorded first, while its session can still be read; a failure there is one stderr line and never keeps it open.
+ */
 export async function closeLane(d: Deps, lane: Lane, note: string): Promise<void> {
+  await recordCloseCost(d, lane).catch((e: unknown) => {
+    process.stderr.write(`seori: lane ${lane.key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
+  });
   const { rt, ref } = session(d.runtimes, lane.sessionRef);
   if ((await rt.status(ref)) !== "gone") await rt.close(ref);
   lane.status = "done";

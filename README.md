@@ -320,6 +320,8 @@ The duty loop watches every open lane for two things and tells the lead once eac
 
 Ceilings. A lane can have a wall-clock, a token and a cost ceiling. `seori start --wall-minutes N --token-limit N --cost-limit N` sets them for one lane; `none` switches one off, and a flag left out takes the config default. A lane started with none of these flags follows `supervision.defaults` in `config.json`, which are all off by default. Wall-clock time counts from the lane's start. Tokens and cost are summed over the assistant messages in the lane's agent session file, whose path comes from the runtime. Only herdr reports that path today, so on hc the totals read as unknown and only the wall-clock ceiling applies; a total that cannot be read never reaches a ceiling and is shown once as a `usage-unknown` duty event. A reached ceiling is told as `[BLOCKED <key>] <which> ceiling reached (<reading>, limit <limit>); the lane keeps running until you decide`, once per ceiling and limit (a raised limit is told again once reached), and logged on the lane.
 
+Cost record. When a lane closes (`seori done`, or seori's own close after a Done line), what it spent is read from its agent session file before the session closes and appended to `$SEORI_HOME/cost.jsonl` as one line: `{ "key", "closeKey": "<key>@<createdAt>", "tokens", "costUsd", "at" }`. A total that cannot be read (on hc today) is `null`, never 0. A retried close adds no second line. The file stays local; nothing is sent anywhere unless you set `hooks.recordCost`, which then runs once with the reading. A failure here is one stderr line and never keeps a lane open.
+
 Stalls. A working lane that the runtime reads working but that has sent no report and changed no file for `supervision.hungAfterMin` minutes (default 20) is told as `[STALLED <key>] ...`, once per stall. A file change is a new HEAD or a change in the paths `git status` lists in the lane's cwd (`node_modules` left out), with their times and sizes. Paths given with `seori start --activity-path PATH` (repeatable) or in `supervision.activityPaths`, relative to the lane's cwd, count too, git checkout or not: a file counts when it is written (a symlink's target is read), a directory only when an entry in it is added, removed or renamed, so list a file itself to catch rewrites inside a directory. A lane writing a log outside its checkout is then not reported stalled while it writes; outside a git checkout and without activity paths only reports count. A waiting lane said it waits, so its quiet is no stall. The change history is kept in `duty/supervision.json`.
 
 ## Worklog
@@ -552,13 +554,14 @@ The commands that read the config (`start`, `ready` for a lane with a Done line,
 
 ### Hooks
 
-`hooks` in config.json takes argv templates (a non-empty array of strings; element 0 is the command, nothing is shell-expanded). Placeholders `{key}`, `{text}`, `{evidence}`, `{file}` are substituted inside each element.
+`hooks` in config.json takes argv templates (a non-empty array of strings; element 0 is the command, nothing is shell-expanded). Placeholders `{key}`, `{text}`, `{evidence}`, `{file}`, `{tokens}`, `{cost}`, `{closeKey}` are substituted inside each element.
 
 | hook | runs | placeholders |
 |---|---|---|
 | `onReport` | after `seori report` saved the lane | `key`, `text` |
 | `onReady` | after `seori ready` saved the lane | `key`, `text`, `evidence` |
 | `onLost` | when duty or supervision marks a lane lost | `key`, `text` |
+| `recordCost` | once when a lane closes and its tokens or cost could be read (see Cost record) | `key`, `tokens`, `cost`, `closeKey` |
 | `transcribe` | turns an audio file into text: `seori transcribe <file>`, and Telegram voice notes | `file` |
 
 The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name> failed (...)` line on stderr and never changes the command's result; the CLI waits at most 2 s for hooks still running at exit. No hook replaces the reviewer: `seori review` always runs omp, and a `hooks.reviewCommand` key is refused. `transcribe` runs in the foreground and must print the transcript on stdout and exit 0; when it is not set, a voice note stays a plain attachment line. A malformed `hooks` value is a config error (exit 2).
