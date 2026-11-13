@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { agentName, defaultSeoriCmd, done, paneEnv, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
@@ -671,6 +671,41 @@ describe("review + merge gate", () => {
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR\n" });
     await expect(review(d, "o/r#8")).rejects.toThrow("no VERDICT");
     expect(d.store.receipt("o/r#8", head)).toBeUndefined();
+  });
+
+  test("a reviewer with no VERDICT line leaves its last 200 stdout lines in a private file named in the error", async () => {
+    const { w, d } = setup();
+    gh(w, []);
+    const lines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`);
+    w.reviewer = () => ({ code: 0, stdout: lines.join("\n") });
+    const err = await review(d, "o/r#9").then(() => undefined, (e: Error) => e);
+    const path = /reviewer output saved to (\S+)$/.exec(err?.message ?? "")?.[1];
+    expect(path).toBeDefined();
+    expect(path!.startsWith(join(d.store.root, "receipts"))).toBe(true);
+    expect(statSync(path!).mode & 0o777).toBe(0o600);
+    expect(readFileSync(path!, "utf8").split("\n")).toEqual(lines.slice(-200));
+    expect(d.store.receipt("o/r#9", head)).toBeUndefined();
+  });
+
+  test("seori duty refuses an --interval that is not a number of seconds >= 0.001", async () => {
+    const { d } = setup();
+    for (const bad of ["0", "-5", "abc", "0.0001", "Infinity"]) {
+      await expect(main(["duty", "--once", "--interval", bad], d)).rejects.toThrow("--interval must be a number of seconds");
+    }
+    expect(await main(["duty", "--once", "--interval", "0.001"], d)).toBe(0);
+  });
+
+  test("send, report and ready refuse an empty message; a value flag given last is refused; --help prints the usage", async () => {
+    const { d } = setup();
+    await expect(main(["send", "w1:p1", "--text", ""], d)).rejects.toThrow("the message is empty");
+    await expect(main(["send", "w1:p1", "--text", "  "], d)).rejects.toThrow("the message is empty");
+    await expect(main(["report", "fix-x", "--text", ""], d)).rejects.toThrow("the message is empty");
+    await expect(main(["ready", "fix-x", "--text", ""], d)).rejects.toThrow("the message is empty");
+    await expect(main(["send", "w1:p1", "--text"], d)).rejects.toThrow("--text needs a value");
+    let code = -1;
+    const out = await captureLog(async () => { code = await main(["send", "--help"], d); });
+    expect(code).toBe(0);
+    expect(out).toContain("seori duty");
   });
 
   test("a reviewer cut off by its deadline or the cost cap writes no receipt", async () => {

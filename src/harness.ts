@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -1000,7 +1001,13 @@ export async function review(d: Deps, prId: string, model: string | undefined = 
   if (res.code !== 0) throw new Error(`reviewer exited ${res.code}: ${res.stderr.trim()}`);
   const verdicts = [...(answer?.text ?? "").matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
   const last = verdicts.at(-1);
-  if (!last) throw new Error("reviewer printed no VERDICT line; no receipt written");
+  if (!last) {
+    // Keep the reviewer's last 200 stdout lines (private, 0600) so a missing VERDICT can be diagnosed.
+    const name = `${pr.id.replaceAll("/", "__").replace("#", "_")}@${sha}-${randomUUID()}.noverdict.txt`;
+    const diagnostic = join(d.store.root, "receipts", name);
+    writeFileSync(diagnostic, res.stdout.split(/\r?\n/).slice(-200).join("\n"), { flag: "wx", mode: 0o600 });
+    throw new Error(`reviewer printed no VERDICT line; no receipt written; reviewer output saved to ${diagnostic}`);
+  }
   const verdict = last[1] as "CLEAR" | "BLOCK";
   const summary = answer!.text.trim().slice(-4000);
   d.store.saveReceipt({ pr: pr.id, sha, verdict, model: answer!.model ?? model ?? "default", at: d.now(), summary });
