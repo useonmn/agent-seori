@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { uptime } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { done, dutyTick, memFreePct, ready, Refusal, report, startLane } from "../src/harness.ts";
@@ -264,6 +265,18 @@ describe("hourly loop", () => {
     w.clock += HOUR;
     expect((await tick()).started).toEqual([]);
     expect(readdirSync(join(d.store.root, "loop")).filter((f) => f.startsWith("lock"))).toEqual([]);
+  });
+
+  test("a lock written before this boot is stale even when its pid is alive again", async () => {
+    const { d, add, tick } = setup();
+    add("work");
+    const path = d.store.loopPath("lock");
+    writeFileSync(path, JSON.stringify({ pid: process.pid, at: 0, nonce: "pre-boot" }));
+    const beforeBoot = (Date.now() - uptime() * 1000 - 10 * 60_000) / 1000;
+    utimesSync(path, beforeBoot, beforeBoot);
+    const run = await tick();
+    expect(run.skipped).toBeUndefined();
+    expect(run.started).toEqual(["work (p5)"]);
   });
 
   test("failed lane starts are recorded, each uses a slot, and the run still reports what is waiting; with no lead nothing starts", async () => {
