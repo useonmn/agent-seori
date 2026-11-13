@@ -35,8 +35,6 @@ const USER_CURSOR = "user-cursor.json";
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 /** User mode: a conversation seen for the first time is read back at most this far (never before the first start). */
 const NEW_CHANNEL_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-/** User-mode pairing starts reading this long before it started, like pair.ts's PAIR_LOOKBACK_MS. */
-const PAIRING_LOOKBACK_MS = 2 * 60_000;
 /** Errors meaning the user token or cookie is no good; any other refusal of a web-client method only skips that method. */
 const USER_AUTH_ERRORS = new Set(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"]);
 
@@ -403,20 +401,24 @@ export class SlackAdapter implements MessengerAdapter {
     const cursor: Cursor = {
       channels: { ...(saved?.channels ?? {}) },
       threads: { ...(saved?.threads ?? {}) },
-      since: saved?.since ?? msTs(this.now() - (this.pairing ? PAIRING_LOOKBACK_MS : 0)),
+      // Pairing reads no lookback: only a DM sent after it started can pair (the account is a member colleagues DM).
+      since: saved?.since ?? msTs(this.now()),
     };
     if (saved?.since === undefined) file.save(cursor);
     const delivered = new Set<string>();
     const warned = new Set<string>();
     let self: string | undefined;
+    let ownerDm: string | undefined;
     let failures = 0;
     let failingSince: number | undefined;
     let lastError = "";
     while (!signal.aborted) {
       const started = this.now();
       try {
-        if (self === undefined) self = String((await this.api("auth.test", token, undefined, "GET", signal)).user_id ?? "");
-        await this.poll({ cursor, file, delivered, token, botUser: self, onMessage, signal, working: new Map() }, warned);
+        self ??= await this.selfId(token, signal);
+        // The DM with the owner: the only DM read (colleagues may DM this account too; seori never marks DMs read).
+        if (!this.pairing) ownerDm ??= await this.ownerDm(token, signal);
+        await this.poll({ cursor, file, delivered, token, botUser: self, onMessage, signal, working: new Map() }, warned, ownerDm);
         failures = 0;
         failingSince = undefined;
         await this.pause(this.pollIntervalMs, signal);
@@ -424,6 +426,7 @@ export class SlackAdapter implements MessengerAdapter {
       } catch (e) {
         if (signal.aborted) return;
         if (e instanceof OnMessageFailed) throw e.cause;
+        if (e instanceof FatalSlack) throw new Error(e.message);
         const fatal = this.fatal(e, false);
         if (fatal) throw fatal;
         lastError = e instanceof Error ? e.message : String(e);
@@ -439,12 +442,32 @@ export class SlackAdapter implements MessengerAdapter {
   }
 
   /**
+   * This account's user id from auth.test. A missing id is an error (retried), never an empty id; an id equal to the
+   * owner's is refused: seori would read its own replies back as the owner's commands.
+   */
+  private async selfId(token: string, signal?: AbortSignal): Promise<string> {
+    const id = (await this.api("auth.test", token, undefined, "GET", signal)).user_id;
+    if (typeof id !== "string" || !id) throw new Error("auth.test answered without a user_id");
+    if (!this.pairing && id === this.config.owner) {
+      throw new FatalSlack(`slack ${this.source}: the user token is the owner's own account (${id}); seori needs its own member account, signed in separately, or it would read its own replies as the owner's messages`);
+    }
+    return id;
+  }
+
+  /** The DM channel with the owner (conversations.open). */
+  private async ownerDm(token: string, signal?: AbortSignal): Promise<string> {
+    const channel = (await this.api("conversations.open", token, { users: this.config.owner }, "POST", signal)).channel as { id?: unknown } | undefined;
+    if (typeof channel?.id !== "string") throw new Error("conversations.open answered without a channel id");
+    return channel.id;
+  }
+
+  /**
    * One user-mode poll. Which conversations to read: the threads view (unread replies in threads this account follows),
    * the counts (DMs and group DMs with unreads, channels with a mention), every known DM (a person reading the account
    * in a browser clears its unread mark) and every conversation with a tracked thread. Each is then read from its
    * cursor like a bot-mode catch-up; one seen for the first time from the first start, at most a day back.
    */
-  private async poll(ctx: Receiving, warned: Set<string>): Promise<void> {
+  private async poll(ctx: Receiving, warned: Set<string>, ownerDm: string | undefined): Promise<void> {
     const cutoff = this.now() - THREAD_MAX_AGE_MS;
     for (const threads of Object.values(ctx.cursor.threads)) {
       for (const [root, last] of Object.entries(threads)) if (tsMs(last) < cutoff) delete threads[root];
@@ -468,8 +491,13 @@ export class SlackAdapter implements MessengerAdapter {
     };
     const threads = view?.threads;
     const channels = new Set<string>();
-    for (const c of [...listed("ims"), ...listed("mpims"), ...listed("channels").filter((c) => (c.mention_count ?? 0) > 0)]) {
-      if (c.id && (c.has_unreads || (c.mention_count ?? 0) > 0)) channels.add(c.id);
+    // DMs: only the owner's (any unread DM while pairing, when the owner is not known yet); group DMs and channels only
+    // with a mention of this account, since only those can be commands.
+    const ims = listed("ims").filter((c) => c.id && c.has_unreads && (ownerDm === undefined || c.id === ownerDm));
+    for (const c of [...ims, ...[...listed("mpims"), ...listed("channels")].filter((c) => (c.mention_count ?? 0) > 0)]) if (c.id) channels.add(c.id);
+    if (ownerDm !== undefined) {
+      open(ownerDm);
+      channels.add(ownerDm);
     }
     for (const t of Array.isArray(threads) ? (threads as ThreadView[]) : []) {
       const channel = t.root_msg?.channel;
@@ -482,7 +510,7 @@ export class SlackAdapter implements MessengerAdapter {
     }
     for (const channel of channels) open(channel);
     for (const channel of Object.keys(ctx.cursor.channels)) {
-      if (channel.startsWith("D") || Object.keys(ctx.cursor.threads[channel] ?? {}).length) channels.add(channel);
+      if (Object.keys(ctx.cursor.threads[channel] ?? {}).length) channels.add(channel);
     }
     await this.catchUp(ctx, [...channels]);
   }
@@ -907,7 +935,7 @@ export class SlackAdapter implements MessengerAdapter {
 
   async fetchMessage(chat: string, message: string): Promise<FetchedMessage> {
     try {
-      const body = await this.api("conversations.history", this.botToken(), { channel: chat, latest: message, inclusive: "true", limit: "1" }, "GET", undefined, ACTION_MAX_RETRY_AFTER_MS);
+      const body = await this.api("conversations.history", this.token(), { channel: chat, latest: message, inclusive: "true", limit: "1" }, "GET", undefined, ACTION_MAX_RETRY_AFTER_MS);
       const m = (body.messages as SlackMessage[] | undefined)?.[0];
       if (!m || m.ts !== message) return { unavailable: "not found" };
       return { from: m.user ?? m.bot_id ?? "?", at: tsMs(message), text: bodyText(m) };
@@ -924,6 +952,9 @@ export class SlackAdapter implements MessengerAdapter {
         me = await this.api("auth.test", this.userAuth().token, undefined, "GET");
       } catch (e) {
         throw this.fatal(e, false) ?? e;
+      }
+      if (!this.pairing && me.user_id === this.config.owner) {
+        throw new Error(`slack ${this.source}: the user token is the owner's own account (${String(me.user_id)}); seori needs its own member account`);
       }
       return `user @${String(me.user)} in team ${String(me.team)}`;
     }

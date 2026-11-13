@@ -51,14 +51,14 @@ The bot app runs in Socket Mode, so no public URL is needed:
 
 ### Slack with a user token
 
-1. Create or pick the member account seori will use (a paid seat), and sign it in at the workspace in a browser.
+1. Create a member account for seori itself (a paid seat), separate from the owner's account, and sign it in at the workspace in a browser profile of its own. It must not be the owner's account: seori refuses a token whose user is the owner, since it would read its own replies as the owner's messages.
 2. Take that session's client token (`xoxc-...`) and its `d` cookie (`xoxd-...`):
-   - with agent-messenger: `agent-slack auth extract` reads both from the signed-in Slack desktop app or browser;
+   - with agent-messenger: `agent-slack auth extract` reads both from the signed-in Slack desktop app or browser; run it where seori's account is the one signed in, not the owner's;
    - by hand in the browser: the `d` cookie is under the workspace's cookies (developer tools → Application → Cookies → `https://app.slack.com`); the token is `localConfig_v2` → `teams` → `<team>` → `token` in Local Storage of `app.slack.com`.
 3. Write both to secrets.json (next section) with no `botToken`, or set `"options": { "mode": "user" }` on the slack entry of `~/.seori/messengers.json`.
 4. The owner DMs this account (or mentions it in a channel).
 
-The token and cookie stop working when that browser session signs out or expires; seori then stops with a message saying to refresh them. `"agent": true` needs a bot app and is refused in this mode. Edits of a message are not seen in this mode. `pollIntervalMs` in the entry's options changes the one-minute check.
+seori reads only the DM with the owner and the group DMs, channels and threads where this account is mentioned or has posted; colleagues may DM the account, and those DMs are never read. Pairing (`seori msg pair slack`) takes only a DM sent after it started; check that the CANDIDATE is the owner before trusting it. The token and cookie stop working when that browser session signs out or expires; seori then stops with a message saying to refresh them. `"agent": true` needs a bot app and is refused in this mode. Edits of a message are not seen in this mode. `pollIntervalMs` in the entry's options changes the one-minute check.
 
 ### Discord
 
