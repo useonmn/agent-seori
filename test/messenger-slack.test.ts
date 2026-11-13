@@ -37,6 +37,8 @@ type Mock = {
   /** Bodies of assistant.threads.setStatus calls, in order. */
   statuses: Record<string, unknown>[];
   statusAnswer: () => Response;
+  /** users.info answers by user id; an unknown id is user_not_found. */
+  users: Record<string, Record<string, unknown>>;
   stop: () => void;
 };
 
@@ -66,6 +68,7 @@ function startMock(): Mock {
     postAnswers: [],
     statuses: [],
     statusAnswer: () => json({ ok: true }),
+    users: {},
     stop: () => server.stop(true),
   };
   let connections = 0;
@@ -100,6 +103,10 @@ function startMock(): Mock {
         const parent = mock.history[channel]?.find((m) => m["ts"] === root) ?? { type: "message", ts: root, thread_ts: root };
         const replies = (mock.replies[`${channel}:${root}`] ?? []).filter((m) => compareTs(String(m["ts"]), oldest) > 0);
         return json({ ok: true, messages: [parent, ...replies], has_more: false });
+      }
+      if (url.pathname === "/api/users.info") {
+        const user = mock.users[url.searchParams.get("user") ?? ""];
+        return json(user ? { ok: true, user } : { ok: false, error: "user_not_found" });
       }
       if (url.pathname === "/api/assistant.threads.setStatus") {
         mock.statuses.push((await req.json()) as Record<string, unknown>);
@@ -210,13 +217,19 @@ function blackHole(hello: boolean): { url: string; upgrades: number; swallowed: 
   return hole;
 }
 
+/** A home whose config.json turns talkWithOthers off: only the owner's messages, as upstream. */
+const ownerOnly = (root: string): string => {
+  writeFileSync(join(root, "config.json"), JSON.stringify({ talkWithOthers: false }));
+  return root;
+};
+
 const writeCursor = (root: string, cursor: unknown) => {
   mkdirSync(join(root, "messenger", "slack"), { recursive: true });
   writeFileSync(join(root, "messenger", "slack", "cursor.json"), JSON.stringify(cursor));
 };
 
 describe("SlackAdapter receive", () => {
-  test("delivers the owner's DM with its id, drops others and bots, acks every envelope and commits past them", async () => {
+  test("with talkWithOthers off: delivers the owner's DM with its id, drops others and bots, acks every envelope and commits past them", async () => {
     const mock = startMock();
     mock.onConnect = (ws) => {
       ws.send(envelope("e1", dm("1700000000.000100")));
@@ -224,7 +237,7 @@ describe("SlackAdapter receive", () => {
       ws.send(envelope("e3", dm("1700000000.000300", { bot_id: "B1", user: OWNER })));
       ws.send(envelope("e4", dm("1700000000.000400", { subtype: "bot_message", user: undefined, bot_id: "B2" })));
     };
-    const root = home();
+    const root = ownerOnly(home());
     const got = await collect(adapter(mock, root), () => mock.acks.length >= 4);
     expect(got).toEqual([{ id: "slack:D1:1700000000.000100", source: "slack", chat: "D1", from: OWNER, sender: { kind: "owner", id: OWNER }, at: 1700000000000, text: "hi 1700000000.000100" }]);
     expect(mock.acks).toEqual(["e1", "e2", "e3", "e4"]);
@@ -289,6 +302,7 @@ describe("SlackAdapter receive", () => {
     const b = { type: "message", user: OWNER, text: "b", ts: "1700000000.000200" };
     const c = { type: "message", user: OWNER, text: "c", ts: "1700000001.000000" };
     const stranger = { type: "message", user: "UX", text: "x", ts: "1700000001.000005" };
+    ownerOnly(root);
     mock.historyPage = (q) => (q.get("cursor") === "p2" ? { ok: true, messages: [b], has_more: false } : { ok: true, messages: [stranger, c], has_more: true, response_metadata: { next_cursor: "p2" } });
     const got = await collect(adapter(mock, root), () => mock.historyCalls.length >= 2 && cursorOf(root).channels["D1"] === "1700000001.000005");
     expect(got.map((m) => [m.id, m.text])).toEqual([
@@ -457,6 +471,107 @@ describe("SlackAdapter receive", () => {
   });
 });
 
+describe("SlackAdapter talking with others (talkWithOthers, the default)", () => {
+  /** A message in channel C1 from the person UPAL. */
+  const ch = (ts: string, extra: Record<string, unknown> = {}) => ({ type: "message", channel_type: "channel", channel: "C1", user: "UPAL", text: `hey ${ts}`, ts, ...extra });
+  const withSelf = (mock: Mock) => {
+    mock.authAnswer = () => json({ ok: true, user: "seori", user_id: "UBOT", bot_id: "BSELF", team: "Acme", team_id: "T1" });
+    mock.users["UPAL"] = { id: "UPAL", name: "pal", real_name: "Pal Kim", profile: { display_name: "Pal", real_name: "Pal Kim" } };
+    return mock;
+  };
+
+  test("DMs from people and agents arrive with who sent them; the bot's own messages never do", async () => {
+    const mock = withSelf(startMock());
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", dm("1700000000.000100", { user: "UPAL" })));
+      ws.send(envelope("e2", dm("1700000000.000200", { user: "UAGENT", bot_id: "B2", bot_profile: { name: "helper" } })));
+      ws.send(envelope("e3", dm("1700000000.000300", { subtype: "bot_message", user: undefined, bot_id: "B3", username: "ci" })));
+      ws.send(envelope("e4", dm("1700000000.000400", { user: "UBOT", bot_id: "BSELF" })));
+      ws.send(envelope("e5", dm("1700000000.000500", { subtype: "bot_message", user: undefined, bot_id: "BSELF" })));
+      ws.send(envelope("e6", dm("1700000000.000600", { user: "UNONAME" })));
+      ws.send(envelope("e7", dm("1700000000.000700")));
+    };
+    const got = await collect(adapter(mock, home()), () => mock.acks.length >= 7);
+    expect(got.map((m) => [m.id, m.from, m.sender])).toEqual([
+      ["slack:D1:1700000000.000100", "UPAL", { kind: "person", id: "UPAL", name: "Pal" }],
+      ["slack:D1:1700000000.000200", "UAGENT", { kind: "agent", id: "UAGENT", name: "helper" }],
+      ["slack:D1:1700000000.000300", "B3", { kind: "agent", id: "B3", name: "ci" }],
+      ["slack:D1:1700000000.000600", "UNONAME", { kind: "person", id: "UNONAME" }],
+      ["slack:D1:1700000000.000700", OWNER, { kind: "owner", id: OWNER }],
+    ]);
+  });
+
+  test("in channels: a top-level message only with a mention; in a thread the bot was mentioned or replied in, every message", async () => {
+    const mock = withSelf(startMock());
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", ch("1700000000.000100")));
+      ws.send(envelope("e2", ch("1700000000.000200", { text: "<@UBOT> can you help" })));
+      ws.send(envelope("e3", ch("1700000000.000300", { user: "UAGENT", bot_id: "B2", thread_ts: "1700000000.000200" })));
+      ws.send(envelope("e4", ch("1700000000.000400", { thread_ts: "1700000000.000100" })));
+      ws.send(envelope("e5", ch("1700000000.000500", { user: "UBOT", bot_id: "BSELF", thread_ts: "1700000000.000150" })));
+      ws.send(envelope("e6", ch("1700000000.000600", { thread_ts: "1700000000.000150" })));
+      // seori posts first in a channel it never heard from: replies under its message are a thread it is in.
+      ws.send(envelope("e7", ch("1700000000.000700", { channel: "C2", user: "UBOT", bot_id: "BSELF" })));
+      ws.send(envelope("e8", ch("1700000000.000800", { channel: "C2", thread_ts: "1700000000.000700" })));
+      ws.send(envelope("e9", ch("1700000000.000900", { channel: "C2" })));
+    };
+    const got = await collect(adapter(mock, home()), () => mock.acks.length >= 9);
+    expect(got.map((m) => [m.id, m.thread, m.sender.kind])).toEqual([
+      ["slack:C1:1700000000.000200", "1700000000.000200", "person"],
+      ["slack:C1:1700000000.000300", "1700000000.000200", "agent"],
+      ["slack:C1:1700000000.000600", "1700000000.000150", "person"],
+      ["slack:C2:1700000000.000800", "1700000000.000700", "person"],
+    ]);
+  });
+
+  test("edits from others follow the same rules; the bot's own edits never arrive", async () => {
+    const mock = withSelf(startMock());
+    const changed = (channel: string, message: Record<string, unknown>) => ({ type: "message", subtype: "message_changed", channel, channel_type: channel.startsWith("D") ? "im" : "channel", message: { type: "message", edited: { ts: "1700000050.000000" }, ...message }, ts: "1700000050.000001" });
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", changed("D1", { user: "UPAL", text: "fixed", ts: "1700000000.000100" })));
+      ws.send(envelope("e2", changed("C1", { user: "UPAL", text: "no mention", ts: "1700000000.000200" })));
+      ws.send(envelope("e3", changed("D1", { user: "UBOT", bot_id: "BSELF", text: "mine", ts: "1700000000.000300" })));
+      ws.send(envelope("e4", changed("C1", { user: "UPAL", text: "<@UBOT> now", ts: "1700000000.000400" })));
+    };
+    const got = await collect(adapter(mock, home()), () => mock.acks.length >= 4);
+    expect(got.map((m) => [m.id, m.text, m.sender])).toEqual([
+      ["slack:D1:1700000000.000100:edit:1700000050.000000", "(edited) fixed", { kind: "person", id: "UPAL", name: "Pal" }],
+      ["slack:C1:1700000000.000400:edit:1700000050.000000", "(edited) <@UBOT> now", { kind: "person", id: "UPAL", name: "Pal" }],
+    ]);
+  });
+
+  test("a restart catches up others' replies in a thread the bot is in, and nothing else of theirs", async () => {
+    const mock = withSelf(startMock());
+    mock.onConnect = (ws, n) => {
+      if (n === 1) ws.send(envelope("e1", ch("1700000000.000100", { text: "<@UBOT> hi" })));
+    };
+    const root = home();
+    expect((await collect(adapter(mock, root), (g) => g.length >= 1)).map((m) => m.id)).toEqual(["slack:C1:1700000000.000100"]);
+
+    // Offline: a reply in the mentioned thread, a top-level message without a mention, and a thread seori is not in.
+    mock.history["C1"] = [
+      ch("1700000000.000500", { reply_count: 1, latest_reply: "1700000000.000600", thread_ts: "1700000000.000500" }),
+      ch("1700000000.000400"),
+    ];
+    mock.replies["C1:1700000000.000100"] = [ch("1700000000.000300", { user: "UAGENT", bot_id: "B2", thread_ts: "1700000000.000100" })];
+    mock.replies["C1:1700000000.000500"] = [ch("1700000000.000600", { thread_ts: "1700000000.000500" })];
+    const got = await collect(adapter(mock, root), () => cursorOf(root).channels["C1"] === "1700000000.000600");
+    expect(got.map((m) => [m.id, m.thread, m.sender.kind])).toEqual([["slack:C1:1700000000.000300", "1700000000.000100", "agent"]]);
+  });
+
+  test("with talkWithOthers off, people's and agents' DMs and mentions are not delivered", async () => {
+    const mock = withSelf(startMock());
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", dm("1700000000.000100", { user: "UPAL" })));
+      ws.send(envelope("e2", dm("1700000000.000200", { user: "UAGENT", bot_id: "B2" })));
+      ws.send(envelope("e3", ch("1700000000.000300", { text: "<@UBOT> hi" })));
+      ws.send(envelope("e4", dm("1700000000.000400")));
+    };
+    const got = await collect(adapter(mock, ownerOnly(home())), () => mock.acks.length >= 4);
+    expect(got.map((m) => [m.id, m.sender.kind])).toEqual([["slack:D1:1700000000.000400", "owner"]]);
+  });
+});
+
 describe("SlackAdapter agent mode", () => {
   const agent = (mock: Mock, root: string, options: Record<string, unknown> = {}) => adapter(mock, root, { options: { agent: true, ...options } });
   /** The working-status refresh, captured instead of run by a timer: the test runs each refresh and awaits it. */
@@ -472,7 +587,7 @@ describe("SlackAdapter agent mode", () => {
       ws.send(envelope("e2", dm("1700000000.000200", { thread_ts: "1700000000.000150" })));
       ws.send(envelope("e3", dm("1700000000.000300", { user: "USTRANGER" })));
     };
-    const got = await collect(agent(mock, home(), { agentStatus: "작업 중..." }), () => mock.statuses.length >= 2 && mock.acks.length >= 3);
+    const got = await collect(agent(mock, ownerOnly(home()), { agentStatus: "작업 중..." }), () => mock.statuses.length >= 2 && mock.acks.length >= 3);
     expect(got.map((m) => [m.id, m.thread])).toEqual([
       ["slack:D1:1700000000.000100", "1700000000.000100"],
       ["slack:D1:1700000000.000200", "1700000000.000150"],
