@@ -211,9 +211,10 @@ export class World {
 }
 
 /** The actions beyond send, doing nothing: for test adapters that only care about receive and send. */
-export const noActions: Pick<MessengerAdapter, "react" | "edit" | "typing" | "thread"> = {
+export const noActions: Pick<MessengerAdapter, "react" | "edit" | "typing" | "thread" | "fetchMessage"> = {
   react: async () => {},
   edit: async () => {},
   typing: async () => [],
   thread: async () => ({ notes: [] }),
+  fetchMessage: async () => ({ unavailable: "not found" }),
 };

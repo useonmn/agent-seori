@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import {
-  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
   type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
@@ -35,6 +35,8 @@ type Message = {
   video_note?: FileRef;
   animation?: FileRef;
   sticker?: FileRef;
+  reply_to_message?: Message;
+  forum_topic_created?: unknown;
 };
 type Update = { update_id: number; message?: Message; edited_message?: Message };
 type ApiBody = { ok?: boolean; result?: unknown; description?: string; error_code?: number; parameters?: { retry_after?: number } };
@@ -230,7 +232,12 @@ export class TelegramAdapter implements MessengerAdapter {
     const chat = String(msg.chat.id);
     const id = String(msg.message_id);
     const stamp = msg.edit_date ?? msg.date;
+    // In a forum topic every message points at the topic's first (service) message: that is the topic, not a reply.
+    const parent = msg.reply_to_message;
+    const isTopicRoot = parent !== undefined && (parent.forum_topic_created !== undefined || (msg.is_topic_message === true && parent.message_id === msg.message_thread_id));
+    const parentText = parent && !isTopicRoot ? [parent.text ?? parent.caption ?? "", ...attachments(parent)].filter((l) => l).join("\n") : "";
     return {
+      ...(parent && !isTopicRoot ? { replyTo: { id: messageId(this.source, chat, String(parent.message_id)), ...(parentText ? { text: parentText } : {}) } } : {}),
       id: edited ? editId(this.source, chat, id, String(stamp)) : messageId(this.source, chat, id),
       source: this.source,
       chat,
@@ -326,6 +333,10 @@ export class TelegramAdapter implements MessengerAdapter {
       }
     }
     return { ...(named !== undefined ? { name: named } : {}), ...(state !== undefined ? { state } : {}), notes };
+  }
+
+  async fetchMessage(_chat: string, _message: string): Promise<FetchedMessage> {
+    return { unavailable: "Telegram bots cannot read a message by id; a reply carries the text it replies to, shown in the lead channel line" };
   }
 
   async check(): Promise<string> {

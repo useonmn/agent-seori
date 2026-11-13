@@ -59,6 +59,17 @@ describe("runDaemon", () => {
     expect(new FakeAdapter(root).offset()).toBe(2);
   });
 
+  test("a reply is stored with what it replies to", async () => {
+    const root = home([{ source: "fake", owner: "u1" }]);
+    fakeIn(root, { msgId: "3", chat: "c", from: "u1", text: "yes", at: 5, replyTo: { id: "fake:c:2", text: "Shall I ship?" } });
+    const d = start(root, { adapterFor: fakePoll });
+    await until("stored", () => d.events.some((e) => e.ev === "stored"));
+    await d.stop();
+    expect(new Channel(root).inbound()).toEqual([
+      { id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u1", at: 5, text: "yes", replyTo: { id: "fake:c:2", text: "Shall I ship?" } },
+    ]);
+  });
+
   test("a message replayed after a crash between append and offset commit is stored once", async () => {
     const root = home([{ source: "x", owner: "u1" }]);
     let attempts = 0;

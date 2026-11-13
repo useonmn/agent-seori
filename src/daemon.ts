@@ -236,6 +236,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           from: m.from,
           at: m.at,
           text: m.text,
+          ...(m.replyTo !== undefined ? { replyTo: m.replyTo } : {}),
         });
         emit({ ev: stored ? "stored" : "duplicate", id: m.id });
         // A message got through, so receive works: end any failure streak at once.

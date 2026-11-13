@@ -13,7 +13,14 @@ export type InboundMessage = {
   readonly from: string;
   readonly at: number;
   readonly text: string;
+  /** The message this one replies to, as a lead channel id, with its text when the platform sent it along. */
+  readonly replyTo?: ReplyRef;
 };
+
+export type ReplyRef = { readonly id: string; readonly text?: string };
+
+/** A message read back by id (`seori msg show`), or why it cannot be. */
+export type FetchedMessage = { readonly from: string; readonly at: number; readonly text: string } | { readonly unavailable: string };
 
 export type SendTarget = { readonly chat: string; readonly thread?: string; readonly replyTo?: string };
 
@@ -83,6 +90,8 @@ export interface MessengerAdapter {
   typing(target: ThreadTarget): Promise<ActionNotes>;
   /** Sets a thread's name (with the status emoji in front) and closes or reopens it, as far as the platform can. */
   thread(target: ThreadTarget, change: ThreadChange): Promise<ThreadResult>;
+  /** Reads one message of `chat` by its platform id; `unavailable` says why not (not found, the platform cannot). */
+  fetchMessage(chat: string, message: string): Promise<FetchedMessage>;
 }
 
 export type MessengerConfig = {

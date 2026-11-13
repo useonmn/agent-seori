@@ -205,6 +205,19 @@ describe("seenWatchIds", () => {
   });
 });
 
+describe("renderDelivery: replies", () => {
+  test("a reply shows what it replies to, its text cut to 200 characters; without the text, only the id", () => {
+    const withText = state("fake:c1:5");
+    const reply = { ...withText, row: { ...withText.row, replyTo: { id: "fake:c1:4", text: `Shall I ship?${"x".repeat(300)}` } } } as IdState;
+    const bare = state("fake:c1:6");
+    const idOnly = { ...bare, row: { ...bare.row, replyTo: { id: "fake:c1:3" } } } as IdState;
+    const d = new DeliverySchedule().decide([reply, idOnly], T0 + 1, true, { kind: "session_start" });
+    const text = renderDelivery(d.deliver, "seori");
+    expect(text).toContain(`[fake:c1:5] fake from u1 (reply to fake:c1:4: ${JSON.stringify(`Shall I ship?${"x".repeat(187)}`)}): text of fake:c1:5`);
+    expect(text).toContain("[fake:c1:6] fake from u1 (reply to fake:c1:3; seori msg show fake:c1:3 reads it): text of fake:c1:6");
+  });
+});
+
 describe("renderDelivery", () => {
   test("tells the lead how to answer, lists each message under its header, and ends with the instruction", () => {
     const s = new DeliverySchedule();

@@ -1,5 +1,5 @@
 import {
-  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
   type ThreadChange, type ThreadResult, type ThreadStatus, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
@@ -557,7 +557,9 @@ export class SlackAdapter implements MessengerAdapter {
     const agentThread = dm && this.agent && !this.pairing;
     const thread = dm && !agentThread ? ev.thread_ts : (ev.thread_ts ?? ts);
     const from = this.pairing ? (ev.user as string) : this.config.owner;
-    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(ts), text }, key, ctx);
+    // A thread reply answers the thread's first message; its text is not in the event (seori msg show reads it).
+    const replyTo = ev.thread_ts && ev.thread_ts !== ts ? { replyTo: { id: messageId(this.source, channel, ev.thread_ts) } } : {};
+    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(ts), text, ...replyTo }, key, ctx);
     if (agentThread && thread) this.showWorking(channel, thread, ctx.working);
     this.advance(channel, ts, ctx);
   }
@@ -703,6 +705,18 @@ export class SlackAdapter implements MessengerAdapter {
     if (change.name !== undefined) notes.push("slack: threads have no names; the status is shown as a reaction on the thread's first message");
     if (change.state !== undefined) notes.push("slack: threads cannot be closed or reopened; the ✅ reaction marks it done");
     return { ...(change.status !== undefined ? { status: change.status } : {}), notes };
+  }
+
+  async fetchMessage(chat: string, message: string): Promise<FetchedMessage> {
+    try {
+      const body = await this.api("conversations.history", this.botToken(), { channel: chat, latest: message, inclusive: "true", limit: "1" }, "GET", undefined, ACTION_MAX_RETRY_AFTER_MS);
+      const m = (body.messages as SlackMessage[] | undefined)?.[0];
+      if (!m || m.ts !== message) return { unavailable: "not found" };
+      return { from: m.user ?? m.bot_id ?? "?", at: tsMs(message), text: bodyText(m) };
+    } catch (e) {
+      if (e instanceof SlackApiError && GONE_ERRORS.has(e.error)) return { unavailable: `the bot may not read that channel (${e.error})` };
+      throw this.fatal(e, false) ?? e;
+    }
   }
 
   async check(): Promise<string> {

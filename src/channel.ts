@@ -1,6 +1,7 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import type { ReplyRef } from "./messenger/adapter.ts";
 import { Outbox } from "./outbox.ts";
 import { lockFile, pidAlive } from "./store.ts";
 
@@ -20,6 +21,8 @@ export type MessengerRow = {
   readonly from: string;
   readonly at: number;
   readonly text: string;
+  /** The message this one replies to (src/messenger/adapter.ts InboundMessage.replyTo). */
+  readonly replyTo?: ReplyRef;
 };
 
 /** One event of a lead-owned watch; ids are `watch:<watch id>:<seq>`, seq counting that watch's rows from 1. */

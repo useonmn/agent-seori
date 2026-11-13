@@ -153,6 +153,8 @@ seori msg flush                              열린 초안을 지금 모두, 오
 seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다
 seori msg list [--all]                       아직 열린 리드 채널 메시지: 메신저 메시지와 감시 알림 (--all: 전부, 상태 포함)
                                             칸: id  상태  지난 시간  종류  보낸 사람 또는 감시 이름  내용
+seori msg show <id>                          리드 채널 id로 메시지 하나를 보여 줍니다. 리드 채널에 있으면 거기서, 없으면
+                                            메신저에서 읽습니다(못 읽으면 UNAVAILABLE, 종료 코드 1. 텔레그램 봇은 읽지 못함)
 seori msg check [SOURCE]                     메신저 토큰이 맞는지 확인합니다(봇 이름을 출력). SOURCE를 주면 주인 등록 전에도 됩니다
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             설정용: 봇에게 다음에 DM을 보낸 사람을 출력. --write는 그 사람을 주인으로 기록;

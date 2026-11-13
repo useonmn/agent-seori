@@ -135,6 +135,18 @@ describe("TelegramAdapter receive", () => {
     expect(cursor(t.root)).toEqual({ offset: 7 });
   });
 
+  test("a reply carries the id and text it replies to; a topic message's link to its topic is not a reply", async () => {
+    const t = setup();
+    const chat = { id: 42, type: "private" };
+    t.updates.push(
+      dm(1, 10, "yes, that one", { reply_to_message: { message_id: 7, from: { id: 777, is_bot: true }, chat, date: 1, text: "Shall I ship v1.4?" } }),
+      dm(2, 11, "in a topic", { is_topic_message: true, message_thread_id: 5, reply_to_message: { message_id: 5, chat, date: 1, forum_topic_created: { name: "Fix login" } } }),
+      dm(3, 12, "about the photo", { reply_to_message: { message_id: 8, chat, date: 1, caption: "before" } }),
+    );
+    const got = await collect(t.adapter, 3);
+    expect(got.map((m) => m.replyTo)).toEqual([{ id: "telegram:42:7", text: "Shall I ship v1.4?" }, undefined, { id: "telegram:42:8", text: "before" }]);
+  });
+
   test("a rejected onMessage keeps the cursor, so the same id is offered again", async () => {
     const t = setup();
     t.updates.push(dm(1, 1, "skip me", { from: { id: 9 }, chat: { id: 9, type: "private" } }), dm(2, 8, "important"));

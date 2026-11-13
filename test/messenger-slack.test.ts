@@ -244,6 +244,16 @@ describe("SlackAdapter receive", () => {
     ]);
   });
 
+  test("a thread reply carries the id of the thread's first message; a top-level message carries none", async () => {
+    const mock = startMock();
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", dm("1700000000.000200", { thread_ts: "1700000000.000150" })));
+      ws.send(envelope("e2", dm("1700000000.000300")));
+    };
+    const got = await collect(adapter(mock, home()), (g) => g.length >= 2);
+    expect(got.map((m) => m.replyTo)).toEqual([{ id: "slack:D1:1700000000.000150" }, undefined]);
+  });
+
   test("a rejected onMessage rejects receive without ack or commit; the restart redelivers the same id from history", async () => {
     const mock = startMock();
     const msg = dm("1700000000.000100");

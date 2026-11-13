@@ -1,5 +1,5 @@
 import {
-  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
+  ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, EYES, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
   type ThreadChange, threadName, type ThreadResult, type ThreadTarget,
 } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, secret, splitText } from "./common.ts";
@@ -48,6 +48,9 @@ type Message = {
   edited_timestamp?: string | null;
   author?: { id?: string; bot?: boolean };
   attachments?: Attachment[];
+  /** On a reply (type 19): the message it answers, and that message itself when Discord sent it along. */
+  message_reference?: { message_id?: string; channel_id?: string };
+  referenced_message?: { content?: string } | null;
 };
 type Payload = { op: number; d?: unknown; s?: number | null; t?: string | null };
 /**
@@ -423,7 +426,11 @@ export class DiscordAdapter implements MessengerAdapter {
       if (text) {
         const at = Date.parse(m.timestamp ?? "");
         const from = this.pairing ? (m.author?.id as string) : this.owner;
-        await onMessage({ id, source: this.source, chat, from, at: Number.isFinite(at) ? at : this.now(), text });
+        const ref = m.message_reference;
+        const replyTo = m.type === 19 && typeof ref?.message_id === "string"
+          ? { id: messageId(this.source, ref.channel_id ?? chat, ref.message_id), ...(m.referenced_message?.content ? { text: m.referenced_message.content } : {}) }
+          : undefined;
+        await onMessage({ id, source: this.source, chat, from, at: Number.isFinite(at) ? at : this.now(), text, ...(replyTo ? { replyTo } : {}) });
         this.remember(id);
       }
     }
@@ -567,6 +574,21 @@ export class DiscordAdapter implements MessengerAdapter {
       ...(change.state !== undefined ? { state: change.state } : {}),
       notes,
     };
+  }
+
+  async fetchMessage(chat: string, message: string): Promise<FetchedMessage> {
+    const token = this.token();
+    try {
+      const res = await httpJson(`${this.api}/channels/${seg(chat)}/messages/${seg(message)}`, { headers: this.headers(token) }, { mutating: false, retries: 2, sleep: this.sleepFn, timeoutMs: this.timeoutMs, maxRetryAfterMs: ACTION_MAX_RETRY_AFTER_MS });
+      const m = res.body as Message;
+      const at = Date.parse(m.timestamp ?? "");
+      return { from: m.author?.id ?? "?", at: Number.isFinite(at) ? at : 0, text: this.body(m) };
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 404) return { unavailable: "not found" };
+      if (e instanceof HttpError && e.status === 403) return { unavailable: "the bot may not read that channel" };
+      if (e instanceof HttpError && e.status === 401) throw new Error(this.tokenRejected("401 on GET message").message);
+      throw e;
+    }
   }
 
   async check(): Promise<string> {
