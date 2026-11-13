@@ -378,7 +378,7 @@ seori worklog list --open
 | source | 만들 것 | `owner` | 환경 변수 |
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기 | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
+| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기. 앱 대신 멤버 계정의 사용자 토큰과 `d` 쿠키(`userToken`, `cookie`)도 됩니다(유료 좌석 필요, 1분마다 확인) | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (또는 `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
 | `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
@@ -618,7 +618,7 @@ hc 끝단 테스트(`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`)는 자체 
 - `repoIdentities` 항목이 없는 저장소는 커밋 신원 확인을 건너뛰고, 출력에 그렇게 적습니다. 실패로 보지 않습니다.
 - 읽지 못한 컴퓨터 값(디스크, 세션 수)으로는 레인을 막지도, 알리지도 않습니다.
 - 주인은 `seori msg pair`로 등록합니다. 봇에게 다음에 DM을 보낸 사람이 주인이 됩니다.
-- 슬랙은 Socket Mode 봇 앱으로만 씁니다. 사용자 토큰은 쓰지 않습니다.
+- 슬랙은 Socket Mode 봇 앱으로 쓰거나, 멤버 계정의 사용자 토큰과 `d` 쿠키로 씁니다(1분마다 확인).
 - 음성: 텔레그램 음성 메시지는 `hooks.transcribe`를 설정해야 필사됩니다. 접속 상태(presence)와 리액션은 없습니다.
 - 원본의 Dori 모드 대신 서리 모드 스킬(`skills/seori-mode`)이 있습니다.
 

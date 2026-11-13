@@ -401,7 +401,7 @@ Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuse
 | source | what to create | `owner` | env variables |
 |---|---|---|---|
 | `telegram` | a bot from @BotFather; send it `/start` once in a DM. For groups or forum topics, turn privacy mode off (`/setprivacy`) | your numeric user id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write` and `im:history` (plus `app_mentions:read`, `channels:history` for channels), bot event `message.im`, and the Messages tab enabled | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
+| `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write` and `im:history` (plus `app_mentions:read`, `channels:history` for channels), bot event `message.im`, and the Messages tab enabled; or, instead of an app, a member account's user token and `d` cookie (`userToken`, `cookie`; needs a paid seat, polled once a minute) | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (or `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
 | `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only) and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check` asks each configured messenger who its bot is, which proves the tokens work: it prints `OK <source>: <who the bot is>` or `FAIL <source>: <why>` per messenger and exits 1 when any fails. `seori msg check <source>` checks that one source, and works before `messengers.json` has an entry for it: only its token matters.
@@ -667,7 +667,7 @@ None. seori sends nothing anywhere.
 - A repository with no `repoIdentities` entry has its commit identities skipped, and the output says so; it is not a failure.
 - A host figure that cannot be read (disk, sessions) holds no lane and raises no alert.
 - The owner is paired with `seori msg pair`, from the sender of the next direct message to the bot.
-- Slack runs only as a bot app in Socket Mode; no user token.
+- Slack runs as a bot app in Socket Mode, or with a member's user token and `d` cookie (polled once a minute).
 - Voice: Telegram voice notes are transcribed only when you set `hooks.transcribe`; there is no presence and no reactions.
 - The seori mode skill (`skills/seori-mode`) takes the place of Dori mode.
 

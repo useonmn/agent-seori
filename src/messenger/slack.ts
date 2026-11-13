@@ -2,13 +2,18 @@ import {
   ACTION_MAX_RETRY_AFTER_MS, type ActionNotes, ADAPTER_OUTAGE_MS, type FetchedMessage, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain,
   type ThreadChange, type ThreadResult, type ThreadStatus, type ThreadTarget,
 } from "./adapter.ts";
-import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
+import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, secretsPath, splitText } from "./common.ts";
 
 // Slack over Socket Mode: a bot token (xoxb-) for the Web API and an app-level token (xapp-, connections:write) to open
 // the socket, so no public URL is needed. Socket Mode keeps no replay cursor, so seori keeps its own: the last committed
 // message ts per channel, plus the recently active threads of each channel. Envelopes are acked only after onMessage
 // resolved, and after every hello each known channel is caught up from conversations.history and its threads from
 // conversations.replies, so messages sent while the socket was down are not lost.
+//
+// User mode (`options.mode: "user"`, or a userToken without a botToken in secrets.json): the adapter acts as a real
+// workspace member with that member's token and `d` cookie, ported from upstream dori's slack-inbound. There is no
+// socket: every pollIntervalMs it asks which conversations have news (client.counts and subscriptions.thread.getView),
+// then reads them like the catch-up above, from its own cursor file (user-cursor.json, so a bot cursor never mixes in).
 
 /** Slack's documented text limit is 4000; a margin keeps a split chunk clear of it. */
 const TEXT_LIMIT = 3900;
@@ -23,6 +28,17 @@ const THREAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_API = "https://slack.com/api";
 const BOT_ENV = "SEORI_SLACK_BOT_TOKEN";
 const APP_ENV = "SEORI_SLACK_APP_TOKEN";
+const USER_ENV = "SEORI_SLACK_USER_TOKEN";
+const COOKIE_ENV = "SEORI_SLACK_COOKIE";
+const USER_CURSOR = "user-cursor.json";
+/** User mode: how often the account polls for news (upstream polls with `inbound --loop <minutes>`, one minute). */
+const DEFAULT_POLL_INTERVAL_MS = 60_000;
+/** User mode: a conversation seen for the first time is read back at most this far (never before the first start). */
+const NEW_CHANNEL_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+/** User-mode pairing starts reading this long before it started, like pair.ts's PAIR_LOOKBACK_MS. */
+const PAIRING_LOOKBACK_MS = 2 * 60_000;
+/** Errors meaning the user token or cookie is no good; any other refusal of a web-client method only skips that method. */
+const USER_AUTH_ERRORS = new Set(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"]);
 
 /** Errors the owner has to fix in the Slack app settings; retrying cannot help. */
 const FATAL_ERRORS = new Set(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired", "not_allowed_token_type", "missing_scope"]);
@@ -43,7 +59,12 @@ const DEFAULT_STATUS_REFRESH_MS = 60_000;
 const DEFAULT_STATUS_LIMIT_MS = 30 * 60_000;
 
 /** `threads[channel][root ts]` = the newest ts seen in that thread. */
-type Cursor = { channels: Record<string, string>; threads: Record<string, Record<string, string>> };
+type Cursor = {
+  channels: Record<string, string>;
+  threads: Record<string, Record<string, string>>;
+  /** User mode: the ts of the first start; nothing older is ever delivered. */
+  since?: string;
+};
 type SlackFile = { id?: string; name?: string; title?: string; mimetype?: string; size?: number; permalink?: string; url_private?: string };
 type SlackMessage = {
   type?: string;
@@ -70,7 +91,9 @@ type Receiving = {
   readonly file: CursorFile<Cursor>;
   /** `<channel>:<ts>` (or with `:edit:<stamp>`) delivered by this receive(): catch-up skips them. */
   readonly delivered: Set<string>;
-  readonly botToken: string;
+  /** The token reads go out with: the bot token, or the user token in user mode. */
+  readonly token: string;
+  /** The bot's user id, or in user mode this account's own. */
   readonly botUser: string;
   readonly onMessage: (m: InboundMessage) => Promise<void>;
   readonly signal: AbortSignal;
@@ -110,6 +133,9 @@ function tsBefore(ts: string): string {
   if (micro > 0n) return `${s}.${String(micro - 1n).padStart(6, "0")}`;
   return `${BigInt(s) - 1n}.999999`;
 }
+
+/** A ms time as a Slack ts. */
+const msTs = (ms: number): string => `${Math.floor(ms / 1000)}.${String((ms % 1000) * 1000).padStart(6, "0")}`;
 
 function tsMs(ts: string): number {
   const [s = "0", f = ""] = ts.split(".");
@@ -151,6 +177,9 @@ export class SlackAdapter implements MessengerAdapter {
   private readonly statusRefreshMs: number;
   private readonly statusLimitMs: number;
   private readonly every: (tick: () => Promise<void>, ms: number) => () => void;
+  /** User mode: a member's user token and `d` cookie instead of a bot app (see the top of this file). */
+  private readonly userMode: boolean;
+  private readonly pollIntervalMs: number;
 
   constructor(
     private readonly config: MessengerConfig,
@@ -188,10 +217,50 @@ export class SlackAdapter implements MessengerAdapter {
     this.statusRefreshMs = typeof refresh === "number" ? refresh : DEFAULT_STATUS_REFRESH_MS;
     const limit = config.options?.["statusLimitMs"];
     this.statusLimitMs = typeof limit === "number" ? limit : DEFAULT_STATUS_LIMIT_MS;
+    const poll = config.options?.["pollIntervalMs"];
+    this.pollIntervalMs = typeof poll === "number" ? poll : DEFAULT_POLL_INTERVAL_MS;
+    const mode = config.options?.["mode"];
+    if (mode !== undefined && mode !== "user" && mode !== "bot") throw new Error(`slack ${this.source}: options "mode" must be "user" or "bot", got ${JSON.stringify(mode)}`);
+    this.userMode = mode === "user" || (mode === undefined && !this.has("botToken", BOT_ENV) && this.has("userToken", USER_ENV));
+    if (this.userMode && this.agent) {
+      throw new Error(`slack ${this.source}: "agent": true needs a bot app (assistant.threads.setStatus is bot-only), but this entry runs with a user token; remove "agent" or use a bot token`);
+    }
+  }
+
+  private has(key: string, envName: string): boolean {
+    try {
+      secret(this.root, this.source, key, envName, this.env);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private botToken(): string {
     return secret(this.root, this.source, "botToken", BOT_ENV, this.env);
+  }
+
+  /**
+   * User mode: the member's token and its `d` cookie. A client token (xoxc-) is only valid with the cookie of the same
+   * signed-in session; an OAuth user token (xoxp-) works alone, so its cookie is optional.
+   */
+  private userAuth(): { token: string; cookie: string | undefined } {
+    const need = `slack ${this.source}: user mode needs the account's user token and its d cookie: set ${USER_ENV} and ${COOKIE_ENV}, or "${this.source}": { "userToken": "xoxc-...", "cookie": "xoxd-..." } in ${secretsPath(this.root)}`;
+    const read = (key: string, envName: string): string => {
+      try {
+        return secret(this.root, this.source, key, envName, this.env);
+      } catch (e) {
+        throw new Error(`${need} (${(e as Error).message})`);
+      }
+    };
+    const token = read("userToken", USER_ENV);
+    const cookie = token.startsWith("xoxp-") && !this.has("cookie", COOKIE_ENV) ? undefined : read("cookie", COOKIE_ENV);
+    return { token, cookie };
+  }
+
+  /** The token Web API calls go out with: the bot token, or the user token in user mode. */
+  private token(): string {
+    return this.userMode ? this.userAuth().token : this.botToken();
   }
 
   private appToken(): string {
@@ -203,7 +272,8 @@ export class SlackAdapter implements MessengerAdapter {
    * (the actions) caps each wait: a longer one throws, saying when to retry, instead of holding the caller.
    */
   private async api(method: string, token: string, params: Record<string, unknown> | undefined, mode: Mode, signal?: AbortSignal, maxWaitMs?: number): Promise<ApiBody> {
-    const headers = { authorization: `Bearer ${token}` };
+    const cookie = this.userMode ? this.userAuth().cookie : undefined;
+    const headers = { authorization: `Bearer ${token}`, ...(cookie ? { cookie: `d=${cookie}` } : {}) };
     for (let attempt = 0; ; attempt++) {
       const opts = {
         mutating: mode === "SEND", sleep: this.sleep, ...(this.timeoutMs !== undefined ? { timeoutMs: this.timeoutMs } : {}),
@@ -228,6 +298,7 @@ export class SlackAdapter implements MessengerAdapter {
 
   /** A clear configuration error for the owner when `e` is one retrying cannot fix; otherwise undefined. */
   private fatal(e: unknown, appToken: boolean): Error | undefined {
+    if (this.userMode) return this.userFatal(e);
     const which = appToken ? `app token (xapp-, ${APP_ENV} or "${this.source}".appToken)` : `bot token (xoxb-, ${BOT_ENV} or "${this.source}".botToken)`;
     if (e instanceof SlackApiError && FATAL_ERRORS.has(e.error)) {
       if (e.error === "missing_scope") {
@@ -245,7 +316,23 @@ export class SlackAdapter implements MessengerAdapter {
     return undefined;
   }
 
+  private userFatal(e: unknown): Error | undefined {
+    const which = `user token (${USER_ENV} or "${this.source}".userToken) and its d cookie (${COOKIE_ENV} or "${this.source}".cookie)`;
+    const refresh = "refresh the user token and cookie from a signed-in Slack session and update them";
+    if (e instanceof SlackApiError && FATAL_ERRORS.has(e.error)) {
+      if (e.error === "missing_scope" || e.error === "not_allowed_token_type") {
+        return new Error(`slack ${this.source}: the user token may not call ${e.method} (${e.error}); use the client token (xoxc-) of a signed-in session with its d cookie`);
+      }
+      return new Error(`slack ${this.source}: Slack rejected the ${which} (${e.error}); ${refresh}`);
+    }
+    if (e instanceof HttpError && !(e instanceof SlackApiError) && (e.status === 401 || e.status === 403)) {
+      return new Error(`slack ${this.source}: Slack rejected the ${which} (HTTP ${e.status}); ${refresh}`);
+    }
+    return undefined;
+  }
+
   async receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
+    if (this.userMode) return this.receiveUser(signal, onMessage);
     const working: Receiving["working"] = new Map();
     const stopRefresh = this.agent ? this.every(() => this.refreshWorking(working), this.statusRefreshMs) : undefined;
     try {
@@ -277,7 +364,7 @@ export class SlackAdapter implements MessengerAdapter {
         const url = (await this.api("apps.connections.open", appToken, undefined, "POST", signal)).url;
         usingAppToken = false;
         if (typeof url !== "string") throw new Error("apps.connections.open returned no url");
-        const ctx: Receiving = { cursor, file, delivered, botToken, botUser, onMessage, signal, working };
+        const ctx: Receiving = { cursor, file, delivered, token: botToken, botUser, onMessage, signal, working };
         const end = await this.session(url, ctx, () => {
           healthy = true;
           failures = 0;
@@ -302,6 +389,115 @@ export class SlackAdapter implements MessengerAdapter {
       }
       failures++;
       await this.pause(Math.min(BACKOFF_CAP_MS, 500 * 2 ** (failures - 1)), signal);
+    }
+  }
+
+  /**
+   * User mode: polls every pollIntervalMs until aborted. A poll that fails is retried with backoff, and an outage longer
+   * than ADAPTER_OUTAGE_MS rejects, as in bot mode; a rejected token or cookie rejects at once.
+   */
+  private async receiveUser(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
+    const { token } = this.userAuth();
+    const file = CursorFile.for<Cursor>(this.cursorRoot, this.source, USER_CURSOR);
+    const saved = file.load();
+    const cursor: Cursor = {
+      channels: { ...(saved?.channels ?? {}) },
+      threads: { ...(saved?.threads ?? {}) },
+      since: saved?.since ?? msTs(this.now() - (this.pairing ? PAIRING_LOOKBACK_MS : 0)),
+    };
+    if (saved?.since === undefined) file.save(cursor);
+    const delivered = new Set<string>();
+    const warned = new Set<string>();
+    let self: string | undefined;
+    let failures = 0;
+    let failingSince: number | undefined;
+    let lastError = "";
+    while (!signal.aborted) {
+      const started = this.now();
+      try {
+        if (self === undefined) self = String((await this.api("auth.test", token, undefined, "GET", signal)).user_id ?? "");
+        await this.poll({ cursor, file, delivered, token, botUser: self, onMessage, signal, working: new Map() }, warned);
+        failures = 0;
+        failingSince = undefined;
+        await this.pause(this.pollIntervalMs, signal);
+        continue;
+      } catch (e) {
+        if (signal.aborted) return;
+        if (e instanceof OnMessageFailed) throw e.cause;
+        const fatal = this.fatal(e, false);
+        if (fatal) throw fatal;
+        lastError = e instanceof Error ? e.message : String(e);
+      }
+      const at = this.now();
+      failingSince ??= started;
+      if (at - failingSince > ADAPTER_OUTAGE_MS) {
+        throw new Error(`slack ${this.source}: no working connection for ${Math.round((at - failingSince) / 1000)} s; last error: ${lastError}`);
+      }
+      failures++;
+      await this.pause(Math.min(BACKOFF_CAP_MS, 500 * 2 ** (failures - 1)), signal);
+    }
+  }
+
+  /**
+   * One user-mode poll. Which conversations to read: the threads view (unread replies in threads this account follows),
+   * the counts (DMs and group DMs with unreads, channels with a mention), every known DM (a person reading the account
+   * in a browser clears its unread mark) and every conversation with a tracked thread. Each is then read from its
+   * cursor like a bot-mode catch-up; one seen for the first time from the first start, at most a day back.
+   */
+  private async poll(ctx: Receiving, warned: Set<string>): Promise<void> {
+    const cutoff = this.now() - THREAD_MAX_AGE_MS;
+    for (const threads of Object.values(ctx.cursor.threads)) {
+      for (const [root, last] of Object.entries(threads)) if (tsMs(last) < cutoff) delete threads[root];
+    }
+    const open = (channel: string): void => {
+      if (ctx.cursor.channels[channel] !== undefined) return;
+      const since = ctx.cursor.since ?? "0";
+      const bound = msTs(this.now() - NEW_CHANNEL_LOOKBACK_MS);
+      ctx.cursor.channels[channel] = compareTs(since, bound) > 0 ? since : bound;
+      ctx.file.save(ctx.cursor);
+    };
+    type Counted = { id?: string; has_unreads?: boolean; mention_count?: number };
+    type ThreadView = { root_msg?: SlackMessage; unread_replies?: SlackMessage[] };
+    // subscriptions.thread.getView and client.counts are Slack web-client internal methods (undocumented, what the Slack
+    // client itself calls); a token that may not call them only loses that hint: known DMs and threads are still read.
+    const view = await this.webClient("subscriptions.thread.getView", { limit: 20 }, ctx, warned);
+    const counts = await this.webClient("client.counts", {}, ctx, warned);
+    const listed = (key: string): Counted[] => {
+      const list = counts?.[key];
+      return Array.isArray(list) ? (list as Counted[]) : [];
+    };
+    const threads = view?.threads;
+    const channels = new Set<string>();
+    for (const c of [...listed("ims"), ...listed("mpims"), ...listed("channels").filter((c) => (c.mention_count ?? 0) > 0)]) {
+      if (c.id && (c.has_unreads || (c.mention_count ?? 0) > 0)) channels.add(c.id);
+    }
+    for (const t of Array.isArray(threads) ? (threads as ThreadView[]) : []) {
+      const channel = t.root_msg?.channel;
+      const replies = (t.unread_replies ?? []).filter((m) => m.ts);
+      const root = t.root_msg?.ts ?? replies[0]?.thread_ts;
+      if (!channel || !root || !replies.length) continue;
+      open(channel);
+      this.track(channel, root, replies.map((m) => m.ts!).sort(compareTs).at(-1)!, ctx);
+      channels.add(channel);
+    }
+    for (const channel of channels) open(channel);
+    for (const channel of Object.keys(ctx.cursor.channels)) {
+      if (channel.startsWith("D") || Object.keys(ctx.cursor.threads[channel] ?? {}).length) channels.add(channel);
+    }
+    await this.catchUp(ctx, [...channels]);
+  }
+
+  /** A web-client method whose refusal (other than a bad token) is reported once and read as no answer. */
+  private async webClient(method: string, params: Record<string, unknown>, ctx: Receiving, warned: Set<string>): Promise<ApiBody | undefined> {
+    try {
+      return await this.api(method, ctx.token, params, "POST", ctx.signal);
+    } catch (e) {
+      if (!(e instanceof SlackApiError) || USER_AUTH_ERRORS.has(e.error)) throw e;
+      if (!warned.has(method)) {
+        warned.add(method);
+        console.error(`slack ${this.source}: ${method} (a Slack web-client method) failed: ${e.error}; known DMs and tracked threads are still read`);
+      }
+      return undefined;
     }
   }
 
@@ -422,7 +618,7 @@ export class SlackAdapter implements MessengerAdapter {
     let next: string | undefined;
     do {
       const query: Record<string, string> = { ...params, inclusive: "false", limit: "200", ...(next ? { cursor: next } : {}) };
-      const body = await this.api(method, ctx.botToken, query, "GET", ctx.signal);
+      const body = await this.api(method, ctx.token, query, "GET", ctx.signal);
       if (Array.isArray(body.messages)) messages.push(...(body.messages as SlackMessage[]));
       const meta = body.response_metadata;
       const cursor = typeof meta === "object" && meta !== null && "next_cursor" in meta ? meta.next_cursor : undefined;
@@ -436,8 +632,8 @@ export class SlackAdapter implements MessengerAdapter {
    * top-level history, plus the replies of its tracked threads and of new parents with replies after the cursor
    * (conversations.history holds no thread replies). A channel the bot can no longer read is skipped, not fatal.
    */
-  private async catchUp(ctx: Receiving): Promise<void> {
-    for (const channel of Object.keys(ctx.cursor.channels)) {
+  private async catchUp(ctx: Receiving, channels: string[] = Object.keys(ctx.cursor.channels)): Promise<void> {
+    for (const channel of channels) {
       const oldest = ctx.cursor.channels[channel];
       if (!oldest) continue;
       let messages: SlackMessage[];
@@ -535,8 +731,9 @@ export class SlackAdapter implements MessengerAdapter {
     }
     const key = `${channel}:${ts}`;
     if (ctx.delivered.has(key)) return;
+    // User mode has no live events, only reads: pairing takes a DM read there (pair.ts drops the stale ones).
     const owner = this.pairing
-      ? dm && !fromHistory && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
+      ? dm && (!fromHistory || this.userMode) && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
       : ev.user === this.config.owner && !ev.bot_id;
     // Catch-up reads every message of a channel; outside DMs only those addressed to the bot are commands.
     const addressed = dm || !fromHistory || (ctx.botUser !== "" && (ev.text ?? "").includes(`<@${ctx.botUser}>`));
@@ -633,7 +830,7 @@ export class SlackAdapter implements MessengerAdapter {
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {
     const chunks = splitText(escape(text), TEXT_LIMIT);
     if (!chunks.length) throw new Error("slack: refusing to send an empty message");
-    const token = this.botToken();
+    const token = this.token();
     const thread = target.thread ?? (target.replyTo ? replyTarget(target.replyTo) : undefined);
     const post = async (chunk: string): Promise<string> => {
       const body = await this.api(
@@ -665,7 +862,7 @@ export class SlackAdapter implements MessengerAdapter {
   /** Adds or removes one reaction; already there (or already gone) counts as done. */
   private async reaction(channel: string, ts: string, name: string, on: boolean): Promise<void> {
     try {
-      await this.api(on ? "reactions.add" : "reactions.remove", this.botToken(), { channel, timestamp: ts, name }, "POST", undefined, ACTION_MAX_RETRY_AFTER_MS);
+      await this.api(on ? "reactions.add" : "reactions.remove", this.token(), { channel, timestamp: ts, name }, "POST", undefined, ACTION_MAX_RETRY_AFTER_MS);
     } catch (e) {
       if (e instanceof SlackApiError && e.error === (on ? "already_reacted" : "no_reaction")) return;
       throw this.fatal(e, false) ?? e;
@@ -681,13 +878,14 @@ export class SlackAdapter implements MessengerAdapter {
     const escaped = escape(text);
     if (escaped.length > TEXT_LIMIT) throw new Error(`slack: an edited message holds at most ${TEXT_LIMIT} characters, got ${escaped.length}`);
     try {
-      await this.api("chat.update", this.botToken(), { channel: target.chat, ts: message, text: escaped }, "POST", undefined, ACTION_MAX_RETRY_AFTER_MS);
+      await this.api("chat.update", this.token(), { channel: target.chat, ts: message, text: escaped }, "POST", undefined, ACTION_MAX_RETRY_AFTER_MS);
     } catch (e) {
       throw this.fatal(e, false) ?? e;
     }
   }
 
   async typing(_target: ThreadTarget): Promise<ActionNotes> {
+    if (this.userMode) return ["slack: the Web API has no typing indicator"];
     return ["slack: bots have no typing indicator (in agent mode seori shows its own working status)"];
   }
 
@@ -720,6 +918,15 @@ export class SlackAdapter implements MessengerAdapter {
   }
 
   async check(): Promise<string> {
+    if (this.userMode) {
+      let me: ApiBody;
+      try {
+        me = await this.api("auth.test", this.userAuth().token, undefined, "GET");
+      } catch (e) {
+        throw this.fatal(e, false) ?? e;
+      }
+      return `user @${String(me.user)} in team ${String(me.team)}`;
+    }
     const botToken = this.botToken();
     const appToken = this.appToken();
     let me: ApiBody;
