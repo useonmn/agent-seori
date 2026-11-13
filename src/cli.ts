@@ -13,7 +13,7 @@ import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
-import { PresenceConfigError, realPresenceDeps, runPresence } from "./messenger/presence.ts";
+import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
 import { flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgFlush, msgList, msgSend, parseTo } from "./msg.ts";
 import { statusOf, type SessionRef } from "./runtime/index.ts";
 import { RuntimeChoiceError, RuntimeConfigError } from "./runtime/select.ts";
@@ -1067,7 +1067,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         return await runPresence(root, x, { user: one(a, "user") === "true" }, realPresenceDeps(root, x), stop.signal);
       } catch (e) {
         if (e instanceof PresenceConfigError) throw new Refusal(e.message);
-        throw e;
+        throw e instanceof Error ? new Error(redact(e.message)) : e;
       } finally {
         process.off("SIGINT", onSignal);
         process.off("SIGTERM", onSignal);
