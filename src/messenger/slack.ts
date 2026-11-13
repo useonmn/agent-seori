@@ -77,6 +77,9 @@ export class SlackApiError extends HttpError {
   }
 }
 
+/** Sources already warned about leftover agent-mode options in this process. */
+const warnedAgentOptions = new Set<string>();
+
 /** onMessage rejected: receive() rethrows its error so the daemon restarts it, and catch-up redelivers the message. */
 class OnMessageFailed extends Error {}
 
@@ -226,9 +229,12 @@ export class SlackAdapter implements MessengerAdapter {
 
   async receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
     // The agent-app working status was removed; the bot works without it, so leftover options only warn, once per
-    // receive (the daemon), never on a CLI send or edit.
+    // source per process (the daemon), never on a CLI send or edit.
     const agentOptions = ["agent", "agentStatus", "statusRefreshMs", "statusLimitMs"].filter((k) => this.config.options?.[k] !== undefined);
-    if (agentOptions.length) console.error(`slack ${this.source}: Slack agent mode was removed; options ${agentOptions.join(", ")} are ignored (DM replies are no longer forced into threads and no working status is shown)`);
+    if (agentOptions.length && !warnedAgentOptions.has(this.source)) {
+      warnedAgentOptions.add(this.source);
+      console.error(`slack ${this.source}: Slack agent mode was removed; options ${agentOptions.join(", ")} are ignored (DM replies are no longer forced into threads and no working status is shown)`);
+    }
     const botToken = this.botToken();
     const appToken = this.appToken();
     const file = CursorFile.for<Cursor>(this.cursorRoot, this.source);

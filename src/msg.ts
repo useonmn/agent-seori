@@ -1,6 +1,6 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { randomBytes } from "node:crypto";
-import { Channel, type IdState, type MessengerRow } from "./channel.ts";
+import { Channel, fromOther, type IdState, type MessengerRow } from "./channel.ts";
 import { Refusal } from "./harness.ts";
 import { loadMessengers, SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
@@ -382,7 +382,7 @@ export function msgClose(root: string, id: string, why: string, now: number): vo
 
 function stateOf(s: IdState): string {
   if (s.replied) return "replied";
-  if (s.closed) return "closed";
+  if (s.closed) return fromOther(s.row) ? "closed-other" : "closed";
   if (s.drafted) return "drafted";
   if (s.uncertain) return "uncertain";
   if (s.gaveUp) return "gave-up";

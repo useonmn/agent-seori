@@ -6,7 +6,7 @@ Do every login and every click in the browser with the owner; never ask them to 
 
 ## agent-messenger
 
-agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself: sending files, the eyes reaction, reading a replied-to message, thread names and closing (`references/writing.md`, Platforms). Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use its bot command, given the same bot token seori uses:
+agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself: sending files, the eyes reaction, reading earlier messages, thread names and closing (`references/writing.md`, Platforms). Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use its bot command, given the same bot token seori uses:
 
 - Slack: `agent-slackbot auth set <xoxb-token>`.
 - Discord: `agent-discordbot auth set <token>`.
