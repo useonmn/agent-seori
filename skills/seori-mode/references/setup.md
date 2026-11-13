@@ -87,7 +87,7 @@ Write it only with the owner's go, and only the fields they want changed.
 
 - It changes the system prompt of every omp session that loads it: seori's lead, duty and lanes included. seori's reviewer starts omp with `--no-extensions` (extension discovery off).
 - With it enabled (`omp plugin list` shows `omp-ulw`), lanes can run under its workflows: `seori start --workflow ulw` (or mass-ulw, ulw-research, ulw-plan, ulw-loop, ulw-execute), or `"workflow"` in config.json for every lane. Without it, `seori start` refuses `--workflow ulw` and says why.
-- omp-ulw follows specific omp versions. After updating omp or omp-ulw, restart the omp sessions (run `seori up` again) and check that a new lane still starts with `STARTUP_OK`.
+- omp-ulw follows specific omp versions. After updating omp or omp-ulw, restart the omp sessions (run `seori up` again) and check that a new lane still starts with `STARTUP_OK`. If lanes use a workflow other than `ulw`, also start one short lane with it and check that it runs that workflow (for mass-ulw, its graph file appears): the `/goal <workflow> <keyword>` form works with omp-ulw's code today but is not in its README, so an update could change it.
 
 ## 6. Onboarding
 

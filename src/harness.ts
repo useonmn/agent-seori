@@ -131,20 +131,23 @@ export function ulwPlanCeilings(config: SeoriConfig): Ceilings | undefined {
 
 /**
  * Refuses a workflow whose omp extension is not enabled, before any pane opens: a kickoff with the keyword but without
- * the extension would hand the lane a goal that starts with a meaningless word.
+ * the extension would hand the lane a goal that starts with a meaningless word. `fromConfig`: the workflow came from
+ * config.json, so the way out is that setting or `--workflow none`, not leaving the flag off.
  */
-export async function requireWorkflowExtension(d: Deps, workflow: Workflow): Promise<void> {
+export async function requireWorkflowExtension(d: Deps, workflow: Workflow, fromConfig = false): Promise<void> {
+  const what = fromConfig ? `config.json "workflow" is "${workflow}"` : `--workflow ${workflow}`;
+  const instead = fromConfig ? `remove "workflow" from config.json, or start the lane with --workflow none` : "start the lane without --workflow";
   let listed: { npm?: { name?: unknown; enabled?: unknown }[]; marketplace?: { name?: unknown; enabled?: unknown }[] };
   try {
     const r = await d.exec(d.agentCmd, ["plugin", "list", "--json"]);
     if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim() || `exit ${r.code}`);
     listed = JSON.parse(r.stdout);
   } catch (e) {
-    throw new Refusal(`--workflow ${workflow}: could not list omp's plugins to check for the omp-ulw extension (${d.agentCmd} plugin list --json: ${e instanceof Error ? e.message : String(e)})`);
+    throw new Refusal(`${what}: could not list omp's plugins to check for the omp-ulw extension (${d.agentCmd} plugin list --json: ${e instanceof Error ? e.message : String(e)}); fix that, or ${instead}`);
   }
   const plugins = [...(listed.npm ?? []), ...(listed.marketplace ?? [])];
   if (!plugins.some((p) => p.name === "omp-ulw" && p.enabled === true)) {
-    throw new Refusal(`--workflow ${workflow}: the omp-ulw extension is not enabled in omp (${d.agentCmd} plugin list); install it from ${OMP_ULW_URL}, or start the lane without --workflow`);
+    throw new Refusal(`${what}: the omp-ulw extension is not enabled in omp (${d.agentCmd} plugin list); install it from ${OMP_ULW_URL}, or ${instead}`);
   }
 }
 
@@ -461,7 +464,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
   await requireOmpIntegration(d);
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
-  if (workflow !== undefined) await requireWorkflowExtension(d, workflow);
+  if (workflow !== undefined) await requireWorkflowExtension(d, workflow, opts.workflow === undefined);
   const ceilings = opts.ceilings ?? (workflow === "ulw-plan" ? ulwPlanCeilings(loadConfig(d.store.root)) : undefined);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
