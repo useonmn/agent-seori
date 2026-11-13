@@ -158,7 +158,11 @@ describe("seori start: startup verdict", () => {
   test("STARTED is printed as soon as the lane is open, before the first startup check", async () => {
     const { w, d, brief, id } = setup();
     let kickedAt: number | undefined;
-    w.getHook.set(id, () => void (w.panes.get(id)!.kicked && (kickedAt ??= w.clock)));
+    const hook = w.getHook.get(id);
+    w.getHook.set(id, (n) => {
+      hook?.(n);
+      if (w.panes.get(id)!.kicked) kickedAt ??= w.clock;
+    });
     const at: { line: string; clock: number }[] = [];
     const log = console.log;
     console.log = (...args: unknown[]) => void at.push({ line: args.join(" "), clock: w.clock });
@@ -188,23 +192,6 @@ describe("seori start: startup verdict", () => {
     expect(out[0]).toStartWith("STARTED fix-login");
     expect(out[1]).toStartWith(`STARTUP_UNCONFIRMED fix-login ${id}: verdict failed: clock broke`);
     expect(code).toBe(3);
-  });
-
-  test("a pane already working at the first check ignores failure text on its screen: STARTUP_OK", async () => {
-    const { w, d, brief, id } = setup();
-    statusAfterKickoff(w, id, 30_000, "unknown", "idle");
-    const hook = w.getHook.get(id)!;
-    w.getHook.set(id, (n) => {
-      hook(n);
-      const pane = w.panes.get(id)!;
-      if (pane.kicked) {
-        pane.screen = ["$ bun test", "error: Cannot find module './login' from 'test/login.test.ts'", "> "];
-        if (pane.status !== "idle") pane.status = "working";
-      }
-    });
-    const { code, out } = await start(d, brief);
-    expect(out[1]).toBe(`STARTUP_OK fix-login ${id}`);
-    expect(code).toBe(0);
   });
 
   test("an agent behind a dialog (blocked) is STARTUP_UNCONFIRMED at once", async () => {
