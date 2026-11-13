@@ -12,7 +12,7 @@ agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seor
 - Discord: `agent-discordbot auth set <token>`.
 - Telegram: `agent-telegrambot auth set <token>`.
 
-It can also drive bot creation below. seori does not need it to receive or answer messages.
+It can also drive bot creation below. seori does not need it to receive or answer messages. The commands in `references/writing.md` were checked against agent-messenger 2.43.0; if a later release renames one, its `--help` names the new one.
 
 ## 1. Create the bot
 

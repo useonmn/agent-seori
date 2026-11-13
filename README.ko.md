@@ -398,7 +398,7 @@ seori worklog list --open
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
 ```
 
-`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 seori가 일해 주는 주인의 보낸 사람 id입니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 다른 사람이나 봇이 보낸 메시지는 버립니다. 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
+`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 seori가 일해 주는 주인의 보낸 사람 id입니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 다른 사람이나 봇이 보낸 메시지는 버립니다. 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. 예전 seori가 저장해 둔 다른 사람이나 에이전트의 메시지(예전에 신뢰하던 사람의 열린 요청 포함)는 업그레이드하면 닫힙니다. 리드에게 전하지 않고, `seori msg list --all`에는 `closed-other`로 보입니다. 기다리던 사람이 있으면 직접 알려 주세요. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
 
 토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다). 환경 변수가 있으면 그쪽이 먼저입니다. hc에서는 리드, 듀티, 레인, 시간 단위 루프 터미널에서 이 변수들을 지우므로 데몬과 듀티 루프에만 닿습니다. 리드의 `seori msg`가 보낼 수 있도록 토큰은 `secrets.json`에 두세요:
 
