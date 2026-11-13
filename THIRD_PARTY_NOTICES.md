@@ -49,6 +49,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/migrate-journal.ts
 - src/migrate-swap.ts
 - src/migrate.ts
+- src/msg.ts
 - src/refs.ts
 - src/runtime/hc/deliver.ts
 - src/runtime/hc/exec.ts

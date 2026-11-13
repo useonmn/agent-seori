@@ -189,6 +189,13 @@ describe("msg send --to", () => {
     expect(parseTo("fake:c1:a:b")).toEqual({ source: "fake", chat: "c1", thread: "a:b" });
     for (const bad of ["fake", "fake:", ":c1", "fake:c1:"]) expect(() => parseTo(bad)).toThrow(Refusal);
   });
+
+  test("a telegram thread must be a topic id: anything else is refused instead of posting to the General topic", () => {
+    expect(parseTo("telegram:-1001:42")).toEqual({ source: "telegram", chat: "-1001", thread: "42" });
+    for (const bad of ["telegram:-1001:general", "telegram:-1001:0", "telegram:-1001:042", "telegram:-1001:4.2", "telegram:-1001:99999999999999999"]) {
+      expect(() => parseTo(bad)).toThrow(/must be a Telegram topic id/);
+    }
+  });
 });
 
 describe("msg close and list", () => {

@@ -1,3 +1,4 @@
+// Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { randomBytes } from "node:crypto";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Refusal } from "./harness.ts";
@@ -56,6 +57,10 @@ export function parseTo(spec: string): NoticeTarget {
   const [source, chat, ...rest] = spec.split(":");
   const thread = rest.join(":");
   if (!source || !chat || (rest.length > 0 && !thread)) throw new Refusal(`--to must be source:chat[:thread], got "${spec}"`);
+  // Telegram sends Number(thread) as message_thread_id: NaN goes out as null and the message lands in the General topic.
+  if (source === "telegram" && thread && !(/^[1-9]\d*$/.test(thread) && Number.isSafeInteger(Number(thread)))) {
+    throw new Refusal(`--to ${spec}: the thread must be a Telegram topic id, a whole number above 0`);
+  }
   return { source, chat, ...(thread ? { thread } : {}) };
 }
 
