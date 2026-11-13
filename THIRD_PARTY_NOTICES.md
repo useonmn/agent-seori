@@ -58,6 +58,7 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - test/adopt-sync.test.ts
 - test/boot-drift.test.ts
 - test/e2e-hc-cli.test.ts
+- test/e2e-hc-omp.ts
 - test/e2e-hc-setup.ts
 - test/e2e-hc.test.ts
 - test/fixtures/fake-omp.ts

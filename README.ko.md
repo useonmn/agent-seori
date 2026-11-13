@@ -641,6 +641,12 @@ GitHub Actions가 push와 PR마다 Ubuntu와 macOS에서 둘 다 돌리고, Ubun
 
 hc 끝단 테스트(`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`)는 자체 격리된 hc 코어를 띄우고, `SEORI_E2E_HC=1`과 PATH에 hc가 필요합니다. 모델은 부르지 않습니다. [docs/runtime.md](docs/runtime.md#testing-against-an-isolated-hc-core)를 보세요.
 
+실제 omp 끝단 테스트는 자체 격리된 hc 코어에서 실제 omp 리드와 레인을 돌립니다. 가짜 메신저로 리드 채널을(`test/e2e-hc-channel.test.ts`), 워치를(`test/e2e-hc-watch.test.ts`), 시간 단위 루프와 레인을(`test/e2e-hc-lanes.test.ts`) 확인합니다. 모델을 부르므로 돈이 들고, CI에서는 돌리지 않습니다. Linux, PATH의 hc와 omp(제공자에 로그인된 상태), 두 opt-in 변수가 필요합니다. `SEORI_E2E_MODEL`로 모델을 고르고(없으면 omp 기본 모델), `SEORI_E2E_ONLY=1,4,8`이면 채널과 워치 파일에서 그 시나리오만 돌립니다. 버리는 `SEORI_HOME`과, 유닛을 일반 프로세스로 돌리는 가짜 systemctl을 쓰고, omp 자체 설정은 건드리지 않습니다:
+
+```sh
+SEORI_E2E_HC=1 SEORI_E2E_OMP=1 bun test test/e2e-hc-channel.test.ts test/e2e-hc-watch.test.ts test/e2e-hc-lanes.test.ts --timeout 1800000
+```
+
 ## 텔레메트리
 
 없습니다. seori는 어디에도 데이터를 보내지 않습니다.
