@@ -108,7 +108,7 @@ seori up [--cwd DIR]                         start this home's lead, duty, duty 
 seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
 seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal or tab, agent session, lessons + brief + lane rules
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
-            [--activity-path PATH ...] [--model M] [--workflow ulw|none]
+            [--activity-path PATH ...] [--model M] [--workflow W|none]
                                             Done line read back live before close; ID = lead channel id for progress posts;
                                             ceilings block (report to lead); exits 4 with HOLD when the host is full
 seori adopt <key> --ref <hc:tN|w1:p3|herdr:w1:p3> [--brief FILE] [--cwd DIR]
@@ -325,7 +325,7 @@ seori resume fix-flaky-login
 
 When the pane does not confirm within about 6 seconds, the command prints `PAUSE_UNVERIFIED <key> ...` or `RESUME_UNVERIFIED <key> ...`, exits 3 and leaves the lane as it was: the lane may still be running, so check its pane and retry.
 
-A paused lane gets no nudges and no ceiling or stall reports. A report from a paused lane (woken by a watch or a message) is passed to the lead but never ends the pause; only `seori resume` does. If its pane reads working on two duty passes in a row, the lead gets `[WORKING-WHILE-PAUSED <key>]`, once per working stretch, and the lane stays paused. A paused lane whose pane disappears is marked lost and the lead gets `[LOST <key>]`, like any other lane. The lead's rules tell it to pause in the same turn when the owner says wait, stop or hold on (잠깐, 멈춰, 기다려).
+A paused lane gets no nudges and no ceiling or stall reports. A report from a paused lane (woken by a watch or a message) is passed to the lead but never ends the pause; only `seori resume` does. If its pane reads working on two duty passes in a row, the lead gets `[WORKING-WHILE-PAUSED <key>]`, once per working stretch, and the lane stays paused. A paused lane whose pane disappears is marked lost and the lead gets `[LOST <key>]`, like any other lane. The lead's rules tell it to pause in the same turn when the owner says wait, stop or hold on (잠깐, 멈춰, 기다려). Pausing a lane that runs an omp-ulw workflow is safe the same way; resume continues from the workflow's own ledger, but subagents already running finish their current step.
 
 ## Supervision (ceilings and stalls)
 
@@ -512,11 +512,22 @@ Watches cover the usual sources with coalescing, a wake budget and up to 5 stand
 
 ## Workflows
 
-A lane runs in omp goal mode: its kickoff is `/goal Read your brief at ...`. A host that has the optional [omp-ulw](https://github.com/dbc-hbin/omp-ulw) extension can run lanes as ULW instead: `seori start --workflow ulw` (or `"workflow": "ulw"` in config.json for every lane) makes the kickoff `/goal ulw Read your brief at ...`. omp still holds the lane's native goal, so the startup verdict, `seori pause` and `seori resume` and `seori migrate` work as before; a migrated lane keeps its workflow. `--workflow none` starts one lane in plain goal mode whatever the config says.
+A lane runs in omp goal mode: its kickoff is `/goal Read your brief at ...`. A host that has the optional [omp-ulw](https://github.com/dbc-hbin/omp-ulw) extension can run a lane under one of its workflows instead: `seori start --workflow <W>` (or `"workflow": "<W>"` in config.json for every lane) makes the kickoff `/goal <W> <keyword> Read your brief at ...`. omp still holds the lane's native goal, so the startup verdict, `seori pause`, `seori resume` and `seori migrate` work as before; a migrated lane keeps its workflow. `--workflow none` starts one lane in plain goal mode whatever the config says.
 
-`ulw` is the only workflow seori accepts. omp-ulw's other entry points (mass-ulw, ulw-plan, ulw-research, ulw-execute, ulw-loop) run their own loop without omp's goal, so seori could not tell whether a lane started with one of them is working, paused or done. A brief can still ask a ulw lane to use them, or omp-ulw's specialist skills, inside its work.
+| `--workflow` | kickoff starts with | for |
+|---|---|---|
+| `ulw` | `/goal ulw` | normal work, driven to the end with evidence |
+| `mass-ulw` | `/goal mass-ulw workflowz` | work with a dependency graph of parallel tasks |
+| `ulw-research` | `/goal ulw-research workflowz` | research with a cited result |
+| `ulw-plan` | `/goal ulw-plan ultrathink` | a reviewed plan only, no code |
+| `ulw-loop` | `/goal ulw-loop orchestrate` | a durable loop over several goals |
+| `ulw-execute` | `/goal ulw-execute orchestrate` | carrying out an approved plan |
 
-Before it opens a pane, `seori start` checks `omp plugin list --json` and refuses `--workflow ulw` when omp-ulw is not enabled, so a lane never gets a goal that starts with a word nothing understands. omp-ulw is a separate install that seori never bundles or installs; see the seori-mode skill's `references/setup.md`.
+The keyword turns on the omp mode the workflow's own command (`/mass-ulw` and the like) would turn on; seori never sends those commands, because they run without omp's goal and seori could not track the lane. Each workflow keeps its own state files and closes the goal when they say it is done.
+
+`ulw-plan` is the exception: it closes its goal once the reviewed plan is written, while the plan still waits for the owner's approval. Its READY means "plan delivered, approval needed": the lead shows the plan to the owner and asks before any `ulw-execute`. Its review rounds have no cap of their own, so a ulw-plan lane started without ceiling flags gets `supervision.ulwPlan` ceilings (default 300000 tokens and 60 minutes; `supervision.defaults` win when set) and seori reports `[BLOCKED <key>]` when one is reached. Token totals are only read on herdr; on hc the wall-clock ceiling is the one that applies.
+
+Before it opens a pane, `seori start` checks `omp plugin list --json` and refuses `--workflow` when omp-ulw is not enabled, so a lane never gets a goal that starts with a word nothing understands. omp-ulw is a separate install that seori never bundles or installs; see the seori-mode skill's `references/setup.md`.
 
 ## Configuration (config.json)
 
@@ -549,7 +560,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 | `closeAfterMin` | `5` | minutes after READY that a lane with a Done line closes on its own, unless the lead objects |
 | `progressEveryMin` | `15` | a lane with `--thread` gets its newest report posted at most this often (minutes) |
 | `blockedPromptMin` | `10` | minutes a lane's pane may show a dialog (`blocked`) before the lead gets one `[BLOCKED-PROMPT <key>]`; fractions work (`0.5` is 30 s) |
-| `workflow` | unset | every lane's workflow unless `seori start --workflow` says otherwise: `"ulw"` starts lanes with `/goal ulw ...` for the optional omp-ulw extension; unset is plain omp goal mode. See [Workflows](#workflows) |
+| `workflow` | unset | every lane's workflow unless `seori start --workflow` says otherwise: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` runs lanes under that omp-ulw workflow; unset is plain omp goal mode. See [Workflows](#workflows) |
 | `startupWaitSeconds` | `180` | how long `seori start` watches a new lane for a startup verdict (first check 20 s after the kickoff, then every 10 s); see [How a lane starts](#how-a-lane-starts) |
 | `supervision.defaults.wallMinutes` | `null` | wall-clock ceiling per lane, in minutes; `null` is off |
 | `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off |

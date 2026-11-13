@@ -105,7 +105,7 @@ seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시�
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널 또는 탭, 에이전트 세션, 교훈 + 브리프 + 레인 규칙
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
-            [--activity-path PATH ...] [--model M] [--workflow ulw|none]
+            [--activity-path PATH ...] [--model M] [--workflow W|none]
                                             닫기 전에 Done 줄을 실제로 확인; ID = 진행 상황을 올릴 리드 채널 id;
                                             한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4
 seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
@@ -302,7 +302,7 @@ seori resume fix-flaky-login
 
 창에서 6초쯤 안에 확인하지 못하면 `PAUSE_UNVERIFIED <key> ...`나 `RESUME_UNVERIFIED <key> ...`를 출력하고 종료 코드 3으로 끝나며, 레인은 그대로 둡니다. 레인이 아직 돌고 있을 수 있으니 창을 보고 다시 시도하세요.
 
-멈춘 레인에는 깨우기 알림도, 한도나 멈춤 알림도 가지 않습니다. 멈춘 레인이 감시나 메시지에 깨어나 보고를 보내도 그 보고는 리드에게 가지만, 멈춤은 풀리지 않습니다. 멈춤은 `seori resume`으로만 풉니다. 멈춘 레인의 창이 듀티 차례 두 번 연속 일하는 중으로 보이면, 일하는 구간마다 한 번씩 리드에게 `[WORKING-WHILE-PAUSED <key>]`를 보냅니다. 레인은 멈춘 상태로 남습니다. 멈춘 레인의 창이 사라지면 다른 레인처럼 사라진(lost) 레인으로 기록하고 리드에게 `[LOST <key>]`를 보냅니다. 리드 규칙은 주인이 잠깐, 멈춰, 기다려(wait, stop, hold on)라고 하면 같은 차례 안에 멈추라고 시킵니다.
+멈춘 레인에는 깨우기 알림도, 한도나 멈춤 알림도 가지 않습니다. 멈춘 레인이 감시나 메시지에 깨어나 보고를 보내도 그 보고는 리드에게 가지만, 멈춤은 풀리지 않습니다. 멈춤은 `seori resume`으로만 풉니다. 멈춘 레인의 창이 듀티 차례 두 번 연속 일하는 중으로 보이면, 일하는 구간마다 한 번씩 리드에게 `[WORKING-WHILE-PAUSED <key>]`를 보냅니다. 레인은 멈춘 상태로 남습니다. 멈춘 레인의 창이 사라지면 다른 레인처럼 사라진(lost) 레인으로 기록하고 리드에게 `[LOST <key>]`를 보냅니다. 리드 규칙은 주인이 잠깐, 멈춰, 기다려(wait, stop, hold on)라고 하면 같은 차례 안에 멈추라고 시킵니다. omp-ulw 워크플로로 도는 레인도 같은 방식으로 안전하게 멈춥니다. 다시 켜면 워크플로 자기 장부에서 이어 가지만, 이미 돌고 있던 하위 에이전트는 지금 단계를 마칩니다.
 
 ## 감독(한도와 멈춤)
 
@@ -488,11 +488,22 @@ seori watch stop dev
 
 ## 워크플로
 
-레인은 omp 목표 모드로 돕니다. 시작 명령은 `/goal Read your brief at ...`입니다. 선택 설치인 [omp-ulw](https://github.com/dbc-hbin/omp-ulw) 확장이 있는 컴퓨터에서는 레인을 ULW로 돌릴 수 있습니다. `seori start --workflow ulw`(모든 레인에 적용하려면 config.json에 `"workflow": "ulw"`)로 시작하면 시작 명령이 `/goal ulw Read your brief at ...`이 됩니다. 레인의 목표는 여전히 omp 자체 목표이므로 시작 판정, `seori pause`와 `seori resume`, `seori migrate`는 그대로 동작하고, 옮긴 레인도 같은 워크플로를 씁니다. `--workflow none`은 설정과 상관없이 그 레인 하나를 기본 목표 모드로 시작합니다.
+레인은 omp 목표 모드로 돕니다. 시작 명령은 `/goal Read your brief at ...`입니다. 선택 설치인 [omp-ulw](https://github.com/dbc-hbin/omp-ulw) 확장이 있는 컴퓨터에서는 레인을 그 워크플로 가운데 하나로 돌릴 수 있습니다. `seori start --workflow <W>`(모든 레인에 적용하려면 config.json에 `"workflow": "<W>"`)로 시작하면 시작 명령이 `/goal <W> <키워드> Read your brief at ...`이 됩니다. 레인의 목표는 여전히 omp 자체 목표이므로 시작 판정, `seori pause`, `seori resume`, `seori migrate`는 그대로 동작하고, 옮긴 레인도 같은 워크플로를 씁니다. `--workflow none`은 설정과 상관없이 그 레인 하나를 기본 목표 모드로 시작합니다.
 
-seori가 받는 워크플로는 `ulw` 하나입니다. omp-ulw의 다른 진입점(mass-ulw, ulw-plan, ulw-research, ulw-execute, ulw-loop)은 omp 목표 없이 자기 루프로 돌기 때문에, 그것으로 시작한 레인이 일하는 중인지, 멈췄는지, 끝났는지 seori가 알 수 없습니다. 대신 브리프에서 ulw 레인에게 그 워크플로나 omp-ulw의 전문 스킬을 일 안에서 쓰라고 할 수 있습니다.
+| `--workflow` | 시작 명령 앞부분 | 쓰임 |
+|---|---|---|
+| `ulw` | `/goal ulw` | 보통 일, 증거를 갖추어 끝까지 |
+| `mass-ulw` | `/goal mass-ulw workflowz` | 병렬 작업의 의존 그래프가 있는 일 |
+| `ulw-research` | `/goal ulw-research workflowz` | 출처를 단 조사 |
+| `ulw-plan` | `/goal ulw-plan ultrathink` | 검토를 마친 계획만, 코드는 손대지 않음 |
+| `ulw-loop` | `/goal ulw-loop orchestrate` | 여러 목표를 이어 도는 반복 |
+| `ulw-execute` | `/goal ulw-execute orchestrate` | 승인된 계획 실행 |
 
-`seori start`는 창을 열기 전에 `omp plugin list --json`을 확인하고, omp-ulw가 켜져 있지 않으면 `--workflow ulw`를 거부합니다. 그래서 아무도 알아듣지 못하는 단어로 시작하는 목표가 레인에 가지 않습니다. omp-ulw는 따로 설치하는 확장이고, seori가 함께 넣거나 설치하지 않습니다. seori-mode 스킬의 `references/setup.md`를 보세요.
+키워드는 그 워크플로 자체 명령(`/mass-ulw` 등)이 켜는 omp 모드를 켭니다. seori는 그 명령을 보내지 않습니다. 그 명령은 omp 목표 없이 돌아서 seori가 레인을 따라갈 수 없기 때문입니다. 워크플로마다 자기 상태 파일을 두고, 그 파일이 끝났다고 할 때 목표를 닫습니다.
+
+예외는 `ulw-plan`입니다. 검토를 마친 계획을 쓰면, 계획이 아직 주인 승인을 기다리는 상태여도 목표를 닫습니다. 그래서 이 레인의 READY는 "계획이 나왔고 승인이 필요하다"는 뜻입니다. 리드는 계획을 주인에게 보여 주고, `ulw-execute`로 넘어가기 전에 물어봅니다. 검토 횟수에 자체 상한이 없으므로, 한도 옵션 없이 시작한 ulw-plan 레인은 `supervision.ulwPlan` 한도(기본 토큰 300000, 60분. `supervision.defaults`가 있으면 그쪽이 우선)를 받고, 한도에 닿으면 seori가 `[BLOCKED <key>]`를 알립니다. 토큰 합계는 herdr에서만 읽으므로 hc에서는 시간 한도가 적용됩니다.
+
+`seori start`는 창을 열기 전에 `omp plugin list --json`을 확인하고, omp-ulw가 켜져 있지 않으면 `--workflow`를 거부합니다. 그래서 아무도 알아듣지 못하는 단어로 시작하는 목표가 레인에 가지 않습니다. omp-ulw는 따로 설치하는 확장이고, seori가 함께 넣거나 설치하지 않습니다. seori-mode 스킬의 `references/setup.md`를 보세요.
 
 ## 설정 (config.json)
 
@@ -519,7 +530,7 @@ seori가 받는 워크플로는 `ulw` 하나입니다. omp-ulw의 다른 진입�
 | `closeAfterMin` | `5` | Done 줄이 있는 레인이 READY 뒤 몇 분 지나면 저절로 닫히는지(리드가 반대하지 않으면) |
 | `progressEveryMin` | `15` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지 |
 | `blockedPromptMin` | `10` | 레인 창에 대화 상자(`blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
-| `workflow` | 없음 | `seori start --workflow`로 따로 정하지 않은 모든 레인의 워크플로입니다. `"ulw"`면 레인을 `/goal ulw ...`로 시작해 선택 설치인 omp-ulw 확장으로 돌립니다. 없으면 omp 기본 목표 모드입니다. [워크플로](#워크플로) 참고 |
+| `workflow` | 없음 | `seori start --workflow`로 따로 정하지 않은 모든 레인의 워크플로입니다. `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"`, `"ulw-execute"` 가운데 하나면 레인을 그 omp-ulw 워크플로로 돌립니다. 없으면 omp 기본 목표 모드입니다. [워크플로](#워크플로) 참고 |
 | `startupWaitSeconds` | `180` | `seori start`가 새 레인의 시작 판정을 위해 몇 초까지 지켜보는지(시작 명령 20초 뒤 첫 확인, 그 뒤 10초마다). [레인이 시작되는 방법](#레인이-시작되는-방법) 참고 |
 | `supervision.defaults.wallMinutes` | `null` | 레인마다 걸린 시간 한도(분). `null`은 끔 |
 | `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |
