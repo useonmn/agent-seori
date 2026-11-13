@@ -43,7 +43,6 @@ These files contain portions of dori-superagent code licensed under the Sustaina
 - src/config.ts
 - src/harness.ts
 - src/messenger/presence.ts
-- src/messenger/slack-presence.ts
 - src/migrate-brief.ts
 - src/migrate-capture.ts
 - src/migrate-inbox.ts

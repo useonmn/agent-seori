@@ -5,12 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import {
-  DISCORD_IDENTIFY_BUDGET, discordPresence, IDENTIFY_WINDOW_MS, type PresenceDeps, RELEASE_TIMEOUT_MS, runPresence, SLACK_TICK_MS, STABLE_MS,
+  DISCORD_IDENTIFY_BUDGET, discordPresence, IDENTIFY_WINDOW_MS, type PresenceDeps, runPresence, STABLE_MS,
 } from "../src/messenger/presence.ts";
-import { type SlackCall, slackPresence } from "../src/messenger/slack-presence.ts";
 import { World } from "./fake.ts";
 
-// `seori presence`: sockets, timers, sleep, clock and the Slack Web API are all injected; nothing touches the network.
+// `seori presence`: sockets, timers, sleep and clock are all injected; nothing touches the network.
 
 const home = (secrets?: unknown) => {
   const root = mkdtempSync(join(tmpdir(), "seori-presence-"));
@@ -37,27 +36,12 @@ const fakeTimers = () => {
   };
 };
 
-type Call = { method: string; params: Record<string, unknown>; signal: AbortSignal | undefined };
-const socketAnswer = (method: string): Record<string, unknown> =>
-  method === "client.getWebSocketURL" ? { ok: true, primary_websocket_url: "wss://wss-primary.example/", routing_context: "gw-1" } : { ok: true };
-
-/** A fake Slack Web API: records every call and answers through `answer`. */
-const fakeSlack = (answer: (method: string, n: number) => Record<string, unknown> = socketAnswer) => {
-  const calls: Call[] = [];
-  const call: SlackCall = async (method, params, signal) => {
-    calls.push({ method, params, signal });
-    return answer(method, calls.length);
-  };
-  return { calls, call };
-};
-
 type Gateway = { sent: unknown[]; closed: boolean; at: number; msg: (m: unknown) => void; close: (code: number) => void };
 
-/** The whole run's world: `onTick` drives Slack after each hold, `onOpen` drives each new Discord connection. */
-function rig(opts: { onOpen?: (g: Gateway, i: number) => void; answer?: (method: string, n: number) => Record<string, unknown> } = {}) {
+/** The whole run's world: `onOpen` drives each new Discord connection. */
+function rig(opts: { onOpen?: (g: Gateway, i: number) => void } = {}) {
   const stop = new AbortController();
   const t = fakeTimers();
-  const slack = fakeSlack(opts.answer);
   const r = {
     stop,
     t,
@@ -65,19 +49,11 @@ function rig(opts: { onOpen?: (g: Gateway, i: number) => void; answer?: (method:
     out: [] as string[],
     err: [] as string[],
     slept: [] as number[],
-    calls: slack.calls,
-    auths: [] as { token: string; cookie: string }[],
-    lines: [] as { url: string; headers: Record<string, string>; frames: unknown[]; open: boolean }[],
     gateways: [] as Gateway[],
     onSleep: (_ms: number) => {},
     deps: undefined as unknown as PresenceDeps,
   };
   r.deps = {
-    openSlack: (url, headers) => {
-      const l = { url, headers: { ...headers }, frames: [] as unknown[], open: true };
-      r.lines.push(l);
-      return { isOpen: () => l.open, send: (f) => void l.frames.push(JSON.parse(f)), close: () => void (l.open = false) };
-    },
     openDiscord: () => {
       let onMessage: (d: string) => void = () => {};
       let onClose: (code: number) => void = () => {};
@@ -98,10 +74,6 @@ function rig(opts: { onOpen?: (g: Gateway, i: number) => void; answer?: (method:
         onClose: (cb) => void (onClose = cb),
       };
     },
-    slackApi: (auth) => {
-      r.auths.push(auth);
-      return slack.call;
-    },
     timers: t.timers,
     sleep: async (ms) => {
       r.slept.push(ms);
@@ -120,40 +92,6 @@ const ops = (g: Gateway) => g.sent.map((f) => (f as { op: number }).op);
 const reconnects = (out: string[]) => out.filter((l) => l.startsWith("PRESENCE_RECONNECT")).map((l) => Number(/retry_in=(\d+)s/.exec(l)![1]));
 
 // Ported from upstream's messenger-presence tests.
-
-test("Slack presence opens one client-type socket with the cookie, then only tickles it; release closes it and sets away", async () => {
-  const { calls, call } = fakeSlack();
-  const frames: string[] = [];
-  let opened: { url: string; headers: Record<string, string> } | null = null;
-  let open = false;
-  const p = slackPresence(
-    call,
-    (url, headers) => {
-      opened = { url, headers: { ...headers } };
-      open = true;
-      return {
-        isOpen: () => open,
-        send: (f) => frames.push(f),
-        close: () => {
-          open = false;
-        },
-      };
-    },
-    { token: "xt", cookie: "dc" },
-  );
-  expect(await p.hold()).toBe("opened");
-  expect(await p.hold()).toBe("tickled");
-  expect(await p.hold()).toBe("tickled");
-  const url = new URL(opened!.url);
-  expect(url.searchParams.get("token")).toBe("xt");
-  expect(url.searchParams.get("slack_client")).toBe("desktop");
-  expect(url.searchParams.get("gateway_server")).toBe("gw-1");
-  expect(opened!.headers).toEqual({ Cookie: "d=dc", Origin: "https://app.slack.com" });
-  expect(frames.map((f) => JSON.parse(f).type)).toEqual(["tickle", "tickle"]);
-  await p.release();
-  expect(open).toBe(false);
-  expect(calls.filter((c) => c.method === "users.setPresence").map((c) => c.params["presence"])).toEqual(["auto", "away"]);
-});
 
 test("Discord presence identifies as online after hello, heartbeats with the last sequence, and stops beating on close", () => {
   const sent: string[] = [];
@@ -186,96 +124,6 @@ test("Discord presence identifies as online after hello, heartbeats with the las
   p.close();
   expect(closed).toBe(true);
   expect(t.live.size).toBe(0);
-});
-
-describe("seori presence slack", () => {
-  const user = () => home({ slack: { botToken: "xoxb-test", userToken: "xoxc-test", cookie: "d-test" } });
-
-  test("with the user token and cookie from secrets.json: PRESENCE_READY, then opened / tickled each minute; a dropped socket reopens; a failed tick warns; stop sets away", async () => {
-    let tick = 0;
-    const r = rig({
-      answer: (method) => {
-        if (method === "users.setPresence" && tick === 3) throw new Error("slack users.setPresence: service_unavailable");
-        return socketAnswer(method);
-      },
-    });
-    r.onSleep = (ms) => {
-      if (ms !== SLACK_TICK_MS) return;
-      tick++;
-      if (tick === 2) r.lines[0]!.open = false; // the socket dropped
-      if (tick === 3) r.lines[1]!.open = false; // dropped again, and the reopen fails once
-      if (tick === 5) r.stop.abort();
-    };
-    expect(await runPresence(user(), "slack", r.deps, r.stop.signal)).toBe(0);
-    expect(r.auths).toEqual([{ token: "xoxc-test", cookie: "d-test" }]);
-    expect(r.out).toEqual([
-      "PRESENCE_READY slack",
-      "PRESENCE slack opened",
-      "PRESENCE slack tickled",
-      "PRESENCE slack opened",
-      "WARN slack users.setPresence: service_unavailable",
-      "PRESENCE slack opened",
-    ]);
-    expect(r.lines).toHaveLength(3);
-    expect(r.lines[0]!.frames).toEqual([{ type: "tickle", id: 1 }]);
-    expect(r.lines[0]!.headers).toEqual({ Cookie: "d=d-test", Origin: "https://app.slack.com" });
-    expect(new URL(r.lines[0]!.url).searchParams.get("token")).toBe("xoxc-test");
-    expect(r.slept).toEqual([SLACK_TICK_MS, SLACK_TICK_MS, SLACK_TICK_MS, SLACK_TICK_MS, SLACK_TICK_MS, RELEASE_TIMEOUT_MS]);
-    // setPresence auto on every open, away on release; never in answer to anything else
-    expect(r.calls.filter((c) => c.method === "users.setPresence").map((c) => c.params["presence"])).toEqual(["auto", "auto", "auto", "auto", "away"]);
-    expect(r.lines[2]!.open).toBe(false);
-  });
-
-  test("stop during an outage: every Slack call gets the abort signal, so the run settles promptly", async () => {
-    const r = rig();
-    const signals: (AbortSignal | undefined)[] = [];
-    const called = Promise.withResolvers<void>();
-    // A Slack API that never answers: a call ends only when its signal aborts.
-    r.deps = {
-      ...r.deps,
-      slackApi: () => (_method, _params, signal) => {
-        signals.push(signal);
-        called.resolve();
-        return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
-      },
-    };
-    const run = runPresence(user(), "slack", r.deps, r.stop.signal);
-    await called.promise;
-    expect(signals[0]).toBeInstanceOf(AbortSignal);
-    expect(signals[0]!.aborted).toBe(false);
-    r.stop.abort();
-    expect(await run).toBe(0);
-    expect(signals[0]!.aborted).toBe(true);
-    // the release (set away) call is bounded by its own deadline
-    expect(signals).toHaveLength(2);
-    expect(signals[1]!.aborted).toBe(true);
-    expect(r.out).toEqual(["PRESENCE_READY slack", "WARN aborted"]);
-  });
-
-  test("an error carrying the client socket URL is printed with the token redacted", async () => {
-    const r = rig();
-    r.onSleep = () => r.stop.abort();
-    r.deps = {
-      ...r.deps,
-      openSlack: (url) => {
-        throw new Error(`connect failed: ${url}`);
-      },
-    };
-    const root = home({ slack: { userToken: "xoxc-test-123", cookie: "d-test" } });
-    expect(await runPresence(root, "slack", r.deps, r.stop.signal)).toBe(0);
-    const warned = r.out.filter((l) => l.startsWith("WARN"));
-    expect(warned).toHaveLength(1);
-    expect(warned[0]).toStartWith("WARN connect failed: wss://wss-primary.example/");
-    expect(warned[0]).toContain("token=REDACTED");
-    expect(warned.join("\n")).not.toContain("xoxc-test-123");
-  });
-
-  test("the user token and cookie come from secrets.json: a missing key is named", async () => {
-    const r = rig();
-    await expect(runPresence(home({ slack: { botToken: "xoxb-test" } }), "slack", r.deps, r.stop.signal)).rejects.toThrow(`"slack": { "userToken": "..." }`);
-    await expect(runPresence(home({ slack: { userToken: "xoxc-test" } }), "slack", r.deps, r.stop.signal)).rejects.toThrow(`"slack": { "cookie": "..." }`);
-    expect(r.calls).toHaveLength(0);
-  });
 });
 
 describe("seori presence discord", () => {
@@ -452,11 +300,11 @@ test("seori presence: an unknown platform and a missing token are refusals (exit
   console.error = (...a: unknown[]) => void errors.push(a.join(" "));
   try {
     const refused = async (argv: string[]) => main(argv, d).then(() => "ran", (e: Error) => `${e.constructor.name}: ${e.message}`);
-    expect(await refused(["presence", "telegram"])).toStartWith("Refusal: seori presence takes slack or discord");
+    expect(await refused(["presence", "telegram"])).toStartWith("Refusal: seori presence takes discord");
+    expect(await refused(["presence", "slack"])).toStartWith("Refusal: seori presence takes discord");
     const missing = await refused(["presence", "discord"]);
     expect(missing).toStartWith("Refusal: no discord token");
     expect(missing).toContain(`"discord": { "token": "..." }`);
-    expect(await refused(["presence", "slack"])).toStartWith("Refusal: no slack userToken");
   } finally {
     console.error = err;
   }

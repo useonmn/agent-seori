@@ -145,10 +145,8 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                               setup: print the sender of the next DM to the bot; --write makes them the owner;
                                               --force re-pairs a configured Telegram owner (drops updates queued for the daemon)
-  seori presence <slack|discord>               keep the account shown online until stopped (Ctrl-C); prints PRESENCE_READY;
-                                              slack: the user account ("slack".userToken and .cookie in secrets.json),
-                                              PRESENCE slack opened|tickled each minute; discord: the bot, reconnecting
-                                              with backoff (PRESENCE_RECONNECT discord code=C retry_in=Ns)
+  seori presence discord                       keep the Discord bot shown online until stopped (Ctrl-C); prints PRESENCE_READY;
+                                              reconnects with backoff (PRESENCE_RECONNECT discord code=C retry_in=Ns)
 ${WATCH_USAGE}
 
 --text may be omitted to read the message from stdin.
@@ -1238,7 +1236,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "msg":
       return msg(d, a, x);
     case "presence": {
-      if (x !== "slack" && x !== "discord") throw new Refusal(`seori presence takes slack or discord\n\n${USAGE}`);
+      if (x !== "discord") throw new Refusal(`seori presence takes discord\n\n${USAGE}`);
       const stop = new AbortController();
       const onSignal = () => stop.abort();
       process.once("SIGINT", onSignal);

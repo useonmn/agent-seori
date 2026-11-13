@@ -82,7 +82,7 @@ describe("create / start / createGroup", () => {
 
   test("an agent terminal unsets the messenger tokens before its shell; the daemon and duty loop terminals keep them", () => {
     const TOKENS = [
-      "SEORI_TELEGRAM_TOKEN", "SEORI_DISCORD_TOKEN", "SEORI_SLACK_BOT_TOKEN", "SEORI_SLACK_APP_TOKEN", "SEORI_SLACK_USER_TOKEN", "SEORI_SLACK_COOKIE",
+      "SEORI_TELEGRAM_TOKEN", "SEORI_DISCORD_TOKEN", "SEORI_SLACK_BOT_TOKEN", "SEORI_SLACK_APP_TOKEN",
     ];
     const argv = (role: SessionRole) => createArgv({ name: "x", cwd: "/w", env: { SEORI_LANE: "x" }, role, container: "tab" }, "sh", undefined);
     const unset = (a: string[]) => a.flatMap((v, i) => (v === "-u" ? [a[i + 1] ?? ""] : []));

@@ -22,8 +22,6 @@ export const MESSENGER_TOKEN_ENV = [
   "SEORI_DISCORD_TOKEN",
   "SEORI_SLACK_BOT_TOKEN",
   "SEORI_SLACK_APP_TOKEN",
-  "SEORI_SLACK_USER_TOKEN",
-  "SEORI_SLACK_COOKIE",
 ] as const;
 /**
  * The terminals that run only seori's own resident process and talk to the messengers (macOS): the daemon and the duty

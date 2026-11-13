@@ -187,7 +187,7 @@ seori msg trust list                         the trusted senders, one TRUSTED li
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             setup: print the sender of the next DM to the bot; --write makes them the owner;
                                             --force re-pairs a configured Telegram owner (drops updates queued for the daemon)
-seori presence <slack|discord>               keep the account shown online until stopped (see Presence)
+seori presence discord                       keep the Discord bot shown online until stopped (see Presence)
 seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                  | --pane PANE --status idle|working|blocked|gone)
                  [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
@@ -431,7 +431,7 @@ Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuse
 | source | what to create | `owner` | env variables |
 |---|---|---|---|
 | `telegram` | a bot from @BotFather; send it `/start` once in a DM. For groups or forum topics, turn privacy mode off (`/setprivacy`) | your numeric user id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write`, `im:history` and `reactions:write` (plus `app_mentions:read`, `channels:history` for channels), bot event `message.im`, and the Messages tab enabled; or, instead of an app, a member account's user token and `d` cookie (`userToken`, `cookie`; needs a paid seat, polled once a minute) | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (or `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
+| `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write`, `im:history` and `reactions:write` (plus `app_mentions:read`, `channels:history` for channels), bot event `message.im`, and the Messages tab enabled | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
 | `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only) and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check` asks each configured messenger who its bot is, which proves the tokens work: it prints `OK <source>: <who the bot is>` or `FAIL <source>: <why>` per messenger and exits 1 when any fails. `seori msg check <source>` checks that one source, and works before `messengers.json` has an entry for it: only its token matters.
@@ -458,10 +458,9 @@ seori msg pair telegram --write
 
 ### Presence
 
-`seori presence discord` and `seori presence slack` keep an account shown online until Ctrl-C or SIGTERM (exit 0), the way upstream dori does. A missing token is a refusal (exit 2) naming the `secrets.json` key. Each prints `PRESENCE_READY <platform>` once it starts.
+`seori presence discord` keeps the Discord bot shown online until Ctrl-C or SIGTERM (exit 0), the way upstream dori does. A missing token is a refusal (exit 2) naming the `secrets.json` key. It prints `PRESENCE_READY discord` once it starts.
 
 - Discord: the bot (`"discord": { "token": ... }` in `secrets.json`, or `SEORI_DISCORD_TOKEN`). A gateway connection identifies with status online and heartbeats. When it ends (the socket closed, or Discord sent op 7 or op 9), it prints `PRESENCE_RECONNECT discord code=<why> retry_in=<n>s` and identifies again on a new connection after a backoff that starts at 5 s, doubles up to 300 s, and is back at 5 s once a connection held for 10 minutes. Identifies are capped at 200 per rolling 24 hours (counted in `$SEORI_HOME/presence/discord-identify.json`, well under the 1,000 a day past which Discord resets the token); when the budget is spent it prints `PRESENCE_WAIT discord identify budget spent; next identify in <n>s` and waits. A rejected token (close 4004) or a refused setup (close 4010-4014) prints `PRESENCE_FAILED discord: <why>` and exits 1 instead of identifying again.
-- Slack: a regular Slack user account, since Slack shows an account as active only while a web-client socket is open ([user presence and status](https://docs.slack.dev/apis/web-api/user-presence-and-status)). It needs that account's client token and its `d` cookie in `secrets.json` as `"slack": { "userToken": "xoxc-...", "cookie": "..." }` (no environment variables). Every minute it either opens the socket (`users.setPresence` `auto`, then `client.getWebSocketURL`) and prints `PRESENCE slack opened`, or sends a tickle on the open one and prints `PRESENCE slack tickled`. A failed minute prints `WARN <why>` and the next minute tries again. When stopped it closes the socket and sets `away`. A change of presence the account's owner makes by hand is left as it is.
 
 ### Receiving
 
@@ -750,7 +749,7 @@ None. seori sends nothing anywhere.
 - A repository with no `repoIdentities` entry has its commit identities skipped, and the output says so; it is not a failure.
 - A host figure that cannot be read (disk, sessions) holds no lane and raises no alert.
 - The owner is paired with `seori msg pair`, from the sender of the next direct message to the bot.
-- Slack runs as a bot app in Socket Mode, or with a member's user token and `d` cookie (polled once a minute).
+- Slack runs as a bot app in Socket Mode (bot token only).
 - Voice: Telegram voice notes are transcribed only when you set `hooks.transcribe`.
 - The seori mode skill (`skills/seori-mode`) takes the place of Dori mode.
 

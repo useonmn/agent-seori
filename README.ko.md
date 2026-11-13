@@ -187,7 +187,7 @@ seori msg trust list                         신뢰하는 보낸 사람을 한 �
 seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                             설정용: 봇에게 다음에 DM을 보낸 사람을 출력. --write는 그 사람을 주인으로 기록;
                                             --force는 이미 등록된 텔레그램 주인을 다시 등록 (데몬 몫으로 쌓인 메시지는 버려짐)
-seori presence <slack|discord>               멈출 때까지 계정을 온라인으로 보이게 둡니다 (온라인 표시 참고)
+seori presence discord                       멈출 때까지 디스코드 봇을 온라인으로 보이게 둡니다 (온라인 표시 참고)
 seori watch add (--command CMD [--filter RE] [--cwd DIR] | --file PATH | --checks OWNER/REPO#N
                  | --pane PANE --status idle|working|blocked|gone)
                  [--name N] [--persistent] [--timeout DUR] [--for lead|KEY]
@@ -423,7 +423,7 @@ seori worklog list --open
 | source | 만들 것 | `owner` | 환경 변수 |
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기. 앱 대신 멤버 계정의 사용자 토큰과 `d` 쿠키(`userToken`, `cookie`)도 됩니다(유료 좌석 필요, 1분마다 확인) | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` (또는 `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`) |
+| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
 | `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
@@ -450,10 +450,9 @@ seori msg pair telegram --write
 
 ### 온라인 표시
 
-`seori presence discord`와 `seori presence slack`은 Ctrl-C나 SIGTERM을 받을 때까지(종료 코드 0) 계정을 온라인으로 보이게 둡니다. 원본 dori와 같은 방식입니다. 토큰이 없으면 `secrets.json`의 어느 키가 필요한지 알려 주고 거절합니다(종료 코드 2). 시작하면 `PRESENCE_READY <platform>`을 한 번 출력합니다.
+`seori presence discord`는 Ctrl-C나 SIGTERM을 받을 때까지(종료 코드 0) 디스코드 봇을 온라인으로 보이게 둡니다. 원본 dori와 같은 방식입니다. 토큰이 없으면 `secrets.json`의 어느 키가 필요한지 알려 주고 거절합니다(종료 코드 2). 시작하면 `PRESENCE_READY discord`을 한 번 출력합니다.
 
 - 디스코드: 봇입니다(`secrets.json`의 `"discord": { "token": ... }`, 또는 `SEORI_DISCORD_TOKEN`). 상태를 online으로 해서 identify하고 하트비트를 보내는 게이트웨이 연결을 유지합니다. 연결이 끝나면(소켓이 닫힘, 디스코드가 op 7이나 op 9를 보냄) `PRESENCE_RECONNECT discord code=<이유> retry_in=<n>s`를 출력하고, 기다렸다가 새 연결에서 다시 identify합니다. 기다리는 시간은 5초에서 시작해 두 배씩 늘어 300초까지 가고, 한 연결이 10분 넘게 버티면 다시 5초가 됩니다. identify는 24시간 동안 200번까지만 합니다(`$SEORI_HOME/presence/discord-identify.json`에 셉니다. 하루 1,000번을 넘기면 디스코드가 토큰을 초기화하므로 그보다 한참 적게 잡았습니다). 다 쓰면 `PRESENCE_WAIT discord identify budget spent; next identify in <n>s`를 출력하고 기다립니다. 토큰을 거절당하거나(close 4004) 연결 설정을 거절당하면(close 4010-4014) 다시 identify하지 않고 `PRESENCE_FAILED discord: <이유>`를 출력하고 종료 코드 1로 끝납니다.
-- 슬랙: 일반 슬랙 사용자 계정입니다. 슬랙은 웹 클라이언트 소켓이 열려 있는 동안에만 계정을 활성으로 보여 주기 때문입니다([user presence and status](https://docs.slack.dev/apis/web-api/user-presence-and-status)). 그 계정의 클라이언트 토큰과 `d` 쿠키가 `secrets.json`에 `"slack": { "userToken": "xoxc-...", "cookie": "..." }`로 있어야 합니다(환경 변수는 안 씁니다). 1분마다 소켓을 열거나(`users.setPresence` `auto` 뒤 `client.getWebSocketURL`) `PRESENCE slack opened`를 출력하고, 열린 소켓에는 tickle을 보내고 `PRESENCE slack tickled`를 출력합니다. 실패하면 `WARN <이유>`를 출력하고 다음 1분에 다시 시도합니다. 멈출 때 소켓을 닫고 `away`로 둡니다. 계정 주인이 손으로 바꾼 상태는 그대로 둡니다.
 
 ### 받기
 
@@ -735,7 +734,7 @@ hc 끝단 테스트(`test/e2e-hc.test.ts`, `test/e2e-hc-cli.test.ts`)는 자체 
 - `repoIdentities` 항목이 없는 저장소는 커밋 신원 확인을 건너뛰고, 출력에 그렇게 적습니다. 실패로 보지 않습니다.
 - 읽지 못한 컴퓨터 값(디스크, 세션 수)으로는 레인을 막지도, 알리지도 않습니다.
 - 주인은 `seori msg pair`로 등록합니다. 봇에게 다음에 DM을 보낸 사람이 주인이 됩니다.
-- 슬랙은 Socket Mode 봇 앱으로 쓰거나, 멤버 계정의 사용자 토큰과 `d` 쿠키로 씁니다(1분마다 확인).
+- 슬랙은 Socket Mode 봇 앱으로만 씁니다(봇 토큰만).
 - 음성: 텔레그램 음성 메시지는 `hooks.transcribe`를 설정해야 필사됩니다.
 - 원본의 Dori 모드 대신 서리 모드 스킬(`skills/seori-mode`)이 있습니다.
 

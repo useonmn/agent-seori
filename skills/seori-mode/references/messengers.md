@@ -4,24 +4,12 @@ seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the 
 
 Do every login and every click in the browser with the owner; never ask them to paste a password into this session.
 
-## 0. Which token
-
-Ask which token seori should use, give the trade-off as one short list, and wait for the choice. Record it.
-
-- **Slack**
-  - **User token**: seori acts as a real member of the workspace, its own account (never the owner's: seori refuses that, since it would read its own replies as the owner's). It needs a paid seat, which the owner pays for; it reads everything that member can see (onboarding can learn from all of it); it checks for news once a minute; it can show a green online dot (`seori presence slack`); its picture is that member's profile photo.
-  - **Bot token**: seori is a Slack app in Socket Mode. No seat cost; it only sees DMs with it and channels it is invited to, within the app's scopes (invite it where the real work happens); it shows as an app.
-- **Discord**
-  - **Bot token** (recommended): seori's own bot. It only sees the servers and channels it is invited to.
-  - **User token**: the owner's own account (agent-messenger's `agent-discord`). It sees everything the owner sees, but Discord treats automating a user account ("self-bot") as against its terms and can suspend the account. seori's daemon still runs on a bot; the user token is only for the agent-messenger commands. Use it only if the owner chooses it after this warning.
-- **Telegram**: a bot token from @BotFather.
-
 ## agent-messenger
 
-agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself, such as sending files. Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use the command that matches the token chosen above, given the same token seori uses:
+agent-messenger (github.com/agent-messenger/agent-messenger, MIT) does what seori does not do itself, such as sending files. Ask the owner whether to install it (`npm install -g agent-messenger`) and wait. Use its bot command, given the same bot token seori uses:
 
-- Slack bot: `agent-slackbot auth set <xoxb-token>`; user token: `agent-slack auth extract` (reads the token and cookie from the Slack app or browser where seori's account is signed in).
-- Discord bot: `agent-discordbot auth set <token>`; user token: `agent-discord auth extract`, only after the warning above.
+- Slack: `agent-slackbot auth set <xoxb-token>`.
+- Discord: `agent-discordbot auth set <token>`.
 - Telegram: `agent-telegrambot auth set <token>`.
 
 It can also drive bot creation below. seori does not need it to receive or answer messages.
@@ -39,12 +27,7 @@ One program per bot token: two programs reading the same bot make Telegram answe
 
 ### Slack
 
-Two ways, chosen with the owner in step 0:
-
-- **Bot app** (below): no paid seat, shows as an app, only sees DMs with the bot and channels it is invited to.
-- **User token**: seori acts as a real member of the workspace (see "Slack with a user token" below). It needs a member seat the owner pays for, sees everything that member can see, and checks for news once a minute instead of getting events live.
-
-The bot app runs in Socket Mode, so no public URL is needed:
+seori is a Slack app with a bot token. It only sees DMs with the bot and channels it is invited to, within the app's scopes (invite it where the real work happens). The bot app runs in Socket Mode, so no public URL is needed:
 
 1. https://api.slack.com/apps → Create New App → From a manifest → pick the workspace → paste:
 
@@ -71,17 +54,6 @@ The bot app runs in Socket Mode, so no public URL is needed:
 4. The owner opens the app in Slack (Apps → the app → Messages tab) so the DM exists.
 5. Optional, to show seori as an agent: Agents → turn on "Mark this app as an agent app" (adds `assistant:write`), Event Subscriptions → add `assistant_thread_started` and `assistant_thread_context_changed`, then reinstall the app (the tokens stay the same). Add `"options": { "agent": true }` to the slack entry of `~/.seori/messengers.json` so seori answers each DM in its thread and shows a working status there while the lead works.
 
-### Slack with a user token
-
-1. Create a member account for seori itself (a paid seat), separate from the owner's account, and sign it in at the workspace in a browser profile of its own. It must not be the owner's account: seori refuses a token whose user is the owner, since it would read its own replies as the owner's messages.
-2. Take that session's client token (`xoxc-...`) and its `d` cookie (`xoxd-...`):
-   - with agent-messenger: `agent-slack auth extract` reads both from the signed-in Slack desktop app or browser; run it where seori's account is the one signed in, not the owner's;
-   - by hand in the browser: the `d` cookie is under the workspace's cookies (developer tools → Application → Cookies → `https://app.slack.com`); the token is `localConfig_v2` → `teams` → `<team>` → `token` in Local Storage of `app.slack.com`.
-3. Write both to secrets.json (next section) with no `botToken`, or set `"options": { "mode": "user" }` on the slack entry of `~/.seori/messengers.json`.
-4. The owner DMs this account (or mentions it in a channel).
-
-seori reads only the DM with the owner and the group DMs, channels and threads where this account is mentioned or has posted; colleagues may DM the account, and those DMs are never read. Pairing (`seori msg pair slack`) takes only a DM sent after it started, but a colleague may DM the account in that window too: run it without `--write` first, check that the CANDIDATE is the owner, then run it again with `--write` and have the owner send one more message. The token and cookie stop working when that browser session signs out or expires; seori then stops with a message saying to refresh them. `"agent": true` needs a bot app and is refused in this mode. Edits of a message are not seen in this mode. `pollIntervalMs` in the entry's options changes the one-minute check.
-
 ### Discord
 
 1. https://discord.com/developers/applications → New Application, with the chosen name.
@@ -96,7 +68,6 @@ seori reads only the DM with the owner and the group DMs, channels and threads w
 ```json
 { "telegram": { "token": "123456:ABC..." } }
 { "slack": { "botToken": "xoxb-...", "appToken": "xapp-..." } }
-{ "slack": { "userToken": "xoxc-...", "cookie": "xoxd-..." } }
 { "discord": { "token": "..." } }
 ```
 
@@ -104,7 +75,7 @@ seori reads only the DM with the owner and the group DMs, channels and threads w
 chmod 600 ~/.seori/secrets.json
 ```
 
-Write the file with a file tool, never through a shell string or `echo`, and never print a token back. Environment variables win over the file if set: `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_SLACK_USER_TOKEN`, `SEORI_SLACK_COOKIE`, `SEORI_DISCORD_TOKEN`. On hc seori unsets them in the lead, duty, lane and hourly-loop terminals, so the lead's `seori msg` needs the tokens in this file.
+Write the file with a file tool, never through a shell string or `echo`, and never print a token back. Environment variables win over the file if set: `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN`. On hc seori unsets them in the lead, duty, lane and hourly-loop terminals, so the lead's `seori msg` needs the tokens in this file.
 
 ## 3. Pair the owner
 

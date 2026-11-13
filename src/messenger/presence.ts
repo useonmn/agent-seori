@@ -1,12 +1,8 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { join } from "node:path";
 import { CursorFile, secret } from "./common.ts";
-import { type OpenLine, type SlackAuth, type SlackCall, slackApi, slackPresence } from "./slack-presence.ts";
 
-// `seori presence slack|discord`, the upstream design:
-// Slack: a web-client socket on the user token and `d` cookie (slack-presence.ts), held by hold() once a minute, which
-// prints `PRESENCE slack opened` (users.setPresence auto, then a new socket) or `PRESENCE slack tickled`; a failed tick
-// prints `WARN <why>` and the next minute tries again. Stopping closes the socket and sets away.
+// `seori presence discord`, the upstream design:
 // Discord: a gateway connection that identifies with status online and heartbeats. Unlike upstream, a closed
 // connection (or op 7 / op 9) is followed by a new one after a backoff (5 s doubling to 300 s, reset only after a
 // connection held 10 minutes), every identify counts against a budget persisted in $SEORI_HOME/presence/, and a
@@ -19,23 +15,17 @@ export const STABLE_MS = 10 * 60_000;
 /** Discord identifies allowed per rolling IDENTIFY_WINDOW_MS (Discord allows 1,000 a day and resets the token past it). */
 export const DISCORD_IDENTIFY_BUDGET = 200;
 export const IDENTIFY_WINDOW_MS = 24 * 60 * 60_000;
-/** Slack: how often hold() runs (upstream's `every(1, ...)`). */
-export const SLACK_TICK_MS = 60_000;
-/** How long setting away on release may take once stopped. */
-export const RELEASE_TIMEOUT_MS = 10_000;
 /** A gateway that has not sent hello (op 10) this long after opening is closed and replaced. */
 export const HELLO_TIMEOUT_MS = 30_000;
 export const DISCORD_INTENTS_GUILD_MESSAGES = 1 << 9;
 const DISCORD_GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json";
 
-export type Platform = "slack" | "discord";
+export type Platform = "discord";
 export type Timers = { setInterval(cb: () => void, ms: number): unknown; clearInterval(handle: unknown): void };
 export type GatewaySocket = { send(data: string): void; close(): void; onMessage(cb: (data: string) => void): void; onClose(cb: (code: number) => void): void };
 
 export type PresenceDeps = {
-  readonly openSlack: OpenLine;
   readonly openDiscord: () => GatewaySocket;
-  readonly slackApi: (auth: SlackAuth) => SlackCall;
   readonly timers: Timers;
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => number;
@@ -210,31 +200,6 @@ async function holdDiscord(token: string, budgetPath: string, deps: PresenceDeps
   return 0;
 }
 
-const warn = (e: unknown) => redact(`WARN ${e instanceof Error ? e.message : String(e)}`).slice(0, 300);
-
-/** Slack: hold() every minute until `signal` aborts, then release (exit 0). */
-async function holdSlack(auth: SlackAuth, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
-  const p = slackPresence(deps.slackApi(auth), deps.openSlack, auth);
-  deps.log("PRESENCE_READY slack");
-  while (!signal.aborted) {
-    try {
-      deps.log(`PRESENCE slack ${await p.hold(signal)}`);
-    } catch (e) {
-      if (!signal.aborted) deps.log(warn(e));
-    }
-    await pause(SLACK_TICK_MS, signal, deps.sleep);
-  }
-  // The stop signal is already aborted, so release gets its own deadline instead of waiting out an outage.
-  const deadline = new AbortController();
-  void deps.sleep(RELEASE_TIMEOUT_MS).then(() => deadline.abort());
-  try {
-    await p.release(deadline.signal);
-  } catch (e) {
-    deps.log(warn(e));
-  }
-  return 0;
-}
-
 function token(root: string, source: string, key: string, envName: string | undefined, env: Record<string, string | undefined>): string {
   try {
     return secret(root, source, key, envName, env);
@@ -243,26 +208,16 @@ function token(root: string, source: string, key: string, envName: string | unde
   }
 }
 
-/** `seori presence <platform>`: Slack reads "slack".userToken and .cookie from secrets.json; Discord the bot token. */
-export async function runPresence(root: string, platform: Platform, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
+/** `seori presence discord`: the Discord bot token. */
+export async function runPresence(root: string, _platform: Platform, deps: PresenceDeps, signal: AbortSignal): Promise<number> {
   const env = deps.env ?? process.env;
-  if (platform === "slack") {
-    const auth = { token: token(root, "slack", "userToken", undefined, env), cookie: token(root, "slack", "cookie", undefined, env) };
-    return holdSlack(auth, deps, signal);
-  }
   const bot = token(root, "discord", "token", "SEORI_DISCORD_TOKEN", env);
   return holdDiscord(bot, join(root, "presence", "discord-identify.json"), deps, signal);
 }
 
-/** The real sockets, timers and Slack Web API. */
+/** The real sockets and timers. */
 export function realPresenceDeps(): PresenceDeps {
   return {
-    openSlack: (url, headers) => {
-      // Bun's WebSocket takes an options object with headers; the DOM typing in scope only knows protocols.
-      const BunWebSocket = WebSocket as unknown as new (url: string, init: Bun.WebSocketOptions) => WebSocket;
-      const ws = new BunWebSocket(url, { headers: { ...headers } });
-      return { isOpen: () => ws.readyState === WebSocket.OPEN, send: (f) => ws.send(f), close: () => ws.close() };
-    },
     openDiscord: () => {
       const ws = new WebSocket(DISCORD_GATEWAY);
       return {
@@ -272,7 +227,6 @@ export function realPresenceDeps(): PresenceDeps {
         onClose: (cb) => ws.addEventListener("close", (e) => cb(e.code)),
       };
     },
-    slackApi: (auth) => slackApi(auth),
     timers: { setInterval: (cb, ms) => setInterval(cb, ms), clearInterval: (h) => clearInterval(h as Timer) },
     sleep: (ms) => Bun.sleep(ms),
     now: Date.now,
