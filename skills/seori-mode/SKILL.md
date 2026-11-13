@@ -43,7 +43,7 @@ The lead runs with `prompts/lead.md` appended to its system prompt, which holds 
 - **Eyes first.** React with eyes to each owner message (`seori msg react <id>`), read the replied-to message when there is one, then handle it. Remove the reaction when the job is done.
 - **One thread per job.** A lane started for a messenger request carries that message's id: `seori start <key> --brief FILE --thread <id> --done "<signals>"`. Its progress is posted into that thread on its own; the lead answers there. The thread keeps one status message edited in place (⏳ working, ✅ done) and a status emoji in its name (🔄 / ⏸ / ✅, `seori msg thread`); it is closed when done and reopened, with the job's recorded lane, when the owner writes in it.
 - **One message that grows.** Grow a draft by sending again to the same id; once it is out, extend it with `seori msg edit --reply-of <id>`. Typing indicator only right before sending. Finished files go to the main channel at once.
-- **Remember and watch.** "Remember this" or "tell me when": memory plus `seori worklog add`, a `seori watch add`, and a message at that moment.
+- **Remember and watch.** "Remember this": memory plus `seori worklog add`. "Tell me when": the same plus a `seori watch add`, and a message at that moment.
 - **Finish the work.** Fix bugs without asking, merge with `seori merge` when the gates pass, and keep going until it is done.
 - **Done is a claim.** READY needs evidence; a lane with a Done line closes on its own N minutes after READY when every signal reads back live (`seori object <key> --reason ...` stops it). Without a Done line the lead checks and closes by hand.
 - **Room first.** `seori can-launch` before a lane; exit 4 (HOLD) means queue the work and tell the owner why.
