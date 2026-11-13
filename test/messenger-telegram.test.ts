@@ -112,7 +112,7 @@ describe("TelegramAdapter receive", () => {
     const t = setup();
     t.updates.push(dm(10, 5, "hello"));
     const got = await collect(t.adapter, 1);
-    expect(got).toEqual([{ id: "telegram:42:5", source: "telegram", chat: "42", from: "42", at: 1_700_000_000_000, text: "hello" }]);
+    expect(got).toEqual([{ id: "telegram:42:5", source: "telegram", chat: "42", from: "42", sender: { kind: "owner", id: "42" }, at: 1_700_000_000_000, text: "hello" }]);
     expect(cursor(t.root)).toEqual({ offset: 11 });
     expect(t.calls.filter((c) => c.method === "deleteWebhook")).toEqual([{ method: "deleteWebhook", body: { drop_pending_updates: false } }]);
     const poll = t.calls.find((c) => c.method === "getUpdates")!;
@@ -171,7 +171,7 @@ describe("TelegramAdapter receive", () => {
   test("an edit becomes an :edit:<edit_date> id with an (edited) prefix", async () => {
     const t = setup();
     t.updates.push({ update_id: 1, edited_message: { message_id: 5, from: { id: 42 }, chat: { id: 42, type: "private" }, date: 100, edit_date: 160, text: "fixed" } });
-    expect(await collect(t.adapter, 1)).toEqual([{ id: "telegram:42:5:edit:160", source: "telegram", chat: "42", from: "42", at: 160_000, text: "(edited) fixed" }]);
+    expect(await collect(t.adapter, 1)).toEqual([{ id: "telegram:42:5:edit:160", source: "telegram", chat: "42", from: "42", sender: { kind: "owner", id: "42" }, at: 160_000, text: "(edited) fixed" }]);
   });
 
   test("attachments add one line each with telegram-file refs; the caption is the text", async () => {

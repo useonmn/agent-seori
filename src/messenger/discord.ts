@@ -430,7 +430,7 @@ export class DiscordAdapter implements MessengerAdapter {
         const replyTo = m.type === 19 && typeof ref?.message_id === "string"
           ? { id: messageId(this.source, ref.channel_id ?? chat, ref.message_id), ...(m.referenced_message?.content ? { text: m.referenced_message.content } : {}) }
           : undefined;
-        await onMessage({ id, source: this.source, chat, from, at: Number.isFinite(at) ? at : this.now(), text, ...(replyTo ? { replyTo } : {}) });
+        await onMessage({ id, source: this.source, chat, from, sender: { kind: "owner", id: from }, at: Number.isFinite(at) ? at : this.now(), text, ...(replyTo ? { replyTo } : {}) });
         this.remember(id);
       }
     }
@@ -449,7 +449,7 @@ export class DiscordAdapter implements MessengerAdapter {
     if (this.delivered.has(id)) return;
     const text = this.body(m);
     if (!text) return;
-    await onMessage({ id, source: this.source, chat: m.channel_id, from: this.owner, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
+    await onMessage({ id, source: this.source, chat: m.channel_id, from: this.owner, sender: { kind: "owner", id: this.owner }, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
     this.remember(id);
   }
 

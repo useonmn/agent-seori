@@ -2,12 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { Channel } from "../src/channel.ts";
+import { Channel, type MessengerRow } from "../src/channel.ts";
+import { DeliverySchedule, renderDelivery } from "../src/lead-delivery.ts";
 import { daemonLoop } from "../src/cli.ts";
 import { down, DOWN_GROUPS, recordPath } from "../src/down.ts";
 import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, MAX_RESTART_DELAY_MS, readHealth, restartDelay, runDaemon } from "../src/daemon.ts";
 import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
-import { FakeAdapter } from "../src/messenger/fake.ts";
+import { FAKE_BOT_ID, FakeAdapter } from "../src/messenger/fake.ts";
 import { noActions } from "./fake.ts";
 import { adapterFor } from "../src/messenger/index.ts";
 import { type Watch, WatchStore } from "../src/watch/store.ts";
@@ -39,7 +40,7 @@ function start(root: string, opts: Parameters<typeof runDaemon>[1] = {}) {
 }
 
 const fakePoll = (config: MessengerConfig, root: string): MessengerAdapter =>
-  config.source === "fake" ? new FakeAdapter(root, { pollMs: 5 }) : adapterFor(config, root);
+  config.source === "fake" ? new FakeAdapter(root, { pollMs: 5, owner: config.owner }) : adapterFor(config, root);
 const fakeIn = (root: string, r: Record<string, unknown>) => {
   mkdirSync(join(root, "messenger", "fake"), { recursive: true });
   appendFileSync(join(root, "messenger", "fake", "in.jsonl"), `${JSON.stringify(r)}\n`);
@@ -55,18 +56,18 @@ const gone = (pid: number): boolean => {
     return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
 };
-const msg = (id: string, from = "u1"): InboundMessage => ({ id, source: "x", chat: "c", from, at: 1, text: `text ${id}` });
+const msg = (id: string, from = "u1"): InboundMessage => ({ id, source: "x", chat: "c", from, sender: { kind: "owner", id: from }, at: 1, text: `text ${id}` });
 
 describe("runDaemon", () => {
-  test("stores an owner message from the fake messenger and drops other senders", async () => {
+  test("stores an owner message from the fake messenger; a stranger in a thread seori is not in never reaches it", async () => {
     const root = home([{ source: "fake", owner: "u1" }]);
     fakeIn(root, { msgId: "1", chat: "c", thread: "t", from: "stranger", text: "let me in", at: 3 });
     fakeIn(root, { msgId: "2", chat: "c", thread: "t", from: "u1", text: "hello lead", at: 4 });
     const d = start(root, { adapterFor: fakePoll });
     await until("stored", () => d.events.some((e) => e.ev === "stored"));
     await d.stop();
-    expect(new Channel(root).inbound()).toEqual([{ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", thread: "t", from: "u1", at: 4, text: "hello lead" }]);
-    expect(d.lines()).toEqual(["DAEMON dropped fake:c:1 from stranger", "DAEMON stored fake:c:2"]);
+    expect(new Channel(root).inbound()).toEqual([{ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", thread: "t", from: "u1", sender: { kind: "owner", id: "u1" }, at: 4, text: "hello lead" }]);
+    expect(d.lines()).toEqual(["DAEMON stored fake:c:2"]);
     expect(new FakeAdapter(root).offset()).toBe(2);
   });
 
@@ -77,7 +78,7 @@ describe("runDaemon", () => {
     await until("stored", () => d.events.some((e) => e.ev === "stored"));
     await d.stop();
     expect(new Channel(root).inbound()).toEqual([
-      { id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u1", at: 5, text: "yes", replyTo: { id: "fake:c:2", text: "Shall I ship?" } },
+      { id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u1", sender: { kind: "owner", id: "u1" }, at: 5, text: "yes", replyTo: { id: "fake:c:2", text: "Shall I ship?" } },
     ]);
   });
 
@@ -396,4 +397,84 @@ describe("seori daemon process", () => {
       killAll(sh, root);
     }
   }, 30_000);
+});
+
+describe("talking with people and agents other than the owner", () => {
+  const fakeConfig = (extra: Record<string, unknown> = {}) => {
+    const root = home([{ source: "fake", owner: "u1", options: { pollMs: 5 } }]);
+    if (Object.keys(extra).length) writeFileSync(join(root, "config.json"), JSON.stringify(extra));
+    return root;
+  };
+  /** Runs the daemon with the real fake adapter until every row of in.jsonl was handled. */
+  async function run(root: string, rows: Record<string, unknown>[]) {
+    for (const r of rows) fakeIn(root, r);
+    const d = start(root);
+    await until("all rows handled", () => new FakeAdapter(root).offset() === rows.length);
+    await d.stop();
+    return { d, rows: new Channel(root).inbound() as MessengerRow[] };
+  }
+
+  test("a direct message from a person reaches the lead labelled as a person", async () => {
+    const root = fakeConfig();
+    const { rows } = await run(root, [{ msgId: "1", chat: "dm2", dm: true, from: "u2", name: "Bob", text: "hi seori", at: 3 }]);
+    expect(rows.map((r) => [r.id, r.sender])).toEqual([["fake:dm2:1", { kind: "person", id: "u2", name: "Bob" }]]);
+    const text = renderDelivery(new DeliverySchedule().decide(new Channel(root).states(), 10, true, { kind: "scan" }).deliver, "seori");
+    expect(text).toContain("[fake:dm2:1] fake from person Bob (u2): hi seori");
+  });
+
+  test("a top-level channel message from a person needs a mention", async () => {
+    const root = fakeConfig();
+    const { rows } = await run(root, [
+      { msgId: "1", chat: "c", from: "u2", text: "talking among ourselves" },
+      { msgId: "2", chat: "c", from: "u2", text: "@seori look at this", mentions: true },
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["fake:c:2"]);
+  });
+
+  test("inside a thread seori replied in, a person's message needs no mention", async () => {
+    const root = fakeConfig();
+    await new FakeAdapter(root).send({ chat: "c", thread: "t" }, "on it");
+    const { rows } = await run(root, [
+      { msgId: "1", chat: "c", thread: "t", from: "u2", text: "and also this" },
+      { msgId: "2", chat: "c", thread: "other", from: "u2", text: "not for seori" },
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["fake:c:1"]);
+  });
+
+  test("agentTurnLimit stops an agent loop with one line to the lead; a human message resets the count", async () => {
+    const root = fakeConfig({ agentTurnLimit: 2 });
+    await new FakeAdapter(root).send({ chat: "c", thread: "t" }, "hello agents");
+    const agent = (n: string) => ({ msgId: n, chat: "c", thread: "t", from: "b1", name: "Helper", bot: true, text: `agent says ${n}` });
+    const { d, rows } = await run(root, [agent("a1"), agent("a2"), agent("a3"), agent("a4"), { msgId: "p1", chat: "c", thread: "t", from: "u2", text: "stop it" }, agent("a5")]);
+    expect(rows.map((r) => r.id)).toEqual(["fake:c:a1", "fake:c:a2", "fake:c:a3", "fake:c:p1", "fake:c:a5"]);
+    expect(rows.map((r) => r.loopStopped)).toEqual([undefined, undefined, 2, undefined, undefined]);
+    expect(rows[2]!.sender).toEqual({ kind: "agent", id: "b1", name: "Helper" });
+    expect(d.lines()).toContain("DAEMON dropped fake:c:a4 from b1");
+  });
+
+  test("talkWithOthers false: only the owner's messages reach the lead, as before", async () => {
+    const root = fakeConfig({ talkWithOthers: false });
+    const { d, rows } = await run(root, [
+      { msgId: "1", chat: "dm2", dm: true, from: "u2", text: "hi" },
+      { msgId: "2", chat: "c", from: "u2", text: "@seori", mentions: true },
+      { msgId: "3", chat: "c", from: "u1", text: "owner here", at: 4 },
+    ]);
+    expect(rows).toEqual([{ id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u1", sender: { kind: "owner", id: "u1" }, at: 4, text: "owner here" }]);
+    expect(d.lines()).toEqual(["DAEMON dropped fake:dm2:1 from u2", "DAEMON dropped fake:c:2 from u2", "DAEMON stored fake:c:3"]);
+  });
+
+  test("the bot's own messages are never delivered", async () => {
+    const root = fakeConfig();
+    const { rows } = await run(root, [
+      { msgId: "1", chat: "dm2", dm: true, from: FAKE_BOT_ID, text: "echo of my own reply" },
+      { msgId: "2", chat: "c", from: FAKE_BOT_ID, text: "@seori", mentions: true },
+    ]);
+    expect(rows).toEqual([]);
+  });
+
+  test("the owner's messages need no mention and are labelled owner", async () => {
+    const root = fakeConfig();
+    const { rows } = await run(root, [{ msgId: "1", chat: "c", from: "u1", text: "do it" }]);
+    expect(rows.map((r) => r.sender)).toEqual([{ kind: "owner", id: "u1" }]);
+  });
 });

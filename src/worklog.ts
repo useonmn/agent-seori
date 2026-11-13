@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { Channel } from "./channel.ts";
 import { Refusal } from "./harness.ts";
 
 // The lead's list of owner requests: `$SEORI_HOME/worklog.jsonl` is the record, one O_APPEND write per change, so
@@ -155,8 +156,17 @@ export function worklogList(root: string, opts: { open?: boolean } = {}): Worklo
   return opts.open ? { ...read, items: read.items.filter((item) => item.closedAt === undefined) } : read;
 }
 
-/** Records an owner request when it arrives. Title and source are each one line; the id is 8 random hex digits. */
+/**
+ * Records an owner request when it arrives. Title and source are each one line; the id is 8 random hex digits. A source
+ * naming a lead-channel message from someone other than the owner is refused: the worklog holds owner requests only.
+ */
 export function worklogAdd(root: string, title: string, source: string, now: number): WorklogItem {
+  if (existsSync(join(root, "lead", "inbound.jsonl"))) {
+    const row = new Channel(root).inbound().find((r) => r.id === source.trim());
+    if (row?.kind === "messenger" && row.sender !== undefined && row.sender.kind !== "owner") {
+      throw new WorklogError(`${row.id} is from ${row.sender.kind} ${row.sender.id}, not the owner; the worklog holds owner requests only`);
+    }
+  }
   const known = new Set(worklogRead(root).items.map((item) => item.id));
   let id = randomBytes(4).toString("hex");
   while (known.has(id)) id = randomBytes(4).toString("hex");

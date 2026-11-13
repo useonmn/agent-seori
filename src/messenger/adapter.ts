@@ -11,12 +11,22 @@ export type InboundMessage = {
   readonly source: string;
   readonly chat: string;
   readonly thread?: string;
+  /** The sender's platform id. */
   readonly from: string;
+  /** Who sent it (src/daemon.ts decides who reaches the lead). The bot's own messages are never delivered. */
+  readonly sender: Sender;
   readonly at: number;
   readonly text: string;
   /** The message this one replies to, as a lead channel id, with its text when the platform sent it along. */
   readonly replyTo?: ReplyRef;
 };
+
+/**
+ * owner: the configured owner (never a bot). agent: an author the platform marks as a bot or app (Slack bot_id or
+ * subtype bot_message, Discord author.bot, Telegram from.is_bot). person: anyone else.
+ */
+export type SenderKind = "owner" | "person" | "agent";
+export type Sender = { readonly kind: SenderKind; readonly id: string; readonly name?: string };
 
 export type ReplyRef = { readonly id: string; readonly text?: string };
 
@@ -97,7 +107,7 @@ export interface MessengerAdapter {
 
 export type MessengerConfig = {
   readonly source: string;
-  /** Only messages from this sender id reach the lead (the same owner-only rule as dori). */
+  /** The owner's sender id. Only the owner's messages reach the lead unless config.json talkWithOthers is on. */
   readonly owner: string;
   readonly options?: Readonly<Record<string, unknown>>;
 };

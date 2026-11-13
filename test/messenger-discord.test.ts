@@ -207,8 +207,8 @@ describe("DiscordAdapter receive", () => {
     ];
     const got = await collect(adapter(m, root), 2);
     expect(got).toEqual([
-      { id: "discord:C1:101", source: "discord", chat: "C1", from: OWNER, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "m101" },
-      { id: "discord:C1:106", source: "discord", chat: "C1", from: OWNER, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "last" },
+      { id: "discord:C1:101", source: "discord", chat: "C1", from: OWNER, sender: { kind: "owner", id: OWNER }, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "m101" },
+      { id: "discord:C1:106", source: "discord", chat: "C1", from: OWNER, sender: { kind: "owner", id: OWNER }, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "last" },
     ]);
     const c = cursorOf(root)!;
     expect(c.channels).toEqual({ C1: "106" });
@@ -528,7 +528,7 @@ describe("DiscordAdapter pairing mode", () => {
       pairing: true,
     });
     const got = await collect(a, 1);
-    expect(got).toEqual([{ id: "discord:D1:103", source: "discord", chat: "D1", from: "7", at: Date.parse("2026-11-07T00:00:00.000Z"), text: "pair me" }]);
+    expect(got).toEqual([{ id: "discord:D1:103", source: "discord", chat: "D1", from: "7", sender: { kind: "owner", id: "7" }, at: Date.parse("2026-11-07T00:00:00.000Z"), text: "pair me" }]);
     expect(m.historyCalls).toEqual([]);
   });
 });

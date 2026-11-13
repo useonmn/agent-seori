@@ -266,6 +266,7 @@ export class TelegramAdapter implements MessengerAdapter {
       // Outside a forum topic message_thread_id may be a reply root, not a topic (telegram-bot-api#447).
       ...(msg.is_topic_message && msg.message_thread_id !== undefined ? { thread: String(msg.message_thread_id) } : {}),
       from: String(msg.from.id),
+      sender: { kind: "owner", id: String(msg.from.id) },
       at: (edited ? stamp : msg.date) * 1000,
       text: edited ? `(edited) ${text}` : text,
     };

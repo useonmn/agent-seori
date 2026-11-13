@@ -165,12 +165,19 @@ function replyNote(row: MessengerRow, cmd: string): string {
   return r.text !== undefined ? ` (reply to ${r.id}: ${JSON.stringify(r.text.slice(0, 200))})` : ` (reply to ${r.id}; ${cmd} msg show ${r.id} reads it)`;
 }
 
+/** "owner", "person <name> (<id>)" or "agent <name> (<id>)"; a row stored before senders were recorded came from the owner. */
+function senderLabel(row: MessengerRow): string {
+  const s = row.sender;
+  if (!s || s.kind === "owner") return "owner";
+  return `${s.kind} ${s.name ? `${s.name} ` : ""}(${s.id})`;
+}
+
 export function renderDelivery(deliver: Decision["deliver"], cmd: string): string {
   const lines: string[] = [];
   const messages = deliver.filter((d) => d.row.kind === "messenger");
   if (messages.length) {
     lines.push(
-      "seori lead channel: messages from your owner's messenger. Answer each one exactly once:",
+      "seori lead channel: messages from your messengers (from your owner, other people or agents). Answer each one exactly once:",
       `  ${cmd} msg send --reply-to <id> --text '...'`,
       `  or, when no reply is needed: ${cmd} msg close <id> --why '...'`,
     );
@@ -178,7 +185,7 @@ export function renderDelivery(deliver: Decision["deliver"], cmd: string): strin
       const group = messages.filter((d) => d.header === header);
       if (!group.length) continue;
       lines.push("", HEADERS[header]);
-      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}${replyNote(row, cmd)}: ${row.text}`);
+      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${senderLabel(row)}${replyNote(row, cmd)}: ${row.text}`);
     }
   } else lines.push("seori lead channel: events from your watches.");
   const events = deliver.filter((d) => d.row.kind === "watch");
