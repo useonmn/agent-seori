@@ -125,6 +125,20 @@ describe("lanes", () => {
     expect(d.store.lane("fix-login")?.status).toBe("working");
   });
 
+  test("start --model goes to that lane's omp only and is stored on it; other lanes keep SEORI_MODEL; empty is refused", async () => {
+    const { w, d, brief } = setup();
+    const dm = { ...d, model: "m1" };
+    const args = ["start", "fix-login", "--brief", brief, "--workspace", "w1", "--force", "--model", "m-hard"];
+    expect(await main(args, dm)).toBe(0);
+    const hard = dm.store.lane("fix-login")!;
+    expect(hard.model).toBe("m-hard");
+    expect(w.panes.get(hard.paneId)!.started!.args).toEqual(["--model", "m-hard"]);
+    const plain = await startLane(dm, "fix-other", brief, { workspace: "w1" });
+    expect("model" in plain).toBe(false);
+    expect(w.panes.get(plain.paneId)!.started!.args).toEqual(["--model", "m1"]);
+    await expect(startLane(dm, "fix-empty", brief, { workspace: "w1", model: " " })).rejects.toThrow("--model needs a model name");
+  });
+
   test("SEORI_MODEL goes to the lane's omp as --model", async () => {
     const { w, d, brief } = setup();
     const lane = await startLane({ ...d, model: "anthropic/claude-x" }, "fix-login", brief, { workspace: "w1" });

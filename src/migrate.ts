@@ -26,6 +26,7 @@ const isOpen = (l: Lane): boolean => l.status !== "done" && l.status !== "lost";
  */
 async function openOn(
   d: Deps, rt: SessionRuntime, spec: Omit<CreateSpec, "container" | "group">, label: string, args: readonly string[], kickoff?: string,
+  model = d.model,
 ): Promise<SessionRef> {
   const ref = await rt.create(
     rt.kind === "hc"
@@ -33,7 +34,7 @@ async function openOn(
       : { ...spec, container: "workspace-root" },
   );
   try {
-    await startAgent(d, label, ref, args);
+    await startAgent(d, label, ref, args, model);
     if (kickoff !== undefined) {
       await agentSessionReported(d, ref);
       if (!(await deliverOrThrow(rt, ref, kickoff))) throw new Error(`${d.agent.kind} was not in front of ${formatRef(ref)} to take the kickoff`);
@@ -60,7 +61,7 @@ function laneSubject(d: Deps, key: string): Subject {
     open: (rt, briefPath, resume) => {
       const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
       const kickoff = resume === undefined ? d.agent.kickoff(briefPath, key) : undefined;
-      return openOn(d, rt, { name: key, cwd: lane.cwd, env, role: "lane" }, key, resumeArgs(resume), kickoff);
+      return openOn(d, rt, { name: key, cwd: lane.cwd, env, role: "lane" }, key, resumeArgs(resume), kickoff, lane.model ?? d.model);
     },
     setHold: (on) => save(({ migration: _, ...l }) => (on ? { ...l, migration: true } : l)),
     // A run resumed after a crash between the switch and the journal write switches again: the record stays as it is.

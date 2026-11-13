@@ -103,7 +103,7 @@ seori up [--cwd DIR]                         리드, 듀티, 듀티 루프, 시�
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널 또는 탭, 에이전트 세션, 교훈 + 브리프 + 레인 규칙
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
-            [--activity-path PATH ...]
+            [--activity-path PATH ...] [--model M]
                                             닫기 전에 Done 줄을 실제로 확인; ID = 진행 상황을 올릴 리드 채널 id;
                                             한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4
 seori migrate [--to hc|herdr] (--lane K | --role lead|duty | --all) [--dry-run] [--wait-minutes N] [--resume]
@@ -570,7 +570,7 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
 | `SEORI_RUNTIME` | `hc` 또는 `herdr`. `config.json`의 `"runtime"`과 자동 감지보다 먼저 ([docs/runtime.md](docs/runtime.md)) |
 | `SEORI_AGENT` | `omp`만 됩니다(기본값). 여기나 `config.json`의 `"agent"`에 다른 값이 있으면 모든 명령이 exit 2로 거부됩니다 |
 | `SEORI_AGENT_CMD` | seori가 omp에 쓰는 명령(리드, 듀티, hc 레인, 리뷰어). 기본 `omp`. 파일 이름(basename)이 `omp`여야 하며, 그 밖의 값이면 모든 명령이 exit 2로 거부됩니다. herdr에서 리드, 듀티, 레인은 항상 `herdr agent start --kind omp`로 시작 |
-| `SEORI_MODEL` | seori가 띄우는 모든 에이전트의 모델(`--model`)이자 리뷰어 기본 모델. 비우면 에이전트 기본 모델 |
+| `SEORI_MODEL` | seori가 띄우는 모든 에이전트의 모델(`--model`, `seori start --model M`으로 연 레인은 그 모델)이자 리뷰어 기본 모델. 비우면 에이전트 기본 모델 |
 | `SEORI_CMD` | 에이전트와 루프가 seori를 부르는 방법, 기본 `SEORI_HOME=<home> [SEORI_HERDR_SESSION=...] [SEORI_MODEL=...] bun <경로>/src/cli.ts` |
 | `SEORI_SH` | 감시 명령을 돌릴 sh, 기본 PATH의 `sh` |
 | `SEORI_HERDR_SESSION` | 사용할 herdr 세션 이름 |
