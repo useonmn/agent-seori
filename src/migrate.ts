@@ -64,14 +64,10 @@ function laneSubject(d: Deps, key: string): Subject {
     },
     setHold: (on) => save(({ migration: _, ...l }) => (on ? { ...l, migration: true } : l)),
     switchTo: (ref) => save((l) => ({ ...l, sessionRef: ref, migratedFrom: [...(l.migratedFrom ?? []), l.sessionRef] })),
-    current: () => d.store.lane(key)?.sessionRef,
   };
 }
 
-/**
- * The lead or duty: the replacement starts like `seori up` starts it, its handoff brief as the appended system prompt,
- * in the cwd the old session's runtime reports (the current one when it reports none).
- */
+/** The lead or duty: the replacement starts like `seori up` starts it, its handoff brief as the appended system prompt. */
 function roleSubject(d: Deps, role: Role, from: SessionRef, leadExtension: string): Subject {
   const root = d.store.root;
   return {
@@ -80,9 +76,9 @@ function roleSubject(d: Deps, role: Role, from: SessionRef, leadExtension: strin
     from,
     brief: () => readFileSync(join(promptsDir(), `${role}.md`), "utf8").replaceAll("{{seori}}", d.seoriCmd),
     logTail: [],
-    open: async (rt, briefPath, resume) => {
+    open: (rt, briefPath, resume) => {
       const name = loadConfig(root).name;
-      const cwd = (await d.runtimes.for(from).probe(from).catch(() => undefined))?.cwd ?? process.cwd();
+      const cwd = process.cwd();
       const env = paneEnv(root);
       if (role === "lead") {
         const leadEnv = { SEORI_HOME: root, SEORI_CMD: d.seoriCmd, ...env, ...d.agent.leadEnv(root) };
@@ -95,7 +91,6 @@ function roleSubject(d: Deps, role: Role, from: SessionRef, leadExtension: strin
     // A role has no record to mark: the journal alone holds its inbox (see migrating()).
     setHold: () => {},
     switchTo: (ref) => d.store.setRole(role, ref),
-    current: () => d.store.roles()[role],
   };
 }
 
@@ -159,30 +154,18 @@ async function migrateName(d: Deps, name: string, from: SessionRef, opts: Migrat
 }
 
 /**
- * `seori migrate`: hands sessions over to `opts.to`. `--all` = every open lane, then lead and duty; a session refused
- * under --all is reported as `REFUSED <name> <why>` and the rest go on. Returns the exit code: 3 when any session
- * rolled back, else 2 when any was refused, else 0.
+ * `seori migrate`: hands sessions over to `opts.to`. `--all` = every open lane, then lead and duty. Returns the exit
+ * code: 3 when any session rolled back, else 0.
  */
 export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtension = ""): Promise<number> {
   const lanes = t.all ? d.store.lanes().filter(isOpen).map((l) => l.key) : t.lane ? [t.lane] : [];
   const roles = t.all ? MIGRATE_ROLES : t.role ? [t.role] : [];
   if (lanes.length + roles.length === 0 && !t.all) throw new Refusal("give --lane K, --role lead|duty or --all");
   let code = 0;
-  const each = async (name: string, run: () => Promise<number>): Promise<void> => {
-    try {
-      code = Math.max(code, await run());
-    } catch (e) {
-      if (!(t.all && e instanceof Refusal)) throw e;
-      opts.log(`REFUSED ${name} ${e.message}`);
-      code = Math.max(code, 2);
-    }
-  };
   for (const key of lanes) {
-    await each(key, () => {
-      const lane = d.store.lane(key);
-      if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
-      return migrateName(d, key, lane.sessionRef, opts, () => laneSubject(d, key));
-    });
+    const lane = d.store.lane(key);
+    if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
+    code = Math.max(code, await migrateName(d, key, lane.sessionRef, opts, () => laneSubject(d, key)));
   }
   for (const role of roles) {
     const ref = d.store.roles()[role];
@@ -190,7 +173,7 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts, leadExtensi
       if (t.all) continue;
       throw new Refusal(`no ${role} session registered`);
     }
-    await each(role, () => migrateName(d, role, ref, opts, () => roleSubject(d, role, ref, leadExtension)));
+    code = Math.max(code, await migrateName(d, role, ref, opts, () => roleSubject(d, role, ref, leadExtension)));
   }
   return code;
 }

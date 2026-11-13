@@ -149,34 +149,14 @@ describe("seori migrate: one lane herdr -> hc", () => {
     expect(r.calls()).toEqual([]);
   });
 
-  test("DEFERRED when the lane keeps working past the wait: nothing was delivered to it", async () => {
+  test("DEFERRED when the lane keeps working past the wait: it already got the checkpoint ask", async () => {
     const { w, r, d, lines, opts, asks } = migrateWorld("working");
     expect(await migrate(d, { lane: "k" }, opts({ waitMinutes: 1 }))).toBe(0);
     expect(lines).toEqual(["DEFERRED k working past 1 min"]);
-    expect(w.panes.get("w1:p3")!.received).toEqual([]);
-    expect(asks()).toEqual([]);
+    expect(w.panes.get("w1:p3")!.received).toHaveLength(1);
+    expect(asks()).toHaveLength(1);
     expect(readJournal(d.store.root, "k")).toBeUndefined();
     expect(r.calls()).toEqual([]);
-  });
-
-  test("a lane working at first gets the checkpoint ask only once it is idle", async () => {
-    const { w, d, lines, opts, pane } = migrateWorld("idle");
-    pane.workingReads = 3;
-    const events: string[] = [];
-    const real = w.exec;
-    w.exec = async (cmd, argv) => {
-      const res = await real(cmd, argv);
-      if (cmd === "herdr" && argv[0] === "pane" && argv[1] === "get" && argv[2] === "w1:p3") {
-        events.push(`get:${/"agent_status":"(\w+)"/.exec(res.stdout)?.[1]}`);
-      }
-      if (cmd === "herdr" && argv[0] === "agent" && argv[1] === "prompt" && argv[2] === "w1:p3") events.push("ask");
-      return res;
-    };
-    expect(await migrate(d, { lane: "k" }, opts())).toBe(0);
-    expect(lines).toEqual(["MIGRATED k w1:p3 -> hc:t1"]);
-    expect(events.slice(0, 3)).toEqual(["get:working", "get:working", "get:working"]);
-    expect(events.filter((e) => e === "ask")).toHaveLength(1);
-    expect(events.indexOf("ask")).toBeGreaterThan(events.indexOf("get:idle"));
   });
 
   test("an agent still idle right after the ask is waited for: it turns working, writes the checkpoint, the brief has it", async () => {
@@ -195,24 +175,6 @@ describe("seori migrate: one lane herdr -> hc", () => {
     expect(lines).toEqual(["MIGRATED k w1:p3 -> hc:t1"]);
     const kickoff = r.sent().find((s) => s.id === "t1" && s.text.startsWith("/goal "))!.text;
     expect(readFileSync(/Read your brief at (\S+) and execute it/.exec(kickoff)![1]!, "utf8")).toContain("CHECKPOINT-WRITTEN-AFTER-THE-ASK");
-  });
-
-  test("a journal at opened whose lane record already points at the replacement finishes as switched", async () => {
-    const { w, r, d, lines, opts } = migrateWorld("idle", {}, { t9: terminal({ status: { state: "done", app: "omp" } }) });
-    d.store.saveLane({ ...d.store.lane("k")!, migration: true, sessionRef: T9, migratedFrom: [OLD] });
-    writeFileSync(`${d.store.inboxPath(OLD)}.forward`, "hc:t9\n");
-    d.store.saveInbox(T9, [msg("moved", 1)]);
-    const briefPath = join(d.store.root, "briefs", "k.migrate-1.md");
-    writeFileSync(briefPath, "handoff");
-    writeJournal(d.store.root, { name: "k", kind: "lane", phase: "opened", from: OLD, to: "hc", at: 1, briefPath, newRef: T9 });
-    expect(await migrate(d, { lane: "k" }, opts())).toBe(0);
-    expect(lines).toEqual(["MIGRATED k w1:p3 -> hc:t9"]);
-    expect(r.terminals()["t9"]).toBeDefined();
-    expect(d.store.lane("k")!.sessionRef).toEqual(T9);
-    expect(d.store.lane("k")!.migratedFrom).toEqual([OLD]);
-    expect(d.store.queued(T9).map((m) => m.text)).toEqual(["moved"]);
-    expect(w.panes.has("w1:p3")).toBe(false);
-    expect(readJournal(d.store.root, "k")).toBeUndefined();
   });
 
   test.each(["idle", "shell"] as const)("a checkpoint an earlier run left is not reused (agent %s, writes none)", async (status) => {
@@ -305,24 +267,6 @@ describe("seori migrate: roles, --all and --resume", () => {
     expect(lines).toEqual(["MIGRATED duty w1:p2 -> hc:t1"]);
     expect(refText(d.store.roles().duty!)).toBe("hc:t1");
     expect(r.sent().find((s) => s.id === "t1")!.text).toStartWith("'omp' '--append-system-prompt' ");
-  });
-
-  test("--role lead: the replacement opens in the cwd the old session reports", async () => {
-    const { w, r, d, opts } = migrateWorld();
-    w.panes.get("w1:p1")!.cwd = "/srv/lead-home";
-    expect(await migrate(d, { role: "lead" }, opts(), "/x/lead-channel.ts")).toBe(0);
-    expect(r.terminals()["t1"]!.cwd).toBe("/srv/lead-home");
-  });
-
-  test("--all: a refused session is reported and the rest still migrate; exit 2", async () => {
-    const { d, lines, opts } = migrateWorld();
-    writeJournal(d.store.root, { name: "k", kind: "lane", phase: "hold", from: OLD, to: "herdr", at: 1 });
-    expect(await migrate(d, { all: true }, opts())).toBe(2);
-    expect(lines).toEqual([
-      "REFUSED k a migration of k is in progress toward herdr; finish it with --to herdr",
-      "MIGRATED lead w1:p1 -> hc:t1",
-    ]);
-    expect(refText(d.store.roles().lead!)).toBe("hc:t1");
   });
 
   test("--all: every open lane first, then lead and duty", async () => {

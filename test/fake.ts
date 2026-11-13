@@ -29,7 +29,7 @@ type Pane = {
   foreground?: string | { name: string; argv: string[] }[] | undefined; agent?: string; pgid?: number;
   started?: { name: string; args: string[] };
   screen?: string[]; session?: string; onPrompt?: (text: string) => void;
-  kickoffLost?: boolean; kicked?: boolean; workingReads?: number; cwd?: string;
+  kickoffLost?: boolean; kicked?: boolean; workingReads?: number;
 };
 
 /** omp's `--mode json` output for a run whose final assistant message is `text`. */
@@ -159,7 +159,7 @@ export class World {
       this.getHook.get(id!)?.(n);
       const agentSession = pane.session ? { agent_session: { agent: "omp", kind: "path", source: "herdr:omp", value: pane.session } } : {};
       const status = pane.workingReads ? (pane.workingReads--, "working") : pane.status;
-      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: status, ...(pane.cwd ? { cwd: pane.cwd } : {}), ...agentSession } });
+      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: status, ...agentSession } });
     }
     if (group === "pane" && verb === "read") {
       const lines = Number(argv[argv.indexOf("--lines") + 1]);
