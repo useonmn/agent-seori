@@ -18,17 +18,21 @@ const readQueue = (path: string): QueuedMessage[] =>
 const carried = (m: QueuedMessage): QueuedMessage =>
   m.attempt?.state === "typed" ? { ...m, attempt: { at: m.attempt.at, state: "ambiguous", detail: GONE_INPUT } } : m;
 
-/** Runs `body` under the inbox locks of every ref (in the order given), retrying while another flush holds one. */
-async function underLocks(d: Deps, refs: readonly SessionRef[], body: () => void): Promise<void> {
+/**
+ * Runs `body` under the inbox locks of every ref (in the order given), then the append locks of `appends` (so no
+ * enqueue is between its forward lookup and its append), retrying while another flush or sender holds one.
+ */
+async function underLocks(d: Deps, refs: readonly SessionRef[], appends: readonly SessionRef[], body: () => void): Promise<void> {
+  const takes = [...refs.map((ref) => () => d.store.lockInbox(ref, d.now())), ...appends.map((ref) => () => d.store.lockAppend(ref, d.now()))];
   for (let tries = 0; ; tries++) {
     const held: (() => void)[] = [];
-    for (const ref of refs) {
-      const release = d.store.lockInbox(ref, d.now());
+    for (const take of takes) {
+      const release = take();
       if (!release) break;
       held.push(release);
     }
     try {
-      if (held.length === refs.length) {
+      if (held.length === takes.length) {
         body();
         return;
       }
@@ -66,7 +70,7 @@ function mergeFile(src: string, dst: string, map: (m: QueuedMessage) => QueuedMe
  */
 export async function moveInbox(d: Deps, from: SessionRef, to: SessionRef): Promise<void> {
   const old = d.store.inboxPath(from);
-  await underLocks(d, [from, to], () => {
+  await underLocks(d, [from, to], [from], () => {
     const marker = `${old}.forward`;
     writeFileSync(`${marker}.tmp`, `${refText(to)}\n`);
     renameSync(`${marker}.tmp`, marker);
@@ -77,7 +81,7 @@ export async function moveInbox(d: Deps, from: SessionRef, to: SessionRef): Prom
 /** Step (8): drains what late senders appended to the old path into the new inbox, then removes the marker. */
 export async function drainForward(d: Deps, from: SessionRef, to: SessionRef): Promise<void> {
   const old = d.store.inboxPath(from);
-  await underLocks(d, [to], () => {
+  await underLocks(d, [to], [], () => {
     d.store.mergeForwarded(to);
     rmSync(`${old}.forward`, { force: true });
   });
@@ -87,7 +91,7 @@ export async function drainForward(d: Deps, from: SessionRef, to: SessionRef): P
 export async function moveBack(d: Deps, from: SessionRef, to: SessionRef): Promise<void> {
   const old = d.store.inboxPath(from);
   if (!existsSync(`${old}.forward`)) return;
-  await underLocks(d, [from, to], () => {
+  await underLocks(d, [from, to], [from, to], () => {
     rmSync(`${old}.forward`, { force: true });
     mergeFile(d.store.inboxPath(to), old, (m) => m);
   });

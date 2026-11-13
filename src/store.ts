@@ -67,6 +67,9 @@ export type DeliveryAttempt = { at: number; state: "typed" | "ambiguous"; detail
 
 /** A flush lock from another host (or an unreadable one) older than this is taken over; on this host only a dead pid frees it (#108). */
 export const INBOX_LOCK_STALE_MS = 60_000;
+/** How long enqueue waits for an inbox's append lock (held for one file write or rename at a time). */
+const APPEND_LOCK_WAIT_MS = 2_000;
+const APPEND_LOCK_RETRY_MS = 10;
 
 export type QueuedMessage = { at: number; from: string; text: string; attempt?: DeliveryAttempt };
 
@@ -308,9 +311,31 @@ export class Store {
     return join(this.root, "inbox", `${inboxName(ref)}.jsonl`);
   }
 
-  /** Appends to the inbox of the session `ref` was forwarded to by a migration, if it was. */
+  /**
+   * Appends to the inbox of the session `ref` was forwarded to by a migration, if it was. Under ref's append lock, so
+   * seori migrate never writes the forward marker or moves the file aside between the lookup and the append.
+   */
   enqueue(ref: SessionRef, msg: QueuedMessage): void {
-    appendFileSync(this.inboxPath(this.forwardOf(ref) ?? ref), JSON.stringify(msg) + "\n");
+    const deadline = Date.now() + APPEND_LOCK_WAIT_MS;
+    let release = this.lockAppend(ref, Date.now());
+    while (!release) {
+      if (Date.now() >= deadline) throw new Error(`the inbox of ${refText(ref)} stays locked (${this.inboxPath(ref)}.append.lock)`);
+      Bun.sleepSync(APPEND_LOCK_RETRY_MS);
+      release = this.lockAppend(ref, Date.now());
+    }
+    try {
+      appendFileSync(this.inboxPath(this.forwardOf(ref) ?? ref), JSON.stringify(msg) + "\n");
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * The session's append lock (`<inbox>.append.lock`): enqueue holds it across the forward lookup and the append, seori
+   * migrate across writing or removing the forward marker and moving the inbox aside. Never held across a delivery.
+   */
+  lockAppend(ref: SessionRef, now: number): (() => void) | undefined {
+    return lockFile(`${this.inboxPath(ref)}.append.lock`, now);
   }
 
   queued(ref: SessionRef): QueuedMessage[] {
