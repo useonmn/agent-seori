@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { KEY_RE, Refusal, reservedKey, startLane, tellLead, type Deps } from "./harness.ts";
 import { statusOf } from "./runtime/index.ts";
 import type { Item, Lane, LoopRun } from "./store.ts";
+import { refText } from "./refs.ts";
 
 export const HOUR = 3_600_000;
 export const STALE_HOURS = 3;
@@ -294,13 +295,13 @@ async function audit(d: Deps, run: LoopRun): Promise<void> {
     if (lane.status !== "working" && lane.status !== "waiting" && lane.status !== "ready") continue;
     let st;
     try {
-      st = await statusOf(d.runtimes, lane.paneId);
+      st = await statusOf(d.runtimes, lane.sessionRef);
     } catch (e) {
       run.findings.push(`herdr: ${lane.key}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
     if (st === "gone") {
-      run.findings.push(`${lane.key} pane ${lane.paneId} is gone`);
+      run.findings.push(`${lane.key} pane ${refText(lane.sessionRef)} is gone`);
     } else if (lane.status === "ready") {
       const age = now - (lane.final?.at ?? lane.lastActivityAt);
       if (age >= READY_HOURS * HOUR) run.findings.push(`${lane.key} READY ${hours(age)}h ago, not closed: seori done ${lane.key}`);
@@ -353,7 +354,7 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
         run.findings.push(`start ${item.id} failed: ${why}`);
         continue;
       }
-      run.findings.push(`${item.id} started in ${lane.paneId} but the lead was not told: ${why}`);
+      run.findings.push(`${item.id} started in ${refText(lane.sessionRef)} but the lead was not told: ${why}`);
     }
     item.status = "running";
     log(d, item, "start", "lane opened by the hourly loop");

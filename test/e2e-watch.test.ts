@@ -10,6 +10,7 @@ import { Herdr, HerdrError } from "../src/runtime/herdr/client.ts";
 import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { Lane } from "../src/store.ts";
 import { MAX_RESTARTS, WAKE_BUDGET, type Watch, WatchStore } from "../src/watch/store.ts";
+import { herdrRef } from "./fake.ts";
 
 // Watches end to end: real herdr in an isolated named session, `seori up` (a REAL omp lead with the lead-channel
 // extension, duty, loops and the daemon that runs the watch engine), and `seori watch ...` run from this test the way
@@ -164,7 +165,7 @@ async function restartLead(): Promise<void> {
   // agent_name_taken for a few seconds.
   for (let attempt = 1; ; attempt++) {
     try {
-      await startAgent(d, "lead", lead(), ["-e", LEAD_EXTENSION, "--append-system-prompt", join(home, "prompts", "lead.md")]);
+      await startAgent(d, "lead", herdrRef(lead()), ["-e", LEAD_EXTENSION, "--append-system-prompt", join(home, "prompts", "lead.md")]);
       return;
     } catch (e) {
       if (!(e instanceof HerdrError && e.result.stderr.includes("agent_name_taken")) || attempt >= 30) throw e;

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { BLOCKED_PROMPT_MINUTES, dutyTick, send, startLane } from "../src/harness.ts";
 import { interactiveShellInFront } from "../src/runtime/foreground.ts";
 import { fallbackLine } from "../src/runtime/herdr/client.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 // A pane whose agent shows a dialog (a tool approval) reads `blocked`: text typed there goes into the dialog and the
 // Enter after it could approve it.
@@ -11,7 +11,7 @@ function setup() {
   const w = new World();
   const d = w.deps();
   const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", "w1:p1");
+  d.store.setRole("lead", herdrRef("w1:p1"));
   return { w, d, lead };
 }
 
@@ -28,7 +28,7 @@ describe("delivery never types into a pane with an open dialog (B1)", () => {
     w.getHook.set("w1:p7", (n) => { if (n >= 3) pane.status = "blocked"; });
     expect(await send(d, "w1:p7", "yes", "cli")).toBe("QUEUED");
     expect(keystrokes(w, "w1:p7")).toEqual([]);
-    expect(d.store.queued("w1:p7").map((m) => m.text)).toEqual(["yes"]);
+    expect(d.store.queued(herdrRef("w1:p7")).map((m) => m.text)).toEqual(["yes"]);
   });
 
   test("a dialog opens between the flush's status read and deliver -> no prompt, no keystrokes, QUEUED", async () => {

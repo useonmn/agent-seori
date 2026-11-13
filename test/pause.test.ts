@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Refusal } from "../src/harness.ts";
 import { ESCAPE_WATCH_MS, pauseLane, READ_BACK_TRIES, resumeLane, Unverified } from "../src/pause.ts";
 import type { Lane, LaneStatus } from "../src/store.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 const noSleep = { sleep: async () => {} };
 
@@ -10,12 +10,12 @@ function setup(status: LaneStatus = "working", extra: Partial<Lane> = {}) {
   const w = new World();
   const d = w.deps();
   w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", "w1:p1");
+  d.store.setRole("lead", herdrRef("w1:p1"));
   const pane = w.addPane("w1:p5", "idle");
   pane.agent = "omp";
   pane.screen = ["some output"];
   d.store.saveLane({
-    key: "fix-a", paneId: "w1:p5", tabId: "w1:t5", brief: "/dev/null", cwd: "/", status,
+    key: "fix-a", sessionRef: { runtime: "herdr", id: "w1:p5", container: "w1:t5" }, paneId: "w1:p5", tabId: "w1:t5", brief: "/dev/null", cwd: "/", status,
     createdAt: 0, lastActivityAt: 0, nudges: 2, log: [], ...extra,
   });
   const reads = () => w.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "read").length;

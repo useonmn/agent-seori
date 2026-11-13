@@ -5,14 +5,14 @@ import { main } from "../src/cli.ts";
 import { done, dutyTick, memFreePct, ready, Refusal, report, startLane } from "../src/harness.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, HOUR, importId, loopTick, msUntilNext, restore } from "../src/loop.ts";
 import type { Exec } from "../src/runtime/exec.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 function setup(opts: { lead?: boolean; exec?: (inner: Exec) => Exec } = {}) {
   const w = new World();
   if (opts.exec) w.exec = opts.exec(w.exec);
   const d = w.deps();
   const lead = w.addPane("w1:p1", "idle");
-  if (opts.lead !== false) d.store.setRole("lead", "w1:p1");
+  if (opts.lead !== false) d.store.setRole("lead", herdrRef("w1:p1"));
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Do the thing.");
   const add = (id: string, o: Parameters<typeof backlogAdd>[3] = {}) => backlogAdd(d, id, brief, { cwd: d.store.root, ...o });

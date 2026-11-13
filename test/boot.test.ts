@@ -10,7 +10,7 @@ import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { Lane } from "../src/store.ts";
 import { WatchStore } from "../src/watch/store.ts";
 import { worklogAdd, worklogNext } from "../src/worklog.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 /** World plus `herdr pane list` (all World panes; `listFails` makes it exit 1). */
 function setup(): { w: World; d: Deps; listFails: { on: boolean } } {
@@ -30,7 +30,7 @@ function setup(): { w: World; d: Deps; listFails: { on: boolean } } {
 }
 
 const lane = (key: string, paneId: string, status: Lane["status"], extra: Partial<Lane> = {}): Lane => ({
-  key, paneId, tabId: "w1:t1", brief: `/b/${key}.md`, cwd: "/repo", status, createdAt: 1_000, lastActivityAt: 1_000, nudges: 0,
+  key, sessionRef: { runtime: "herdr", id: paneId, container: "w1:t1" }, paneId, tabId: "w1:t1", brief: `/b/${key}.md`, cwd: "/repo", status, createdAt: 1_000, lastActivityAt: 1_000, nudges: 0,
   log: [{ at: 1_000, kind: "start", text: "brief" }], ...extra,
 });
 
@@ -61,8 +61,8 @@ describe("bootReport", () => {
     w.addPane("w1:p6", "idle"); // lane slow (paused)
     w.addPane("w1:p8", "working"); // an agent no one registered
     w.addPane("w1:p9", "shell"); // the daemon pane: no agent, not flagged
-    d.store.setRole("lead", "w1:p1");
-    d.store.setRole("duty", "w1:p2");
+    d.store.setRole("lead", herdrRef("w1:p1"));
+    d.store.setRole("duty", herdrRef("w1:p2"));
     d.store.saveLane(lane("api", "w1:p3", "working", {
       log: [{ at: 1_000, kind: "start", text: "b" }, { at: now - 60_000, kind: "report", text: "tests green, opening PR" }],
     }));
@@ -145,7 +145,7 @@ describe("bootReport", () => {
     const { w, d, listFails } = setup();
     const root = d.store.root;
     listFails.on = true;
-    d.store.setRole("lead", "w1:p1");
+    d.store.setRole("lead", herdrRef("w1:p1"));
     d.store.saveLane(lane("api", "w1:p3", "working"));
     writeFileSync(join(root, "lanes", "broken.json"), "{not json");
     writeFileSync(join(root, "config.json"), JSON.stringify({ toknes: 1 }));

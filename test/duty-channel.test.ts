@@ -5,7 +5,7 @@ import { Channel } from "../src/channel.ts";
 import { ALERT_TEXT, DRAFTS_ALERT_MS, dutyTick } from "../src/harness.ts";
 import { Outbox } from "../src/outbox.ts";
 import { SendUncertain } from "../src/messenger/adapter.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 const FAKE = { source: "fake", owner: "u1" };
 const MIN = 60_000;
@@ -15,7 +15,7 @@ function setup(opts: { messengers?: boolean } = {}) {
   const d = w.deps();
   const root = d.store.root;
   const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", "w1:p1");
+  d.store.setRole("lead", herdrRef("w1:p1"));
   if (opts.messengers !== false) w.messengers(root, [FAKE]);
   w.heartbeat(root, 0);
   w.consumerLock(root, "alive");

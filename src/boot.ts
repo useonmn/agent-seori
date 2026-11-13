@@ -6,9 +6,10 @@ import { heartbeatPath, healthPath } from "./daemon.ts";
 import { HEARTBEAT_STALE_MS, type Deps } from "./harness.ts";
 import { loadMessengers } from "./messenger/adapter.ts";
 import { ToolError } from "./runtime/index.ts";
-import type { Lane } from "./store.ts";
+import { upgradeLane, type Lane, type StoredLane } from "./store.ts";
 import { WatchStore } from "./watch/store.ts";
 import { worklogLines, worklogPath, worklogRead } from "./worklog.ts";
+import { refText } from "./refs.ts";
 
 // `seori boot`: the read-only check a lead runs after a restart or a compaction, so it resumes from the record and not
 // from memory. It changes nothing: no lane or role write, no relaunch, no stopped watch, no closed message, and it
@@ -39,7 +40,7 @@ async function listPanes(d: Deps): Promise<ListedPane[]> {
     if (e instanceof ToolError) throw new Error(`${rt.kind} pane list exited ${e.result.code}: ${(e.result.stderr || e.result.stdout).trim()}`);
     throw e;
   }
-  return sessions.map((s) => ({ paneId: s.ref.id, ...(s.agent ? { agent: s.agent } : {}), status: s.status ?? "unknown" }));
+  return sessions.map((s) => ({ paneId: refText(s.ref), ...(s.agent ? { agent: s.agent } : {}), status: s.status ?? "unknown" }));
 }
 
 /** Every lane file, parsed one by one so a damaged file is named and the other lanes are still checked. */
@@ -53,11 +54,11 @@ function scanLanes(root: string): { lanes: Lane[]; unreadable: string[] } {
     const path = join(dir, name);
     try {
       if (!statSync(path).isFile()) continue;
-      const lane = JSON.parse(readFileSync(path, "utf8")) as Lane;
+      const lane = JSON.parse(readFileSync(path, "utf8")) as StoredLane;
       if (typeof lane?.key !== "string" || typeof lane.paneId !== "string" || typeof lane.status !== "string" || !Array.isArray(lane.log)) {
         throw new Error("not a lane record");
       }
-      lanes.push(lane);
+      lanes.push(upgradeLane(lane));
     } catch {
       unreadable.push(path);
     }
@@ -123,18 +124,19 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
   const byId = new Map((panes ?? []).map((p) => [p.paneId, p]));
   const roles = d.store.roles();
   for (const role of ["lead", "duty"] as const) {
-    const paneId = roles[role];
+    const ref = roles[role];
+    const paneId = ref && refText(ref);
     const label = role.toUpperCase();
     if (!paneId) lines.push(`${label} unregistered`);
     else if (!panes) lines.push(`${label} pane=${paneId} status=unknown`);
     else lines.push(`${label} pane=${paneId} status=${byId.get(paneId)?.status ?? "gone"}`);
   }
   if (panes) {
-    const vanished = open.filter((lane) => !byId.has(lane.paneId));
-    const owned = new Set([...Object.values(roles), ...open.map((lane) => lane.paneId)]);
+    const vanished = open.filter((lane) => !byId.has(refText(lane.sessionRef)));
+    const owned = new Set([...Object.values(roles).map(refText), ...open.map((lane) => refText(lane.sessionRef))]);
     const unregistered = panes.filter((p) => p.agent !== undefined && !owned.has(p.paneId));
     lines.push(`PANES live=${panes.length} lanesOpen=${open.length} vanished=${vanished.length} unregistered=${unregistered.length}`);
-    for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${lane.paneId} status=${lane.status}; lane record kept, nothing relaunched`);
+    for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${refText(lane.sessionRef)} status=${lane.status}; lane record kept, nothing relaunched`);
     for (const p of unregistered) lines.push(`UNREGISTERED ${p.paneId} agent=${p.agent} status=${p.status}`);
   }
 

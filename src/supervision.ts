@@ -5,6 +5,7 @@ import { type Deps, type DutyEvent, tellLead } from "./harness.ts";
 import { DeliveryUncertain, session, statusOf, ToolError } from "./runtime/index.ts";
 import type { Ceilings, Lane, LaneLogKind } from "./store.ts";
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
+import { refText } from "./refs.ts";
 
 // Lane supervision, run by the duty loop: ceilings (wall-clock time, tokens, cost) and stalls are reported to the lead
 // once each. seori never kills or messages a lane for them: the lead decides. A paused lane is left alone, except that
@@ -19,7 +20,7 @@ export type LaneUsage = { tokens?: number; costUsd?: number };
  * unreadable or no assistant message carries that number; damaged lines (a torn last write) are skipped.
  */
 export async function laneUsage(d: Deps, lane: Lane): Promise<LaneUsage> {
-  const { rt, ref } = session(d.runtimes, lane.paneId);
+  const { rt, ref } = session(d.runtimes, lane.sessionRef);
   const path = await rt.agentSession(ref);
   if (!path) return {};
   let text: string;
@@ -235,11 +236,11 @@ export async function superviseTick(d: Deps): Promise<DutyEvent[]> {
 
 async function pausedCheck(d: Deps, lane: Lane, events: DutyEvent[]): Promise<void> {
   const [seenMark, toldMark] = PAUSED_WORKING_MARKS;
-  const st = await statusOf(d.runtimes, lane.paneId);
+  const st = await statusOf(d.runtimes, lane.sessionRef);
   if (st === "gone") {
     // As dutyTick does for running lanes: otherwise the key stays paused with no pane, and done/start both refuse it.
     mark(d, lane.key, (l) => { l.status = "lost"; delete l.pausedFrom; }, { kind: "lost", text: "pane disappeared while paused" });
-    await tell(d, `[LOST ${lane.key}] pane ${lane.paneId} closed while the lane was paused`, lane.key, events);
+    await tell(d, `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed while the lane was paused`, lane.key, events);
     events.push({ lane: lane.key, action: "lost" });
     return;
   }
@@ -255,7 +256,7 @@ async function pausedCheck(d: Deps, lane: Lane, events: DutyEvent[]): Promise<vo
     return;
   }
   if (lane.alerts[toldMark] !== undefined) return;
-  await tell(d, workingWhilePausedText(lane.key, lane.paneId), lane.key, events);
+  await tell(d, workingWhilePausedText(lane.key, refText(lane.sessionRef)), lane.key, events);
   mark(d, lane.key, (l) => { l.alerts![toldMark] = d.now(); });
   events.push({ lane: lane.key, action: "working-while-paused" });
 }
@@ -294,7 +295,7 @@ async function stallCheck(d: Deps, lane: Lane, config: SeoriConfig, activity: Ac
   // Once per stall: progress after it makes a new mark.
   const key = `stalled:${Math.round(lastProgress)}`;
   if (lane.alerts?.[key] !== undefined) return;
-  if ((await statusOf(d.runtimes, lane.paneId)) !== "working") return;
+  if ((await statusOf(d.runtimes, lane.sessionRef)) !== "working") return;
   const text = stalledText(lane.key, Math.floor(quietMs / 60_000));
   await tell(d, text, lane.key, events);
   mark(d, lane.key, (l) => {

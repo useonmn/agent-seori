@@ -6,7 +6,7 @@ import { main, upCheck } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { recordPath } from "../src/down.ts";
 import { AGENT_OMP_CONFIG, agentOmpConfig, ompMemoryDb, Refusal, startLane } from "../src/harness.ts";
-import { World } from "./fake.ts";
+import { World, herdrRef } from "./fake.ts";
 
 // Several seori instances on one PC, each with its own $SEORI_HOME: its own name (herdr label), one set of panes per
 // home, and its own omp memory.
@@ -69,7 +69,7 @@ describe("seori up, once per home", () => {
     let code: number | undefined;
     const again = await captureLog(async () => { code = await main(["up", "--cwd", d.store.root], d); });
     expect(code).toBe(0);
-    expect(again).toBe(`ALREADY UP name=seori-two home=${d.store.root} lead=${d.store.roles().lead} running=none; nothing opened`);
+    expect(again).toBe(`ALREADY UP name=seori-two home=${d.store.root} lead=${d.store.roles().lead!.id} running=none; nothing opened`);
     expect(opened(w)).toBe(before);
   });
 
@@ -78,7 +78,7 @@ describe("seori up, once per home", () => {
     mkdirSync(join(d.store.root, "run"));
     writeFileSync(recordPath(d.store.root, "daemon-loop"), JSON.stringify({ pid: 4242 }));
     writeFileSync(recordPath(d.store.root, "duty"), JSON.stringify({ pid: 4343 }));
-    d.store.setRole("lead", "w1:p1");
+    d.store.setRole("lead", herdrRef("w1:p1"));
     const line = await upCheck(d, "seori", (pid) => pid === 4242);
     expect(line).toStartWith(`ALREADY UP name=seori home=${d.store.root} lead=gone running=daemon-loop; nothing opened`);
     expect(await upCheck(d, "seori", () => false)).toBeUndefined();
@@ -88,7 +88,7 @@ describe("seori up, once per home", () => {
     const w = new World();
     const d = w.deps();
     w.addPane("w9:p1", "idle"); // the other instance's lead, whose id this home recorded before a herdr restart
-    d.store.setRole("lead", "w9:p1");
+    d.store.setRole("lead", herdrRef("w9:p1"));
     w.workspaces.push({ workspace_id: "w9", label: "bari" });
     expect(await upCheck(d, "seori", () => false)).toBeUndefined();
     w.workspaces.push({ workspace_id: "w3", label: "seori" });

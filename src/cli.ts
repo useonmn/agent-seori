@@ -30,11 +30,13 @@ import { addLesson, formatLessonAdded, formatLessonMarked, formatLessons, isLess
 import { verifyPr } from "./verify-pr.ts";
 import { ownerText, WATCH_USAGE, watchAdd, watchList, watchLog, watchRearm, watchStop } from "./watch/cli.ts";
 import { WatchRefusal } from "./watch/store.ts";
+import { refText } from "./refs.ts";
+import { parseRef } from "./runtime/types.ts";
 
 const USAGE = `seori - a proactive multi-session harness on herdr + omp
 
   seori up [--cwd DIR]                         open lead, duty, duty loop, hourly loop and daemon panes (once per home)
-  seori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
+  seori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omp session, lessons + brief + lane rules
               [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
                                               Done line read back live before close; ID = lead channel id for progress posts;
@@ -235,10 +237,10 @@ export async function upCheck(d: Deps, name: string, alive: (pid: number) => boo
   const lead = d.store.roles().lead;
   // herdr pane ids are `<workspace>:p<n>`. The lead counts only inside a workspace with this home's name: herdr ids start
   // over after a herdr restart, and an old id can then name another instance's pane.
-  const leadLive = lead !== undefined && named.some((w) => w.id === lead.split(":")[0]) && (await statusOf(d.runtimes, lead)) !== "gone";
+  const leadLive = lead !== undefined && named.some((w) => w.id === lead.id.split(":")[0]) && (await statusOf(d.runtimes, lead)) !== "gone";
   if (runners.length > 0 || leadLive) {
     const hint = leadLive ? "" : "; the lead pane is gone: run seori down, then seori up, to open a new set";
-    return `ALREADY UP name=${name} home=${root} lead=${leadLive ? lead : "gone"} running=${runners.join(",") || "none"}; nothing opened${hint}`;
+    return `ALREADY UP name=${name} home=${root} lead=${leadLive ? refText(lead) : "gone"} running=${runners.join(",") || "none"}; nothing opened${hint}`;
   }
   if (named.length > 0) {
     throw new Refusal(
@@ -268,19 +270,19 @@ async function up(d: Deps, cwd: string): Promise<void> {
   const below = (near: SessionRef, role: "duty-loop" | "hourly-loop" | "daemon", paneEnv: Record<string, string>) =>
     rt.create({ name: role, cwd, env: paneEnv, role, container: "split-below", near });
   const leadRef = await rt.create({ name, cwd, env: leadEnv, role: "lead", container: "workspace-root" });
-  const lead = { paneId: leadRef.id, workspaceId: leadRef.group ?? "" };
-  await startAgent(d, "lead", lead.paneId, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
-  d.store.setRole("lead", lead.paneId);
+  const lead = { paneId: refText(leadRef), workspaceId: leadRef.group ?? "" };
+  await startAgent(d, "lead", leadRef, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
+  d.store.setRole("lead", leadRef);
   const dutyRef = await rt.create({
     name: "duty", cwd, env: { ...env, PI_CONFIG_FILES: agentOmpConfigFiles(d.store.root) }, role: "duty", container: "tab", group: lead.workspaceId,
   });
-  const duty = { paneId: dutyRef.id };
-  await startAgent(d, "duty", duty.paneId, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
-  d.store.setRole("duty", duty.paneId);
+  const duty = { paneId: refText(dutyRef) };
+  await startAgent(d, "duty", dutyRef, ["--append-system-prompt", renderPrompt(d, "duty.md")]);
+  d.store.setRole("duty", dutyRef);
   const loopRef = await below(dutyRef, "duty-loop", env);
   const hourlyRef = await below(loopRef, "hourly-loop", { ...env, HERDR_WORKSPACE_ID: lead.workspaceId });
   const daemonRef = await below(hourlyRef, "daemon", env);
-  const [loop, hourly, daemon] = [{ paneId: loopRef.id }, { paneId: hourlyRef.id }, { paneId: daemonRef.id }];
+  const [loop, hourly, daemon] = [{ paneId: refText(loopRef) }, { paneId: refText(hourlyRef) }, { paneId: refText(daemonRef) }];
   const daemonStarted = d.now();
   await rt.start(daemonRef, `${d.seoriCmd} daemon-loop`);
   // The duty loop's first tick reports a missing heartbeat to the lead as a daemon outage, so it starts only once the
@@ -518,11 +520,11 @@ async function watch(d: Deps, a: Args, sub: string | undefined): Promise<number>
 
 function status(d: Deps): void {
   const roles = d.store.roles();
-  console.log(`lead=${roles.lead ?? "-"} duty=${roles.duty ?? "-"} home=${d.store.root}`);
+  console.log(`lead=${roles.lead ? refText(roles.lead) : "-"} duty=${roles.duty ? refText(roles.duty) : "-"} home=${d.store.root}`);
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);
-    console.log(`${l.key.padEnd(24)} ${l.status.padEnd(8)} ${l.paneId.padEnd(8)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`);
+    console.log(`${l.key.padEnd(24)} ${l.status.padEnd(8)} ${refText(l.sessionRef).padEnd(8)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`);
   }
 }
 
@@ -578,9 +580,12 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "role": {
       const role = need(x, "role") as Role;
       if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
-      const pane = need(a.pos[2] ?? process.env["HERDR_PANE_ID"], "pane id (not inside herdr?)");
-      d.store.setRole(role, pane);
-      console.log(`ROLE ${role}=${pane}`);
+      const given = a.pos[2];
+      const ref = given === undefined ? d.runtimes.selfAny(process.env) : parseRef(given);
+      if (given !== undefined && ref === undefined) throw new Refusal(`${given} is not a session ref (w1:p3, herdr:w1:p3 or hc:t7)`);
+      if (ref === undefined) throw new Refusal(`missing session ref (not inside herdr or hc?)\n\n${USAGE}`);
+      d.store.setRole(role, ref);
+      console.log(`ROLE ${role}=${refText(ref)}`);
       return 0;
     }
     case "start": {
@@ -617,7 +622,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
           },
         } : {}),
       });
-      console.log(`STARTED ${lane.key} pane=${lane.paneId} brief=${lane.brief}`);
+      console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`);
       return 0;
     }
     case "report": {
@@ -642,8 +647,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "inbox": {
       const target = need(a.pos[2], "target");
       if (x === "list") {
-        const { paneId, entries } = inboxList(d, target);
-        if (entries.length === 0) console.log(`EMPTY ${paneId}`);
+        const { to, entries } = inboxList(d, target);
+        if (entries.length === 0) console.log(`EMPTY ${refText(to)}`);
         for (const e of entries) console.log(`${e.index} ${e.state} from ${e.from} queued ${new Date(e.at).toISOString()} ${e.preview}`);
         return 0;
       }

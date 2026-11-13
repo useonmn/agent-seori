@@ -17,7 +17,7 @@ function setup() {
   w.messengers(d.store.root, [FAKE]);
   const lane = (over: Partial<Lane> = {}): Lane => {
     const l: Lane = {
-      key: "fix-a", paneId: "w1:p9", tabId: "w1:t9", brief: "b", cwd: "/tmp", status: "working",
+      key: "fix-a", sessionRef: { runtime: "herdr", id: "w1:p9", container: "w1:t9" }, paneId: "w1:p9", tabId: "w1:t9", brief: "b", cwd: "/tmp", status: "working",
       createdAt: w.clock, lastActivityAt: w.clock, nudges: 0, thread: "fake:c1:m1",
       log: [{ at: w.clock, kind: "start", text: "started" }], ...over,
     };

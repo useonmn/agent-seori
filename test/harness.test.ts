@@ -4,11 +4,11 @@ import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { agentName, defaultSeoriCmd, done, paneEnv, dutyTick, INTEGRATION_MISSING, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { deliverOrThrow, session } from "../src/runtime/index.ts";
-import { ompJson, World } from "./fake.ts";
+import { ompJson, World, herdrRef } from "./fake.ts";
 
 /** The harness's delivery to one stored pane id, through its runtime. */
 const deliverTo = (d: ReturnType<World["deps"]>, paneId: string, text: string): Promise<boolean> => {
-  const { rt, ref } = session(d.runtimes, paneId);
+  const { rt, ref } = session(d.runtimes, herdrRef(paneId));
   return deliverOrThrow(rt, ref, text);
 };
 
@@ -16,7 +16,7 @@ function setup() {
   const w = new World();
   const d = w.deps();
   const lead = w.addPane("w1:p1", "idle");
-  d.store.setRole("lead", "w1:p1");
+  d.store.setRole("lead", herdrRef("w1:p1"));
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Fix the flaky login test.");
   return { w, d, lead, brief };
@@ -195,13 +195,13 @@ describe("lanes", () => {
     }
     const { lead, duty } = d.store.roles();
     const prompts = join(d.store.root, "prompts");
-    expect(w.panes.get(lead!)!.started).toEqual({
-      name: `lead-${lead!.replace(":", "")}`,
+    expect(w.panes.get(lead!.id)!.started).toEqual({
+      name: `lead-${lead!.id.replace(":", "")}`,
       args: ["-e", LEAD_EXTENSION, "--append-system-prompt", join(prompts, "lead.md"), "--model", "m1"],
     });
     expect(existsSync(LEAD_EXTENSION)).toBe(true);
     // Only the lead loads the extension: duty here, lanes and the reviewer elsewhere never pass -e.
-    expect(w.panes.get(duty!)!.started).toEqual({ name: `duty-${duty!.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "duty.md"), "--model", "m1"] });
+    expect(w.panes.get(duty!.id)!.started).toEqual({ name: `duty-${duty!.id.replace(":", "")}`, args: ["--append-system-prompt", join(prompts, "duty.md"), "--model", "m1"] });
     // herdr agent start has no --env: the extension's environment is set on the lead's workspace shell.
     const create = w.calls.find((c) => c.argv[0] === "workspace" && c.argv[1] === "create")!.argv;
     // Only the lead's omp gets lead-omp.yml: advisor.syncBacklog strict, so the agent-end review ends before agent_end.
@@ -226,7 +226,7 @@ describe("lanes", () => {
       ["w1:p4", "seori duty --interval 60"],
       ["w1:p5", "seori loop"],
     ]);
-    expect(out).toBe(`UP lead=${lead} duty=${duty} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root} name=seori`);
+    expect(out).toBe(`UP lead=${lead!.id} duty=${duty!.id} loop=w1:p4 hourly=w1:p5 daemon=w1:p6 home=${d.store.root} name=seori`);
     expect(create.slice(0, 3)).toEqual(["workspace", "create", "--label"]);
     expect(create[3]).toBe("seori");
     // Every pane gets seori's environment from herdr, so its commands need no shell env prefix.
@@ -277,7 +277,7 @@ describe("lanes", () => {
     }
     expect(w.calls).toEqual([]);
     expect(lead.received).toEqual([]);
-    expect(d.store.roles().lead).toBe("w1:p1");
+    expect(d.store.roles().lead).toEqual(herdrRef("w1:p1"));
   });
 
   test("ready requires evidence, then reaches the lead; done closes only a ready lane", async () => {
@@ -346,7 +346,7 @@ describe("pane messaging", () => {
     expect(await send(d, "a-lane", "rebase on main first", "lead")).toBe("DELIVERED");
     expect(pane.received).toEqual(["rebase on main first"]);
     expect(w.calls).toContainEqual({ cmd: "herdr", argv: ["agent", "prompt", lane.paneId, "rebase on main first"] });
-    expect(d.store.queued(lane.paneId)).toEqual([]);
+    expect(d.store.queued(lane.sessionRef)).toEqual([]);
   });
 
   test("a working lead still queues, and a blocked lane gets nothing typed", async () => {
@@ -442,8 +442,8 @@ describe("duty loop", () => {
     const { w, d, lead } = setup();
     const broken = w.addPane("w1:p9", "idle");
     w.promptFails.set("w1:p9", "herdr exploded");
-    d.store.enqueue("w1:p9", { at: w.clock, from: "cli", text: "to broken" });
-    d.store.enqueue("w1:p1", { at: w.clock, from: "cli", text: "to lead" });
+    d.store.enqueue(herdrRef("w1:p9"), { at: w.clock, from: "cli", text: "to broken" });
+    d.store.enqueue(herdrRef("w1:p1"), { at: w.clock, from: "cli", text: "to lead" });
     const events = await dutyTick(d);
     expect(events).toContainEqual({ pane: "w1:p9", action: "delivery-ambiguous", detail: expect.stringContaining("herdr exploded") });
     expect(events).toContainEqual({ pane: "w1:p1", action: "flushed" });
@@ -493,7 +493,7 @@ describe("duty loop", () => {
     const { w, d } = setup();
     w.addPane("w1:p9", "idle");
     w.promptFails.set("w1:p9", "herdr exploded\nsecond line");
-    d.store.enqueue("w1:p9", { at: w.clock, from: "cli", text: "SECRET queued message" });
+    d.store.enqueue(herdrRef("w1:p9"), { at: w.clock, from: "cli", text: "SECRET queued message" });
     const events = await dutyTick(d);
     expect(events).toEqual([{ pane: "w1:p9", action: "delivery-ambiguous", detail: "herdr exploded" }]);
   });
@@ -502,7 +502,7 @@ describe("duty loop", () => {
     const { w, d } = setup();
     w.addPane("w1:p9", "idle");
     w.promptFails.set("w1:p9", "herdr exploded");
-    d.store.enqueue("w1:p9", { at: w.clock, from: "cli", text: "to broken" });
+    d.store.enqueue(herdrRef("w1:p9"), { at: w.clock, from: "cli", text: "to broken" });
     const lines: string[] = [];
     const log = console.log;
     console.log = (...a: unknown[]) => void lines.push(a.join(" "));

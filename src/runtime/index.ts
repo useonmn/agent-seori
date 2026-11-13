@@ -19,17 +19,12 @@ export function defaultRuntimes(herdr: Herdr = new Herdr()): Runtimes {
   });
 }
 
-/** A session id as records store it today: a bare herdr pane id (stored runtime refs come later). */
-export const storedRef = (id: string): SessionRef => ({ runtime: "herdr", id });
-
-/** A stored session id and the runtime that owns it. */
-export function session(runtimes: Runtimes, id: string): { readonly rt: SessionRuntime; readonly ref: SessionRef } {
-  const ref = storedRef(id);
+/** A stored session and the runtime that owns it. */
+export function session(runtimes: Runtimes, ref: SessionRef): { readonly rt: SessionRuntime; readonly ref: SessionRef } {
   return { rt: runtimes.for(ref), ref };
 }
 
 /** The status word of a stored session (see SessionRuntime.status). */
-export function statusOf(runtimes: Runtimes, id: string): Promise<AgentStatus> {
-  const { rt, ref } = session(runtimes, id);
-  return rt.status(ref);
+export function statusOf(runtimes: Runtimes, ref: SessionRef): Promise<AgentStatus> {
+  return runtimes.for(ref).status(ref);
 }

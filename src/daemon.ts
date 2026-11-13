@@ -5,6 +5,7 @@ import { defaultDeps, type Deps } from "./harness.ts";
 import { defaultRuntimes, spawnExec, statusOf } from "./runtime/index.ts";
 import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
+import { refFromText } from "./refs.ts";
 import { lockFile, Store } from "./store.ts";
 import { deliverWatchEvent } from "./watch/deliver.ts";
 import { type EngineDeps, WatchEngine } from "./watch/engine.ts";
@@ -108,7 +109,7 @@ function engineDeps(root: string, now: () => number): EngineDeps {
     now,
     deliver: (w, text) => deliverWatchEvent((deps ??= { ...defaultDeps(), store, runtimes }), w, text),
     gh: (argv) => spawnExec("gh", argv),
-    paneStatus: (pane) => statusOf(runtimes, pane),
+    paneStatus: (pane) => statusOf(runtimes, refFromText(pane)),
     laneOpen: (key) => {
       const status = store.lane(key)?.status;
       return status !== undefined && status !== "done" && status !== "lost";

@@ -8,6 +8,11 @@ import { defaultRuntimes } from "../src/runtime/index.ts";
 import type { AgentStatus } from "../src/runtime/types.ts";
 import type { MessengerConfig, SendTarget } from "../src/messenger/adapter.ts";
 import { Store, type HostLoad } from "../src/store.ts";
+import type { SessionRef } from "../src/runtime/index.ts";
+
+/** A herdr pane as a SessionRef, the way a lane or role record stores it. */
+export const herdrRef = (id: string): SessionRef => ({ runtime: "herdr", id });
+
 
 /**
  * `agent` is the agent name `pane get` reports (default "pi"), `pgid` the foreground process group `pane process-info`

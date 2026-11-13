@@ -31,7 +31,7 @@ function setup(handlers: { gh?: Handler; npm?: Handler; git?: Handler } = {}) {
   const cwd = join(d.store.root, "work");
   mkdirSync(cwd, { recursive: true });
   const lane = (done?: string): Lane => ({
-    key: "fix-login", paneId: "w1:p2", tabId: "w1:t2", brief: "b", cwd, status: "ready",
+    key: "fix-login", sessionRef: { runtime: "herdr", id: "w1:p2", container: "w1:t2" }, paneId: "w1:p2", tabId: "w1:t2", brief: "b", cwd, status: "ready",
     createdAt: 0, lastActivityAt: 0, nudges: 0, log: [], ...(done !== undefined ? { done } : {}),
   });
   return { d, calls, cwd, lane };
@@ -284,10 +284,10 @@ describe("unpushedWork", () => {
       },
     });
     const mine = { ...lane(), cwd: w.cwd };
-    d.store.saveLane({ ...mine, key: "fix-login-v2", paneId: "w1:p3", tabId: "w1:t3", status: "working" });
+    d.store.saveLane({ ...mine, key: "fix-login-v2", sessionRef: { runtime: "herdr", id: "w1:p3", container: "w1:t3" }, paneId: "w1:p3", tabId: "w1:t3", status: "working" });
     expect(await unpushedWork(d, mine)).toEqual([`uncommitted tracked changes in ${w.cwd}`]);
     // Once that lane is done, a fix-login-v2 worktree is fix-login's again.
-    d.store.saveLane({ ...mine, key: "fix-login-v2", paneId: "w1:p3", tabId: "w1:t3", status: "done" });
+    d.store.saveLane({ ...mine, key: "fix-login-v2", sessionRef: { runtime: "herdr", id: "w1:p3", container: "w1:t3" }, paneId: "w1:p3", tabId: "w1:t3", status: "done" });
     expect(await unpushedWork(d, mine)).toEqual([]);
   });
 });

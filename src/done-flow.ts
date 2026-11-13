@@ -37,7 +37,7 @@ export const objectionText = (reasons: readonly string[]): string =>
 
 /** Closes the lane's pane (unless already gone) and records the close with `note` in its log. */
 export async function closeLane(d: Deps, lane: Lane, note: string): Promise<void> {
-  const { rt, ref } = session(d.runtimes, lane.paneId);
+  const { rt, ref } = session(d.runtimes, lane.sessionRef);
   if ((await rt.status(ref)) !== "gone") await rt.close(ref);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: note });
@@ -101,7 +101,7 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
   for (const lane of due) {
     if (d.now() - lane.final!.at < closeAfterMin * 60_000) continue;
     try {
-      const st = await statusOf(d.runtimes, lane.paneId);
+      const st = await statusOf(d.runtimes, lane.sessionRef);
       if (st === "working" || st === "blocked") {
         events.push({ lane: lane.key, action: "close-deferred", detail: `pane is ${st}` });
         continue;

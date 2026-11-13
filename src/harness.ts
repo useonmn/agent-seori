@@ -6,7 +6,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import { Outbox } from "./outbox.ts";
 import {
-  defaultRuntimes, DeliveryUncertain, deliverOrThrow, Runtimes, session, shq, spawnExec, statusOf, ToolError, type AgentStatus, type Exec,
+  defaultRuntimes, DeliveryUncertain, deliverOrThrow, Runtimes, session, shq, spawnExec, statusOf, ToolError, type AgentStatus, type Exec, type SessionRef,
 } from "./runtime/index.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
@@ -19,8 +19,11 @@ import { superviseTick } from "./supervision.ts";
 import { checkSignals, parseDone } from "./signals.ts";
 import { LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
+import { resolveTarget } from "./target.ts";
+import { refText, sameSession } from "./refs.ts";
 
 export { KEY_RE, reservedKey };
+export { resolveTarget };
 
 export const NUDGE_MINUTES = [10, 20, 40] as const;
 const PROMPTS = join(import.meta.dir, "..", "prompts");
@@ -31,7 +34,7 @@ const LESSONS_RE = new RegExp(`^${LESSONS_HEADING}\\n(?:- .*\\n)*\\n`);
 
 export type Deps = {
   readonly store: Store;
-  /** Every session seori opens or talks to goes through these (src/runtime); records store bare herdr pane ids. */
+  /** Every session seori opens or talks to goes through these (src/runtime); records store each session's SessionRef. */
   readonly runtimes: Runtimes;
   readonly exec: Exec;
   readonly now: () => number;
@@ -132,9 +135,8 @@ export async function requireOmpIntegration(d: Deps): Promise<void> {
 }
 
 /** Starts omp in a pane via `herdr agent start`, named after the label and pane so names stay unique across live agents. */
-export async function startAgent(d: Deps, label: string, paneId: string, args: readonly string[] = []): Promise<void> {
-  const { rt, ref } = session(d.runtimes, paneId);
-  await rt.startAgent(ref, agentName(label, paneId), [...args, ...(d.model ? ["--model", d.model] : [])]);
+export async function startAgent(d: Deps, label: string, ref: SessionRef, args: readonly string[] = []): Promise<void> {
+  await d.runtimes.for(ref).startAgent(ref, agentName(label, ref.id), [...args, ...(d.model ? ["--model", d.model] : [])]);
 }
 
 /**
@@ -175,19 +177,6 @@ const prompt = (name: string, vars: Record<string, string>): string =>
 
 // ---------- pane messaging ----------
 
-export function resolveTarget(d: Deps, target: string): string {
-  if (/^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/.test(target)) return target;
-  const roles = d.store.roles();
-  if (target === "lead" || target === "duty") {
-    const pane = roles[target];
-    if (!pane) throw new Refusal(`no ${target} pane registered (seori role ${target} <pane>)`);
-    return pane;
-  }
-  const lane = d.store.lane(target);
-  if (lane && lane.status !== "done") return lane.paneId;
-  throw new Refusal(`unknown target ${target}: not a pane id, role or open lane`);
-}
-
 // A pane with no running agent (`shell`) is never ready: text typed into a bare shell runs as a command (#66).
 const READY_TO_READ: readonly AgentStatus[] = ["idle", "done"];
 
@@ -196,9 +185,9 @@ const READY_TO_READ: readonly AgentStatus[] = ["idle", "done"];
  * also reads while working: omp takes a prompt into a working agent as a steer and loses nothing. Never while
  * `blocked` (a dialog is open). Lead and duty panes wait for idle, so their messages arrive batched.
  */
-function readyToRead(d: Deps, paneId: string, status: AgentStatus): boolean {
+function readyToRead(d: Deps, to: SessionRef, status: AgentStatus): boolean {
   if (READY_TO_READ.includes(status)) return true;
-  return status === "working" && d.store.lanes().some((l) => l.paneId === paneId && l.status !== "done" && l.status !== "lost");
+  return status === "working" && d.store.lanes().some((l) => sameSession(l.sessionRef, to) && l.status !== "done" && l.status !== "lost");
 }
 
 export type SendResult = "DELIVERED" | "QUEUED" | "HELD";
@@ -213,9 +202,9 @@ export async function send(d: Deps, target: string, text: string, from: string):
 
 /** send for the duty and hourly loops: throws DeliveryUncertain, having recorded it, so they report the failure. */
 async function sendOrThrow(d: Deps, target: string, text: string, from: string): Promise<"DELIVERED" | "QUEUED"> {
-  const paneId = resolveTarget(d, target);
-  d.store.enqueue(paneId, { at: d.now(), from, text });
-  return (await flushInbox(d, paneId)) === "delivered" ? "DELIVERED" : "QUEUED";
+  const to = resolveTarget(d, target);
+  d.store.enqueue(to, { at: d.now(), from, text });
+  return (await flushInbox(d, to)) === "delivered" ? "DELIVERED" : "QUEUED";
 }
 
 /**
@@ -238,11 +227,11 @@ async function settled<T extends SendResult | undefined>(delivery: Promise<T>): 
  * is in the pane, or appears before typing, the message takes the queued agent path instead.
  */
 export async function sendToShell(d: Deps, target: string, text: string, from: string): Promise<SendResult> {
-  const paneId = resolveTarget(d, target);
-  if ((await statusOf(d.runtimes, paneId)) !== "shell") return send(d, target, text, from);
-  const { rt, ref } = session(d.runtimes, paneId);
+  const to = resolveTarget(d, target);
+  if ((await statusOf(d.runtimes, to)) !== "shell") return send(d, target, text, from);
+  const { rt, ref } = session(d.runtimes, to);
   if (await rt.typeIntoShell(ref, text)) return "DELIVERED";
-  d.store.enqueue(paneId, { at: d.now(), from, text });
+  d.store.enqueue(to, { at: d.now(), from, text });
   return "QUEUED";
 }
 
@@ -252,44 +241,44 @@ export async function sendToShell(d: Deps, target: string, text: string, from: s
  * flush per pane at a time, across processes (#108). Throws DeliveryUncertain, having recorded the attempt on the
  * queued messages, when the batch may already have reached the pane, and Refusal when the pane is gone.
  */
-export async function flushInbox(d: Deps, paneId: string): Promise<"delivered" | "queued" | "no-agent" | "held"> {
-  if (d.store.queued(paneId).length === 0) return "delivered";
-  const release = d.store.lockInbox(paneId, d.now());
+export async function flushInbox(d: Deps, to: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
+  if (d.store.queued(to).length === 0) return "delivered";
+  const release = d.store.lockInbox(to, d.now());
   if (!release) return "queued";
   try {
-    return await flushLocked(d, paneId);
+    return await flushLocked(d, to);
   } finally {
     release();
   }
 }
 
-async function flushLocked(d: Deps, paneId: string): Promise<"delivered" | "queued" | "no-agent" | "held"> {
+async function flushLocked(d: Deps, to: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
   // Re-read under the lock: the flush that held it may have delivered these meanwhile.
-  const all = d.store.queued(paneId);
+  const all = d.store.queued(to);
   if (all.length === 0) return "delivered";
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
-  const status = await statusOf(d.runtimes, paneId);
+  const status = await statusOf(d.runtimes, to);
   // Before the held check, so a gone pane with only held messages says so instead of delivery-ambiguous forever (#108).
-  if (status === "gone") throw new Refusal(`pane ${paneId} is gone; ${all.length} message(s) kept in its inbox`);
+  if (status === "gone") throw new Refusal(`pane ${refText(to)} is gone; ${all.length} message(s) kept in its inbox`);
   if (queued.length === 0) return "held";
   const typed = queued.filter((m) => m.attempt?.state === "typed");
   if (status === "shell") {
     // The agent the text was typed into is gone from the pane: an Enter later would go to another agent's empty input.
-    if (typed.length > 0) await holdTyped(d, paneId, typed, "the agent left the pane before its Enter");
+    if (typed.length > 0) await holdTyped(d, to, typed, "the agent left the pane before its Enter");
     return "no-agent";
   }
-  if (!readyToRead(d, paneId, status)) return "queued";
+  if (!readyToRead(d, to, status)) return "queued";
   if (typed.length > 0) {
     // An earlier pass typed these and only the Enter failed: press Enter, never type them again (#89), and only into
     // the agent they were typed into (#108).
-    const { rt, ref } = session(d.runtimes, paneId);
+    const { rt, ref } = session(d.runtimes, to);
     const submitted = await rt.submitTyped(ref, typed[0]!.attempt);
     if (submitted === "wait") return "no-agent";
     if (submitted === "changed") {
-      await holdTyped(d, paneId, typed, "a different agent is in the pane than the one the text was typed into");
+      await holdTyped(d, to, typed, "a different agent is in the pane than the one the text was typed into");
       return typed.length === queued.length ? "held" : "queued";
     }
-    settleInbox(d, paneId, typed);
+    settleInbox(d, to, typed);
     // Messages queued after the typed batch were not delivered by this Enter; they wait for the next pass.
     return typed.length === queued.length ? "delivered" : "queued";
   }
@@ -299,26 +288,26 @@ async function flushLocked(d: Deps, paneId: string): Promise<"delivered" | "queu
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
   try {
-    const { rt, ref } = session(d.runtimes, paneId);
+    const { rt, ref } = session(d.runtimes, to);
     if (!(await deliverOrThrow(rt, ref, body))) return "no-agent";
   } catch (e) {
-    if (e instanceof DeliveryUncertain) await recordUncertain(d, paneId, queued, e);
+    if (e instanceof DeliveryUncertain) await recordUncertain(d, to, queued, e);
     throw e;
   }
-  settleInbox(d, paneId, queued);
+  settleInbox(d, to, queued);
   return "delivered";
 }
 
 /** Re-reads the inbox and drops the batch (delivered) or marks it with the failed attempt; messages queued meanwhile stay. */
-function settleInbox(d: Deps, paneId: string, batch: readonly QueuedMessage[], attempt?: DeliveryAttempt): void {
+function settleInbox(d: Deps, to: SessionRef, batch: readonly QueuedMessage[], attempt?: DeliveryAttempt): void {
   const left = [...batch];
-  const rest = d.store.queued(paneId).flatMap((m) => {
+  const rest = d.store.queued(to).flatMap((m) => {
     const i = left.findIndex((b) => b.at === m.at && b.from === m.from && b.text === m.text);
     if (i < 0) return [m];
     left.splice(i, 1);
     return attempt ? [{ ...m, attempt }] : [];
   });
-  d.store.saveInbox(paneId, rest);
+  d.store.saveInbox(to, rest);
 }
 
 const NOTICE_FROM = "seori-delivery";
@@ -328,28 +317,28 @@ const NOTICE_FROM = "seori-delivery";
  * held and the lead is told once; held messages are never retried, so the notice is never repeated. A notice that
  * itself fails ambiguously is held without another notice, so this cannot loop.
  */
-async function recordUncertain(d: Deps, paneId: string, batch: readonly QueuedMessage[], e: DeliveryUncertain): Promise<void> {
+async function recordUncertain(d: Deps, to: SessionRef, batch: readonly QueuedMessage[], e: DeliveryUncertain): Promise<void> {
   const detail = failureDetail(e);
-  settleInbox(d, paneId, batch, { at: d.now(), state: e.typed ? "typed" : "ambiguous", detail, ...(e.typed ? e.agent : {}) });
-  if (!e.typed) await noticeHeld(d, paneId, batch, `herdr said: ${detail}`);
+  settleInbox(d, to, batch, { at: d.now(), state: e.typed ? "typed" : "ambiguous", detail, ...(e.typed ? e.agent : {}) });
+  if (!e.typed) await noticeHeld(d, to, batch, `herdr said: ${detail}`);
 }
 
 /** Typed text whose agent left or changed (#108): it may sit in a lost input, so it is held like an ambiguous batch. */
-async function holdTyped(d: Deps, paneId: string, typed: readonly QueuedMessage[], why: string): Promise<void> {
-  settleInbox(d, paneId, typed, { at: d.now(), state: "ambiguous", detail: why });
-  await noticeHeld(d, paneId, typed, why);
+async function holdTyped(d: Deps, to: SessionRef, typed: readonly QueuedMessage[], why: string): Promise<void> {
+  settleInbox(d, to, typed, { at: d.now(), state: "ambiguous", detail: why });
+  await noticeHeld(d, to, typed, why);
 }
 
-async function noticeHeld(d: Deps, paneId: string, batch: readonly QueuedMessage[], why: string): Promise<void> {
+async function noticeHeld(d: Deps, to: SessionRef, batch: readonly QueuedMessage[], why: string): Promise<void> {
   if (batch.every((m) => m.from === NOTICE_FROM)) return;
   const which = batch.map((m) => `from ${m.from} queued ${new Date(m.at).toISOString()}`).join(", ");
   const text =
-    `[DELIVERY-AMBIGUOUS ${paneId}] ${batch.length} message(s) (${which}) may or may not have reached the pane; ${why}. ` +
-    `Held and not resent. Check the pane and see seori inbox list ${paneId}: if it did not arrive, seori inbox resend ${paneId} <index>; if it did, seori inbox ack ${paneId} <index>.`;
+    `[DELIVERY-AMBIGUOUS ${refText(to)}] ${batch.length} message(s) (${which}) may or may not have reached the pane; ${why}. ` +
+    `Held and not resent. Check the pane and see seori inbox list ${refText(to)}: if it did not arrive, seori inbox resend ${refText(to)} <index>; if it did, seori inbox ack ${refText(to)} <index>.`;
   try {
     await tellLead(d, text, NOTICE_FROM);
   } catch (err) {
-    process.stderr.write(`seori: telling the lead about the ambiguous delivery to ${paneId} failed too (${failureDetail(err)}); the notice is kept in the lead's inbox\n`);
+    process.stderr.write(`seori: telling the lead about the ambiguous delivery to ${refText(to)} failed too (${failureDetail(err)}); the notice is kept in the lead's inbox\n`);
   }
 }
 
@@ -360,16 +349,16 @@ export type InboxEntry = { index: number; state: "queued" | "typed" | "held"; fr
 const PREVIEW_CHARS = 60;
 
 /** A pane's queued messages, 1-based in inbox order. The text is never shown whole: its first 60 characters, JSON-escaped. */
-export function inboxList(d: Deps, target: string): { paneId: string; entries: InboxEntry[] } {
-  const paneId = resolveTarget(d, target);
-  const entries = d.store.queued(paneId).map((m, i): InboxEntry => ({
+export function inboxList(d: Deps, target: string): { to: SessionRef; entries: InboxEntry[] } {
+  const to = resolveTarget(d, target);
+  const entries = d.store.queued(to).map((m, i): InboxEntry => ({
     index: i + 1,
     state: m.attempt?.state === "ambiguous" ? "held" : m.attempt?.state === "typed" ? "typed" : "queued",
     from: m.from,
     at: m.at,
     preview: JSON.stringify(m.text.slice(0, PREVIEW_CHARS)) + (m.text.length > PREVIEW_CHARS ? "..." : ""),
   }));
-  return { paneId, entries };
+  return { to, entries };
 }
 
 /**
@@ -378,17 +367,17 @@ export function inboxList(d: Deps, target: string): { paneId: string; entries: I
  * inbox lock, so a flush in progress cannot overwrite the change.
  */
 export function releaseHeld(d: Deps, target: string, index: number, how: "ack" | "resend"): string {
-  const paneId = resolveTarget(d, target);
-  const release = d.store.lockInbox(paneId, d.now());
-  if (!release) throw new Refusal(`the inbox of ${paneId} is being flushed right now; try again`);
+  const to = resolveTarget(d, target);
+  const release = d.store.lockInbox(to, d.now());
+  if (!release) throw new Refusal(`the inbox of ${refText(to)} is being flushed right now; try again`);
   try {
-    const msgs = d.store.queued(paneId);
+    const msgs = d.store.queued(to);
     const m = Number.isInteger(index) ? msgs[index - 1] : undefined;
-    if (!m) throw new Refusal(`no entry ${index} in the inbox of ${paneId} (${msgs.length} entries; see seori inbox list ${target})`);
-    if (m.attempt?.state !== "ambiguous") throw new Refusal(`entry ${index} of ${paneId} is not held; only held entries can be acked or resent`);
+    if (!m) throw new Refusal(`no entry ${index} in the inbox of ${refText(to)} (${msgs.length} entries; see seori inbox list ${target})`);
+    if (m.attempt?.state !== "ambiguous") throw new Refusal(`entry ${index} of ${refText(to)} is not held; only held entries can be acked or resent`);
     const { attempt: _, ...fresh } = m;
-    d.store.saveInbox(paneId, how === "ack" ? msgs.filter((_, i) => i !== index - 1) : msgs.map((x, i) => (i === index - 1 ? fresh : x)));
-    return paneId;
+    d.store.saveInbox(to, how === "ack" ? msgs.filter((_, i) => i !== index - 1) : msgs.map((x, i) => (i === index - 1 ? fresh : x)));
+    return refText(to);
   } finally {
     release();
   }
@@ -420,7 +409,7 @@ export async function startLane(
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
   const existing = d.store.lane(key);
-  if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.paneId}`);
+  if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
   // Stored without a leading `Done =`, which the footer adds back.
   const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
   if (opts.done !== undefined) parseDone(opts.done);
@@ -442,29 +431,28 @@ export async function startLane(
   const rt = d.runtimes.default;
   const group = workspace ? workspace : await rt.createGroup(loadConfig(d.store.root).name, cwd);
   const ref = await rt.create({ name: key, cwd, env, role: "lane", container: "tab", group });
-  const pane = { paneId: ref.id, tabId: ref.container ?? "" };
   try {
-    await startAgent(d, key, pane.paneId);
-    await agentSessionReported(d, pane.paneId);
+    await startAgent(d, key, ref);
+    await agentSessionReported(d, ref);
     const kickoff =
       `/goal Read your brief at ${briefPath} and execute it. Your lane key is ${key}. ` +
       `The work is finished only when the brief's exit condition holds and you have sent seori ready.`;
     if (!(await deliverOrThrow(rt, ref, kickoff))) throw new Error("omp was not in front of the pane to take the kickoff");
-    if (!(await kickoffTook(d, pane.paneId))) {
+    if (!(await kickoffTook(d, ref))) {
       // The kickoff can sit typed in omp's input with its Enter lost (omp still loading under load): press only Enter.
       await rt.submitTyped(ref);
-      if (!(await kickoffTook(d, pane.paneId))) {
-        process.stderr.write(`seori: lane ${key}: omp in ${pane.paneId} has not started on the kickoff; check that pane\n`);
+      if (!(await kickoffTook(d, ref))) {
+        process.stderr.write(`seori: lane ${key}: omp in ${refText(ref)} has not started on the kickoff; check that pane\n`);
       }
     }
   } catch (e) {
     await rt.close(ref).catch(() => undefined);
-    throw new Refusal(`lane ${key} did not start, pane ${pane.paneId} closed: ${failureDetail(e)}`);
+    throw new Refusal(`lane ${key} did not start, pane ${refText(ref)} closed: ${failureDetail(e)}`);
   }
 
   const now = d.now();
   const lane: Lane = {
-    key, paneId: pane.paneId, tabId: pane.tabId, brief: briefPath, cwd,
+    key, sessionRef: ref, paneId: ref.id, tabId: ref.container ?? "", brief: briefPath, cwd,
     status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
     ...(doneLine !== undefined ? { done: doneLine } : {}),
     ...(opts.thread !== undefined ? { thread: opts.thread.trim() } : {}),
@@ -472,7 +460,7 @@ export async function startLane(
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
-  await tellLead(d, `[START ${key}] lane opened in ${pane.paneId}`, key);
+  await tellLead(d, `[START ${key}] lane opened in ${refText(ref)}`, key);
   return lane;
 }
 
@@ -486,17 +474,17 @@ const KICKOFF_POLL_MS = 500;
  * the session later (up to 16 s after start on a loaded host), and a prompt typed before that can lose its
  * Enter. Waits for the session, at most AGENT_SESSION_WAIT_MS; the kickoff then goes in either way.
  */
-async function agentSessionReported(d: Deps, paneId: string): Promise<void> {
+async function agentSessionReported(d: Deps, ref: SessionRef): Promise<void> {
   const until = d.now() + AGENT_SESSION_WAIT_MS;
-  const { rt, ref } = session(d.runtimes, paneId);
+  const rt = d.runtimes.for(ref);
   while (!(await rt.agentSession(ref)) && d.now() < until) await d.sleep(KICKOFF_POLL_MS);
 }
 
 /** Whether omp started on the kickoff (herdr reports it working, done or on a dialog) within KICKOFF_TAKE_MS. */
-async function kickoffTook(d: Deps, paneId: string): Promise<boolean> {
+async function kickoffTook(d: Deps, ref: SessionRef): Promise<boolean> {
   const until = d.now() + KICKOFF_TAKE_MS;
   for (;;) {
-    const status = await statusOf(d.runtimes, paneId);
+    const status = await statusOf(d.runtimes, ref);
     if (status === "working" || status === "done" || status === "blocked") return true;
     if (d.now() >= until) return false;
     await d.sleep(KICKOFF_POLL_MS);
@@ -559,7 +547,7 @@ export async function done(d: Deps, key: string): Promise<void> {
     throw new Refusal(`lane ${key} is already closed${how}; see its final state with: ${d.seoriCmd} status (record: ${join(d.store.root, "lanes", `${key}.json`)})`);
   }
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
-  const st = await statusOf(d.runtimes, lane.paneId);
+  const st = await statusOf(d.runtimes, lane.sessionRef);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
   if (lane.done !== undefined) {
     const failures = await checkSignals(d, lane);
@@ -589,15 +577,16 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   const stop = d.store.stop("duty");
   if (stop) return [{ action: "stopped", detail: stop.reason }];
   const events: DutyEvent[] = [];
-  for (const paneId of d.store.inboxPanes()) {
+  for (const to of d.store.inboxPanes()) {
+    const paneId = refText(to);
     try {
-      const result = await flushInbox(d, paneId);
+      const result = await flushInbox(d, to);
       if (result === "delivered") events.push({ pane: paneId, action: "flushed" });
       if (result === "no-agent") {
-        events.push({ pane: paneId, action: "inbox-held", detail: `no agent in front; ${d.store.queued(paneId).length} message(s) kept` });
+        events.push({ pane: paneId, action: "inbox-held", detail: `no agent in front; ${d.store.queued(to).length} message(s) kept` });
       }
       // Held after an ambiguous delivery (#89): shown on every pass, resent never; the lead was told once.
-      const held = d.store.queued(paneId).filter((m) => m.attempt?.state === "ambiguous").length;
+      const held = d.store.queued(to).filter((m) => m.attempt?.state === "ambiguous").length;
       if (held > 0) events.push({ pane: paneId, action: "delivery-ambiguous", detail: `${held} message(s) held, not resent` });
     } catch (e) {
       // One pane's failed delivery must never kill the loop for every other pane and lane.
@@ -609,13 +598,13 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   for (const lane of d.store.lanes()) {
     if (lane.status !== "working" && lane.status !== "waiting") continue;
     try {
-      const st = await statusOf(d.runtimes, lane.paneId);
+      const st = await statusOf(d.runtimes, lane.sessionRef);
       const now = d.now();
       if (st === "gone") {
         lane.status = "lost";
         lane.log.push({ at: now, kind: "lost", text: "pane disappeared without READY" });
         d.store.saveLane(lane);
-        await tellLead(d, `[LOST ${lane.key}] pane ${lane.paneId} closed without a final answer`, "duty");
+        await tellLead(d, `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed without a final answer`, "duty");
         events.push({ lane: lane.key, action: "lost" });
         continue;
       }
@@ -690,7 +679,7 @@ async function blockedPrompt(d: Deps, lane: Lane, now: number, events: DutyEvent
   const waited = now - lane.blockedSince;
   // A threshold under a minute (a short test setting) is told in seconds, not as "0 min".
   const minutes = waited >= 60_000 ? `${Math.floor(waited / 60_000)} min` : `${Math.round(waited / 1000)} s`;
-  const text = `[BLOCKED-PROMPT ${lane.key}] pane ${lane.paneId} waits on a dialog (a tool approval or question) for ${minutes}; nothing is sent to the lane while it is open`;
+  const text = `[BLOCKED-PROMPT ${lane.key}] pane ${refText(lane.sessionRef)} waits on a dialog (a tool approval or question) for ${minutes}; nothing is sent to the lane while it is open`;
   // Marked before telling: tellLead queues the notice in the lead's inbox first, so it is not lost if delivery waits.
   lane.alerts = { ...(lane.alerts ?? {}), [key]: now };
   lane.log.push({ at: now, kind: "blocked", text });
@@ -817,7 +806,7 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
     try {
       if ((await statusOf(d.runtimes, lead)) === "blocked") due.push(...stuck.map((s): [typeof s, AlertWhy] => [s, "lead-blocked"]));
     } catch (e) {
-      events.push({ pane: lead, action: "lead-status-failed", detail: failureDetail(e) });
+      events.push({ pane: refText(lead), action: "lead-status-failed", detail: failureDetail(e) });
     }
   }
   for (const s of open) if (s.gaveUp && !s.drafted && !s.alerted.includes("gave-up")) due.push([s, "gave-up"]);
