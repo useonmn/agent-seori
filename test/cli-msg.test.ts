@@ -138,4 +138,15 @@ describe("seori msg", () => {
     expect(await run(["msg", "send", "--to", "fake:c9:t1", "--text", "heads up"], d)).toEqual({ code: 0, out: "SENT fake:c9:t1 message=1" });
     expect(fake.sent().map((r) => [r.chat, r.thread, r.text])).toEqual([["c9", "t1", "heads up"]]);
   });
+
+  test("a flag the subcommand does not take is refused by name, never read as the value of the flag before it", async () => {
+    const { d, fake } = setup();
+    // --now and --replace no longer exist; before this check they swallowed the next argument, so --text was lost.
+    await expect(main(["msg", "send", "--reply-to", "fake:c1:1", "--now", "--text", "hello there"], d)).rejects.toThrow(/unknown flag --now for seori msg send/);
+    await expect(main(["msg", "send", "--replace", "abcd1234", "--text", "hello there"], d)).rejects.toThrow(/unknown flag --replace for seori msg send/);
+    await expect(main(["msg", "drafts"], d)).rejects.toThrow(/unknown msg command drafts/);
+    await expect(main(["msg", "flush"], d)).rejects.toThrow(/unknown msg command flush/);
+    // Nothing was sent, and the message text was never mistaken for a flag value.
+    expect(fake.sent()).toEqual([]);
+  });
 });

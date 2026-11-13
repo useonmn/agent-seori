@@ -523,8 +523,33 @@ function workflowFlag(v: string): Workflow | null {
   return v;
 }
 
+/**
+ * Flags each `seori msg` subcommand accepts. The general parser reads every other `--name` as a value flag, which is
+ * right for relayed values (`--text "$MSG"`) but would let a stale or mistyped flag swallow the argument after it:
+ * `msg send --now --text 'hi'` used to take `--text` as the value of `--now` and then report an empty message. A flag
+ * outside its subcommand's list is refused by name instead.
+ */
+const MSG_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  send: ["reply-to", "to", "text", "again"],
+  close: ["why"],
+  list: ["all"],
+  check: [],
+  pair: ["minutes", "write", "all", "force"],
+  edit: ["reply-of", "to", "message", "text"],
+};
+
+/** Refuses flags a `seori msg` subcommand does not take, so no argument is silently read as their value. */
+function checkMsgFlags(a: Args, sub: string | undefined): void {
+  const allowed = MSG_FLAGS[sub ?? ""];
+  if (allowed === undefined) return; // an unknown subcommand is refused below, with the usage text
+  for (const name of a.flags.keys()) {
+    if (!allowed.includes(name)) throw new Refusal(`unknown flag --${name} for seori msg ${sub}\n\n${USAGE}`);
+  }
+}
+
 async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
   const root = d.store.root;
+  checkMsgFlags(a, sub);
   if (sub === "send") {
     const replyTo = a.flags.get("reply-to")?.flatMap((v) => v.split(",")).map((id) => id.trim()).filter(Boolean);
     const to = one(a, "to");
