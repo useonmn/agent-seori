@@ -157,15 +157,15 @@ export function worklogList(root: string, opts: { open?: boolean } = {}): Worklo
 }
 
 /**
- * Records an owner request when it arrives. Title and source are each one line; the id is 8 random hex digits. A source
- * that is the id of a lead-channel message from someone other than the owner is refused, so a request is not
- * attributed to a message the owner never sent. Only that: any other source (`pane`, free text) is taken as given.
+ * Records an owner (or trusted sender's) request when it arrives. Title and source are each one line; the id is 8 random hex digits. A source
+ * that is the id of a lead-channel message from someone neither the owner nor trusted (config.json `trusted`) is refused,
+ * so a request is not attributed to a message that does not carry the owner's authority. Only that: any other source (`pane`, free text) is taken as given.
  */
 export function worklogAdd(root: string, title: string, source: string, now: number): WorklogItem {
   if (existsSync(join(root, "lead", "inbound.jsonl"))) {
     const row = new Channel(root).inbound().findLast((r) => r.id === source.trim());
-    if (row?.kind === "messenger" && row.sender !== undefined && row.sender.kind !== "owner") {
-      throw new WorklogError(`${row.id} is from ${row.sender.kind} ${row.sender.id}, not the owner; the worklog holds owner requests only`);
+    if (row?.kind === "messenger" && row.sender !== undefined && row.sender.kind !== "owner" && row.sender.kind !== "trusted") {
+      throw new WorklogError(`${row.id} is from ${row.sender.kind} ${row.sender.id}, neither the owner nor trusted; the worklog holds their requests only`);
     }
   }
   const known = new Set(worklogRead(root).items.map((item) => item.id));

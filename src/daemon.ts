@@ -4,7 +4,7 @@ import { Channel, type MessengerRow } from "./channel.ts";
 import { configPath, DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
 import { choiceFor, defaultRuntimes, spawnExec, statusOf } from "./runtime/index.ts";
-import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
+import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig, type Sender } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 import { refFromText } from "./refs.ts";
 import { lockFile, Store } from "./store.ts";
@@ -195,11 +195,11 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     configError = errorText(e);
   }
   // A config.json that does not load keeps upstream's owner-only rule until it is fixed (the change restarts the daemon).
-  let talk = { withOthers: DEFAULT_CONFIG.talkWithOthers, agentTurnLimit: DEFAULT_CONFIG.agentTurnLimit };
+  let talk = { withOthers: DEFAULT_CONFIG.talkWithOthers, agentTurnLimit: DEFAULT_CONFIG.agentTurnLimit, trusted: DEFAULT_CONFIG.trusted };
   let settingsError: string | undefined;
   try {
     const config = loadConfig(root);
-    talk = { withOthers: config.talkWithOthers, agentTurnLimit: config.agentTurnLimit };
+    talk = { withOthers: config.talkWithOthers, agentTurnLimit: config.agentTurnLimit, trusted: config.trusted };
   } catch (e) {
     settingsError = errorText(e);
     talk = { ...talk, withOthers: false };
@@ -262,11 +262,21 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
         // The owner is the configured id and never a bot, whatever the adapter guessed.
         const owner = m.from === config.owner && m.sender.kind !== "agent";
         if (!owner && !talk.withOthers) return emit({ ev: "dropped", id: m.id, from: m.from });
-        const sender = owner ? { ...m.sender, kind: "owner" as const } : m.sender.kind === "owner" ? { ...m.sender, kind: "person" as const } : m.sender;
+        // Trusted: a non-owner the owner listed for this messenger; the list's name, when it gives one, labels them.
+        const trust = owner ? undefined : talk.trusted.find((t) => t.source === config.source && t.id === m.from);
+        const sender: Sender = owner
+          ? { ...m.sender, kind: "owner" }
+          : trust
+            ? { kind: "trusted", id: m.from, ...(trust.name !== undefined ? { name: trust.name } : m.sender.name !== undefined ? { name: m.sender.name } : {}) }
+            : m.sender.kind === "owner" || m.sender.kind === "trusted"
+              ? { ...m.sender, kind: "person" }
+              : m.sender;
+        // A trusted bot is still a bot: its messages count toward the agent-loop guard.
+        const agent = m.sender.kind === "agent";
         const conversation = `${m.chat}:${m.thread ?? ""}`;
         let loopStopped: number | undefined;
         const run = (agentRun.get(conversation) ?? 0) + 1;
-        if (sender.kind !== "agent") agentRun.delete(conversation);
+        if (!agent) agentRun.delete(conversation);
         else if (run > talk.agentTurnLimit + 1) return emit({ ev: "dropped", id: m.id, from: m.from });
         else if (run > talk.agentTurnLimit) loopStopped = talk.agentTurnLimit;
         const row: MessengerRow = {
@@ -285,7 +295,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           ...(loopStopped !== undefined ? { loopStopped } : {}),
         };
         const stored = channel.appendInbound(row);
-        if (stored && sender.kind === "agent") {
+        if (stored && agent) {
           agentRun.delete(conversation); // re-inserted last: the map keeps the most recently active conversations
           agentRun.set(conversation, run);
           if (agentRun.size > AGENT_RUNS_KEPT) agentRun.delete(agentRun.keys().next().value!);

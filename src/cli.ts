@@ -15,7 +15,8 @@ import { loadMessengers, type ThreadChange, type ThreadStatus } from "./messenge
 import { adapterFor } from "./messenger/index.ts";
 import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
 import {
-  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgReact, msgSend, msgShow, msgThread, msgTyping, parseTo,
+  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgReact, msgSend, msgShow, msgThread, msgTrustAdd, msgTrustList,
+  msgTrustRemove, msgTyping, parseTo, trustLine,
   threadLine, whereLabel, whereOf,
 } from "./msg.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
@@ -123,6 +124,10 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc (herdr is
   seori msg flush                              send every open draft now, oldest first
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
+  seori msg trust add <SOURCE>:<ID> [--name N] --because ID
+                                              trust a person or agent (config.json "trusted"); ID must be the owner's message asking for it
+  seori msg trust remove <SOURCE>:<ID> --because ID   stop trusting them, on the owner's message ID
+  seori msg trust list                         the trusted senders, one TRUSTED line each
                                               columns: id  state  age  kind  sender-or-watch-name  text
   seori msg react <id> [--remove]              add (or remove) the eyes reaction on a lead channel message
   seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
@@ -684,6 +689,26 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     }
   }
   if (sub === "react" || sub === "edit" || sub === "typing" || sub === "thread") return msgAction(root, d, a, sub);
+  if (sub === "trust") {
+    const op = a.pos[2];
+    if (op === "list") {
+      const lines = msgTrustList(root);
+      console.log(lines.length ? lines.join("\n") : "EMPTY");
+      return 0;
+    }
+    if (op === "add") {
+      const name = one(a, "name");
+      console.log(trustLine(msgTrustAdd(root, need(a.pos[3], "<source>:<id>"), { ...(name !== undefined ? { name } : {}), ...(one(a, "because") !== undefined ? { because: one(a, "because")! } : {}) })));
+      return 0;
+    }
+    if (op === "remove") {
+      const spec = need(a.pos[3], "<source>:<id>");
+      msgTrustRemove(root, spec, one(a, "because"));
+      console.log(`UNTRUSTED ${spec}`);
+      return 0;
+    }
+    throw new Refusal(`seori msg trust takes add, remove or list\n\n${USAGE}`);
+  }
   if (sub === "show") {
     const r = await msgShow(root, need(a.pos[2], "message id"), msgDepsFor(root, d.now));
     console.log(r.lines.join("\n"));

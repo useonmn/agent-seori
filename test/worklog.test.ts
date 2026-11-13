@@ -158,5 +158,7 @@ describe("worklog", () => {
     expect(worklogRead(root).items).toEqual([]);
     expect(worklogAdd(root, "owner thing", "fake:c:2", T0).source).toBe("fake:c:2");
     expect(worklogAdd(root, "from the pane", "pane", T0).source).toBe("pane");
+    channel.appendInbound({ id: "fake:c:3", kind: "messenger", source: "fake", chat: "c", from: "u3", sender: { kind: "trusted", id: "u3" }, at: T0, text: "fix it" });
+    expect(worklogAdd(root, "trusted thing", "fake:c:3", T0).source).toBe("fake:c:3");
   });
 });

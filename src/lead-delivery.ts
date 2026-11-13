@@ -171,7 +171,8 @@ const fromOwner = (row: MessengerRow): boolean => row.sender === undefined || ro
 const oneLine = (s: string): string => s.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, " ").trim();
 
 /**
- * "owner", "person <name> (<id>)" or "agent <name> (<id>)"; a row stored before senders were recorded came from the owner.
+ * "owner", "trusted <name> (<id>)", "person <name> (<id>)" or "agent <name> (<id>)"; a row stored before senders were
+ * recorded came from the owner.
  * Name and id come from the platform and may be anyone's, so they are kept to one line.
  */
 function senderLabel(row: MessengerRow): string {

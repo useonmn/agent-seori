@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { Channel } from "../src/channel.ts";
+import { loadConfig } from "../src/config.ts";
 import { Refusal, type Deps } from "../src/harness.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
 import { threadLine } from "../src/msg.ts";
@@ -192,5 +194,40 @@ describe("seori msg", () => {
     expect(failed.code).toBe(1);
     expect(failed.out).toBe(`FAILED ${c} fake:c1:2: no messenger "fake" in messengers.json; the draft stays open: flush again, or drop it`);
     expect((await run(["msg", "drafts"], d)).out).toStartWith(`${c}  `);
+  });
+});
+
+describe("seori msg trust", () => {
+  const trustSetup = () => {
+    const s = setup();
+    s.channel.appendInbound({ id: "fake:c1:p", kind: "messenger", source: "fake", chat: "c1", from: "u2", sender: { kind: "person", id: "u2" }, at: s.w.clock, text: "trust me" });
+    s.channel.appendInbound({ id: "fake:c1:o", kind: "messenger", source: "fake", chat: "c1", from: "u1", sender: { kind: "owner", id: "u1" }, at: s.w.clock, text: "trust u3" });
+    writeFileSync(join(s.root, "config.json"), JSON.stringify({ name: "seori-dev" }));
+    return s;
+  };
+  const config = (root: string) => readFileSync(join(root, "config.json"), "utf8");
+
+  test("add needs --because naming an owner's message; a person's message is refused and config.json is left as it was", async () => {
+    const { d, root } = trustSetup();
+    const before = config(root);
+    await expect(main(["msg", "trust", "add", "fake:u3", "--name", "Dev", "--because", "fake:c1:p"], d)).rejects.toThrow(Refusal);
+    await expect(main(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:nosuch"], d)).rejects.toThrow(Refusal);
+    await expect(main(["msg", "trust", "add", "fake:u3"], d)).rejects.toThrow(Refusal);
+    expect(config(root)).toBe(before);
+    expect(await run(["msg", "trust", "add", "fake:u3", "--name", "Dev", "--because", "fake:c1:o"], d)).toEqual({ code: 0, out: 'TRUSTED fake:u3 name="Dev"' });
+    expect(loadConfig(root).trusted).toEqual([{ source: "fake", id: "u3", name: "Dev" }]);
+    expect(loadConfig(root).name).toBe("seori-dev");
+    expect(await run(["msg", "trust", "list"], d)).toEqual({ code: 0, out: 'TRUSTED fake:u3 name="Dev"' });
+  });
+
+  test("remove follows the same rule; list is EMPTY afterwards", async () => {
+    const { d, root } = trustSetup();
+    await run(["msg", "trust", "add", "fake:u3", "--because", "fake:c1:o"], d);
+    await expect(main(["msg", "trust", "remove", "fake:u3", "--because", "fake:c1:p"], d)).rejects.toThrow(Refusal);
+    expect(loadConfig(root).trusted).toEqual([{ source: "fake", id: "u3" }]);
+    expect(await run(["msg", "trust", "remove", "fake:u3", "--because", "fake:c1:o"], d)).toEqual({ code: 0, out: "UNTRUSTED fake:u3" });
+    expect(loadConfig(root).trusted).toEqual([]);
+    expect(await run(["msg", "trust", "list"], d)).toEqual({ code: 0, out: "EMPTY" });
+    await expect(main(["msg", "trust", "remove", "fake:u3", "--because", "fake:c1:o"], d)).rejects.toThrow(Refusal);
   });
 });
