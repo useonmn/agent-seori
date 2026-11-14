@@ -25,12 +25,18 @@ async function captureLog(fn: () => Promise<unknown>): Promise<string> {
   return lines.join("\n");
 }
 
-/** Waits for a file to appear, polling its existence: the pane writes its pid once its shell started. */
-async function untilExists(path: string, deadlineMs = 5_000): Promise<void> {
+/**
+ * Waits for a line the detached worker logs (`RESTART_PID <pid>`) and returns the number. The worker is nobody's child
+ * here, so the log is how the test finds it (`seori restart --follow` reads the same log).
+ */
+async function restartPid(log: string, deadlineMs = 20_000): Promise<number> {
   const until = Date.now() + deadlineMs;
-  while (!existsSync(path)) {
-    if (Date.now() >= until) throw new Error(`${path} never appeared`);
-    await Bun.sleep(10);
+  for (;;) {
+    const text = existsSync(log) ? readFileSync(log, "utf8") : "";
+    const m = /^RESTART_PID (\d+)$/m.exec(text);
+    if (m) return Number(m[1]);
+    if (Date.now() >= until) throw new Error(`no RESTART_PID in ${log}:\n${text}`);
+    await Bun.sleep(20);
   }
 }
 
@@ -80,14 +86,19 @@ describe("the detached restart script", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** A fake seori that records each call into the log and kills `PANE_PID` on `down all` (the pane this runs in). */
-  function fakeSeori(fail?: "down" | "up"): string {
+  /**
+   * A fake seori that records each call, and whose `down all` closes the caller's pane the way the real one does: it
+   * sends `PANE_PID` a SIGTERM (a real `down` closes that terminal). `downMs` keeps it busy that long, so a hang-up
+   * sent meanwhile lands while the worker is still mid-down.
+   */
+  function fakeSeori(fail?: "down" | "up", downMs = 0): string {
     const path = join(dir, "seori");
     writeFileSync(path, [
       "#!/bin/sh",
       `echo "CALLED $*" >> '${join(dir, "calls.log")}'`,
       `if [ "$1" = down ]; then`,
-      `  echo "CLOSED the caller pane"; kill -TERM "$PANE_PID" 2>/dev/null`,
+      `  echo "CLOSED the caller pane"; if [ -n "$PANE_PID" ]; then kill -TERM "$PANE_PID" 2>/dev/null; fi`,
+      ...(downMs > 0 ? [`  sleep ${downMs / 1000}`] : []),
       ...(fail === "down" ? ["  exit 1"] : ["  exit 0"]),
       `fi`,
       `if [ "$1" = up ]; then`,
@@ -126,28 +137,30 @@ describe("the detached restart script", () => {
     return restartExit(log);
   }
 
-  test("down then up; the up still runs after the down closed the caller pane", async () => {
-    // The pane: its own session, killed by the fake down the way `down all` closes the caller's terminal.
-    const panePid = join(dir, "pane.pid");
-    const pane = Bun.spawn(["setsid", "/bin/sh", "-c", `echo $$ > '${panePid}'; sleep 120`], { stdio: ["ignore", "ignore", "ignore"] });
-    await untilExists(panePid);
-    const pid = Number(readFileSync(panePid, "utf8").trim());
-    expect(Number.isInteger(pid) && pid > 0).toBe(true);
-    const seori = fakeSeori();
-    const code = await runDetached(seori, { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, PANE_PID: String(pid), SEORI_HOME: dir });
-    expect(code).toBe(0);
-    // Both steps ran, in this order, though the first one killed the pane the restart was asked from.
+  test("the worker survives a SIGHUP mid-down and still runs the up, then reports its exit", async () => {
+    // A closing terminal hangs up on what it started; that arrives while the worker is still mid-`down`, because the
+    // fake seori's down takes a moment. The hang-up goes to the worker itself (its pid is in the log), which is the
+    // signal that would otherwise end it, so this holds whatever detach this host offers.
+    const seori = fakeSeori(undefined, 600);
+    const log = join(dir, "restart.log");
+    const detach = detachArgv(restartScript({ home: dir, cwd: dir, seoriCmd: seori, log }), (b) => Bun.which(b) !== null, "seori-restart-test");
+    expect(detach).toBeDefined();
+    const pane = Bun.spawn([...detach!.argv], { env: { ...process.env, PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir }, stdio: ["ignore", "ignore", "ignore"] });
+    await pane.exited;
+    const worker = await restartPid(log);
+    expect(worker).toBeGreaterThan(0);
+    // A closing terminal hangs up on what it started.
+    process.kill(worker, "SIGHUP");
+    expect(await restartExit(log)).toBe(0);
     const calls = readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n");
     expect(calls).toEqual(["CALLED down all", "CALLED up --cwd " + dir]);
-    const log = readFileSync(join(dir, "restart.log"), "utf8");
-    expect(log).toContain("RESTART_BEGIN");
-    expect(log).toContain("CLOSED the caller pane");
-    expect(log).toContain("UP lead=hc:t9 duty=hc:t10");
-    expect(LINE(log.split("\n").find((l) => l.startsWith("RESTART_DONE"))!)).toBe("RESTART_DONE");
-    // The caller pane really is gone: the down killed it, and nothing took the worker with it.
-    const gone = await Bun.spawn(["/bin/kill", "-0", String(pid)], { stdio: ["ignore", "ignore", "ignore"] }).exited;
-    expect(gone).not.toBe(0);
-    await pane.exited;
+    const text = readFileSync(log, "utf8");
+    expect(text).toContain("RESTART_BEGIN");
+    expect(text).toContain("UP lead=hc:t9 duty=hc:t10");
+    expect(LINE(text.split("\n").find((l) => l.startsWith("RESTART_DONE"))!)).toBe("RESTART_DONE");
+    // The worker is done and gone: the exit code was its last word.
+    const gone = Bun.spawn(["/bin/kill", "-0", String(worker)], { stdio: ["ignore", "ignore", "ignore"] });
+    expect(await gone.exited).not.toBe(0);
   });
 
   test("a down that does not finish leaves the up out, and says so", async () => {

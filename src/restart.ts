@@ -54,7 +54,8 @@ export type ScriptOptions = {
  * the outcome of a detached restart can be read (`seori restart --follow` reads it there).
  *
  * SIGHUP is ignored for the whole run: closing a terminal sends it to everything that pane started, and a restart must
- * outlive precisely that. SIGTERM is left alone, so an operator can still kill a worker that hangs.
+ * outlive precisely that. (`nohup` already ignores it for the worker it starts; this keeps the guarantee for a worker
+ * launched some other way, and costs nothing.) SIGTERM is left alone, so an operator can still kill a worker that hangs.
  */
 export function restartScript(o: ScriptOptions): string {
   const seori = o.seoriCmd;
@@ -63,6 +64,8 @@ export function restartScript(o: ScriptOptions): string {
     // One exit path, so the code is logged whatever happened.
     `finish() { echo "RESTART_EXIT=$1"; exit "$1"; }`,
     `trap '' HUP`,
+    // The worker's own pid, so an operator can watch or kill it: a detached worker has no other handle.
+    `echo "RESTART_PID $$"`,
     `echo "RESTART_BEGIN home=${o.home} cwd=${o.cwd}"`,
     // hc may be down after a crash or a core restart: no up could open a pane, so nothing is stopped either.
     `if ! hc --json server status >/dev/null 2>&1; then`,
