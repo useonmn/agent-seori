@@ -299,6 +299,14 @@ export class Store {
   }
 
   /**
+   * The lane's lock (`lanes/<key>.lock`): one `seori start` or close of a key at a time, across processes, so neither
+   * saves over a record the other just wrote. See lockFile.
+   */
+  lockLane(key: string, now: number): (() => void) | undefined {
+    return lockFile(join(this.root, "lanes", `${key}.lock`), now);
+  }
+
+  /**
    * A view of this store whose lanes() and inboxPanes() skip a live herdr record, reporting it to `report`, instead of
    * refusing it: the duty pass names the file and still supervises every hc lane. The view inherits from this store, so
    * every Store method must keep its state on `this` (no `#private` fields or arrow-function properties): a test checks

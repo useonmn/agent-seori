@@ -94,7 +94,7 @@ describe("bootReport", () => {
       "DUTY pane=hc:t2 status=working",
       "PANES live=7 lanesOpen=4 vanished=1 unregistered=1",
       "VANISHED gone-lane pane=hc:t4 status=waiting; lane record kept, nothing relaunched; it was waiting on something outside " +
-        "its pane (CI, a review), and the watches it armed end once it is lost; once duty marks it lost, resume it with: " +
+        "its pane (CI, a review), and the watches it armed end once it is lost; resume it with: " +
         "seori start gone-lane --brief '/b/gone-lane.md' --cwd '/repo' --workflow none",
       "UNREGISTERED hc:t8 agent=omp status=working",
       "DRIFT lane gone-lane has no session hc:t4 (status=waiting); lane record kept, nothing relaunched",
@@ -191,8 +191,8 @@ describe("bootReport", () => {
     d.store.saveLane(lane("ui", "t5", "ready", { done: "pr:merged" }));
     const r = await bootReport(d);
     expect(r.lines).toContain(
-      "VANISHED docs pane=hc:t4 status=paused; lane record kept, nothing relaunched; it was paused, not failed; once duty " +
-        "marks it lost, resume it with: seori start docs --brief '/b/docs.md' --cwd '/repo' --thread 'slack:C1:2' --workflow none",
+      "VANISHED docs pane=hc:t4 status=paused; lane record kept, nothing relaunched; it was paused, not failed; " +
+        "resume it with: seori start docs --brief '/b/docs.md' --cwd '/repo' --thread 'slack:C1:2' --workflow none",
     );
     // Duty never marks a ready lane lost (its claim stands), and start takes back its key while its pane is gone.
     expect(r.lines).toContain(

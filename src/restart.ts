@@ -35,8 +35,9 @@ export function runningRestart(root: string, alive: (pid: number) => boolean = p
 export const endsWork = (lane: { readonly status: string }): boolean => lane.status === "working" || lane.status === "waiting";
 
 /**
- * The lanes a restart closes: every lane that still has a pane of its own (working, waiting, ready, paused), since
- * `down all` closes every terminal of the home's group, lane panes included. Each is named with the command that brings
+ * The lanes a restart closes, by recorded status: every lane that has a pane of its own (working, waiting, ready,
+ * paused), since `down all` closes every terminal of the home's group, lane panes included; `seori restart` then leaves
+ * out those whose pane is already gone. Each is named with the command that brings
  * it back, because the record stays but the pane does not. Of these, a working or waiting lane (endsWork) blocks the
  * restart unless --force: a waiting lane is live work blocked outside its pane, and the watches it armed for that end
  * once its lost pane makes it lost. A ready lane has sent its final answer and a paused one was told to stop, so
@@ -84,12 +85,12 @@ const closedMeant = (status: string): string => CLOSED_MEANT[status] ?? `it was 
 export type ClosedLane = RestartableLane & { readonly status: string };
 
 /**
- * What closing the lane's pane meant, and how it comes back: once the next duty pass marks it lost, `seori start` takes
- * the key again. Duty never marks a ready lane lost (its claim stands for merge and done), and `seori start` takes back a
- * ready key whose pane is gone, so its command works at once.
+ * What closing the lane's pane meant, and how it comes back: `seori start` takes back the key of an open lane whose pane
+ * is gone, so its command works as soon as the pane is closed, before duty marks it lost (duty never marks a ready lane
+ * lost, since its claim stands for merge and done).
  */
 export function closedNote(lane: ClosedLane, seoriCmd: string): string {
-  const back = lane.status === "ready" ? "if it needs more work, resume it with: " : "once duty marks it lost, resume it with: ";
+  const back = lane.status === "ready" ? "if it needs more work, resume it with: " : "resume it with: ";
   return `${closedMeant(lane.status)}; ${back}${startAgain(lane, seoriCmd)}`;
 }
 

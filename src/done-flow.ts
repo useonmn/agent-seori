@@ -1,10 +1,11 @@
 import { ConfigError, loadConfig } from "./config.ts";
 import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
-import { Refusal, send, tellLead, type Deps, type DutyEvent, type SendResult } from "./harness.ts";
+import { laneBusy, Refusal, send, tellLead, type Deps, type DutyEvent, type SendResult } from "./harness.ts";
 import { checkSignals, defaultSignalIo, type SignalIo } from "./signals.ts";
 import { recordCloseCost } from "./supervision.ts";
 import { startAgain } from "./restart.ts";
 import type { Lane } from "./store.ts";
+import { refText, sameSession } from "./refs.ts";
 
 // The done flow of a lane started with a Done line (`seori start --done`): the lane's READY is a claim; seori closes
 // the lane `closeAfterMin` minutes later unless the lead objected meanwhile, and only after reading every Done
@@ -40,15 +41,27 @@ export const objectionText = (reasons: readonly string[]): string =>
 /**
  * Closes the lane's pane (unless already gone) and records the close with `note` in its log. What the lane spent is
  * recorded first, while its session can still be read; a failure there is one stderr line and never keeps it open.
+ * It runs under the lane's lock, as `seori start` does, on the record as stored then: a start that took the key back
+ * meanwhile saved a new session's record, which a close must never overwrite.
  */
 export async function closeLane(d: Deps, lane: Lane, note: string): Promise<void> {
-  await recordCloseCost(d, lane).catch((e: unknown) => {
-    process.stderr.write(`seori: lane ${lane.key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
-  });
-  if ((await d.runtime.status(lane.sessionRef)) !== "gone") await d.runtime.close(lane.sessionRef);
-  lane.status = "done";
-  lane.log.push({ at: d.now(), kind: "done", text: note });
-  d.store.saveLane(lane);
+  const release = d.store.lockLane(lane.key, d.now());
+  if (!release) throw new Refusal(laneBusy(lane.key));
+  try {
+    const fresh = d.store.lane(lane.key);
+    if (!fresh || !sameSession(fresh.sessionRef, lane.sessionRef) || fresh.createdAt !== lane.createdAt) {
+      throw new Refusal(`lane ${lane.key} was started again before it was closed (now ${fresh ? `${fresh.status} in ${refText(fresh.sessionRef)}` : "gone"}); nothing closed`);
+    }
+    await recordCloseCost(d, fresh).catch((e: unknown) => {
+      process.stderr.write(`seori: lane ${fresh.key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
+    });
+    if ((await d.runtime.status(fresh.sessionRef)) !== "gone") await d.runtime.close(fresh.sessionRef);
+    fresh.status = "done";
+    fresh.log.push({ at: d.now(), kind: "done", text: note });
+    d.store.saveLane(fresh);
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -70,6 +83,14 @@ export async function objectDone(d: Deps, key: string, reasons: readonly string[
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: there is no claim to object to`);
+  // An objection to a gone pane (a restart closes ready panes too) could not be delivered, and would make the lane
+  // working and so lost: the claim stays, and more work goes through starting it again.
+  if ((await d.runtime.status(lane.sessionRef)) === "gone") {
+    throw new Refusal(
+      `lane ${key}'s pane ${refText(lane.sessionRef)} is gone, so an objection cannot reach it; it stays ready (seori merge and ` +
+        `seori done need no pane). To give it more work, start it again: ${startAgain(lane, d.seoriCmd)}`,
+    );
+  }
   const now = d.now();
   lane.status = "working";
   lane.objection = { at: now, reasons: why };
@@ -95,8 +116,9 @@ function eventDetail(e: unknown): string {
  * later pass. READY lanes without a Done line are the lead's to close.
  *
  * A gone pane (a restart closes ready panes too) cannot take an objection, and one would make the lane working and so
- * lost: its claim stays, the lead hears `[NOT-DONE <key>]` once per claim with the command that starts it again, and a
- * later pass closes it once every signal reads back live (the lead merged).
+ * lost: its claim stays, the lead hears `[NOT-DONE <key>]` once per claim with the command that starts it again, and
+ * the signals are read again every `closeAfterMin` (not every pass, since a signal may run a command or call gh) until
+ * they read back live (the lead merged) and the lane closes.
  */
 export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Promise<DutyEvent[]> {
   const due = d.store.lanes().filter((l) => l.status === "ready" && l.done !== undefined && l.final);
@@ -111,6 +133,10 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
   const events: DutyEvent[] = [];
   for (const lane of due) {
     if (d.now() - lane.final!.at < closeAfterMin * 60_000) continue;
+    // The last read of a gone pane's lane (see below); the next is due closeAfterMin later.
+    const mark = `not-done-gone:${lane.final!.at}`;
+    const lastRead = lane.alerts?.[mark];
+    if (lastRead !== undefined && d.now() - lastRead < closeAfterMin * 60_000) continue;
     try {
       const st = await d.runtime.status(lane.sessionRef);
       if (st === "working" || st === "blocked") {
@@ -124,18 +150,18 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
         continue;
       }
       if (failures.length && st === "gone") {
-        const mark = `not-done-gone:${fresh.final!.at}`;
         events.push({ lane: lane.key, action: "close-deferred", detail: `pane is gone; ${failures.join("; ")}` });
-        if (fresh.alerts?.[mark] !== undefined) continue;
-        await tellLead(
-          d,
-          `[NOT-DONE ${lane.key}] ${failures.join("; ")}. Its pane is gone, so it stays ready and closes once every Done ` +
-            `signal reads back live; if it needs more work, resume it with: ${startAgain(fresh, d.seoriCmd)}`,
-          "duty",
-        );
+        if (lastRead === undefined) {
+          await tellLead(
+            d,
+            `[NOT-DONE ${lane.key}] ${failures.join("; ")}. Its pane is gone, so it stays ready and closes once every Done ` +
+              `signal reads back live; if it needs more work, resume it with: ${startAgain(fresh, d.seoriCmd)}`,
+            "duty",
+          );
+        }
         // Marked only once told, so a failed delivery is told again next pass; re-read, so a change meanwhile is kept.
-        const told = sameClaim(d, fresh);
-        if (told) d.store.saveLane({ ...told, alerts: { ...told.alerts, [mark]: d.now() } });
+        const read = sameClaim(d, fresh);
+        if (read) d.store.saveLane({ ...read, alerts: { ...read.alerts, [mark]: d.now() } });
         continue;
       }
       if (failures.length) {

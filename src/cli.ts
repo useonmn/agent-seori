@@ -734,9 +734,9 @@ async function homeTerminals(d: Deps, name: string): Promise<SessionRef[]> {
  * (src/restart.ts), because `down all` closes the caller's pane and would otherwise kill the restart itself. This
  * process only starts that child and prints where it reports; the new lead and duty refs land in the log.
  *
- * Every lane with a pane of its own is closed by it, and each is named with the command that brings it back, here and in
- * the log. A working or waiting lane still owed work refuses the restart unless `--force` is given, and is then named as
- * ENDED; a ready or paused lane never blocks it.
+ * Every lane whose pane is still open is closed by it, and each is named with the command that brings it back, here and
+ * in the log; a lane whose pane is already gone is left out. A working or waiting lane still owed work refuses the
+ * restart unless `--force` is given, and is then named as ENDED; a ready or paused lane never blocks it.
  * Without --cwd the agents come back where the home's units run (the cwd its last up or autostart install was given),
  * else in $SEORI_HOME, as `seori up` would open them.
  */
@@ -754,7 +754,13 @@ export async function restart(
   const unitsCwd = usesSystemdUnits(d) ? unitCwd(unitDir(), loadConfig(home).name, home) : undefined;
   const cwd = cwdFlag === undefined ? (unitsCwd ?? home) : resolve(cwdFlag);
   const log = restartLogPath(home);
-  const closed = lanesARestartCloses(d.store.lanes());
+  // Recorded status alone would also name a lane whose pane is already gone (a dead waiting lane duty has not marked
+  // lost yet, a ready lane an earlier restart closed): this restart closes nothing of it, so it neither blocks nor is
+  // named. A pane whose status cannot be read counts as open.
+  const closed: Lane[] = [];
+  for (const lane of lanesARestartCloses(d.store.lanes())) {
+    if ((await d.runtime.status(lane.sessionRef).catch(() => undefined)) !== "gone") closed.push(lane);
+  }
   if (!force && closed.some(endsWork)) throw new Refusal(lanesRefusal(closed));
   // One worker per home: a second would down the first's half-opened set (and the worker refuses itself as well).
   const worker = runningRestart(home);

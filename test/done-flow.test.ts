@@ -226,12 +226,38 @@ describe("autoCloseTick", () => {
     expect(told).toStartWith("[NOT-DONE fix-login] merged o/r#1 -> state OPEN. Its pane is gone, so it stays ready");
     expect(told).toContain(`resume it with: ${d.seoriCmd} start fix-login`);
     const count = lead.received.length;
+    // Read again only every closeAfterMin, not every pass: a signal may run a command or call gh.
+    expect(await autoCloseTick(d, noIo)).toEqual([]);
+    w.clock += 5 * 60_000;
     expect(await autoCloseTick(d, noIo)).toEqual(deferred);
     expect(lead.received).toHaveLength(count);
-    // The lead merged: the next pass closes it with no pane at all.
+    // The lead merged: the next read closes it with no pane at all.
     state.merged = true;
+    w.clock += 5 * 60_000;
     expect(await autoCloseTick(d, noIo)).toEqual([{ lane: "fix-login", action: "closed" }]);
     expect(d.store.lane("fix-login")!.status).toBe("done");
+  });
+
+  test("a NOT-DONE for a gone pane that could not be delivered is told again on the next pass", async () => {
+    const { d, w, lead, lane } = await claimed();
+    w.panes.delete(lane.paneId);
+    w.clock += 5 * 60_000;
+    w.promptFails.set("t1", "lead exploded");
+    expect(await autoCloseTick(d, noIo)).toContainEqual(expect.objectContaining({ lane: "fix-login", action: "autoclose-failed" }));
+    expect(lead.received.some((m) => m.includes("[NOT-DONE fix-login]"))).toBe(false);
+    w.promptFails.delete("t1");
+    await autoCloseTick(d, noIo);
+    // Delivered in the next batch to the lead (with the notice about the uncertain first delivery).
+    expect(lead.received.some((m) => m.includes("[NOT-DONE fix-login] merged o/r#1 -> state OPEN. Its pane is gone"))).toBe(true);
+    expect(d.store.lane("fix-login")!.status).toBe("ready");
+  });
+
+  test("an objection to a lane whose pane is gone is refused and leaves the claim as it was", async () => {
+    const { d, w, lane } = await claimed();
+    w.panes.delete(lane.paneId);
+    await expect(objectDone(d, "fix-login", ["more tests"])).rejects.toThrow(/pane hc:\S+ is gone, so an objection cannot reach it; it stays ready.*start it again: seori start fix-login/);
+    expect(d.store.lane("fix-login")).toMatchObject({ status: "ready" });
+    expect(d.store.lane("fix-login")!.objection).toBeUndefined();
   });
 
   test("a pane still working or behind a dialog is left for a later pass", async () => {
