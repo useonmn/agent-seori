@@ -43,21 +43,27 @@ src="$(cd "$src" && pwd -P)"
 mkdir -p "$skills"
 skills="$(cd "$skills" && pwd -P)"
 # Remedy construction, in one place. A remedy is a line the user pastes, so every value in it must survive a shell
-# re-read, and every value here is already an absolute path (SEORI_SRC, SEORI_HOME and SKILLS_DIR went through
-# `cd … pwd -P` above). Two rules keep that true, and no remedy below may bypass them:
+# re-read. SEORI_SRC, SEORI_HOME and SKILLS_DIR are absolute paths by now (`cd … pwd -P` above); HOME and BUN_INSTALL
+# are carried as this shell has them, because they are what `bun link` reads. Two rules keep every remedy pasteable, and
+# no remedy below may bypass them:
 #   q VALUE        escapes one value for pasting (printf %q, so a quote, `$` or backtick in a path cannot become syntax)
-#   cat_words …    joins already-escaped words with single spaces; a value reaches a remedy only through q
+#   cat_words …    joins already-escaped words with single spaces, dropping empty ones; a value reaches a remedy only
+#                  through q
 q() { printf '%q' "$1"; }
-cat_words() { local out="" w; for w in "$@"; do out="$out $w"; done; printf '%s' "${out# }"; }
+cat_words() { local out="" w; for w in "$@"; do [ -z "$w" ] || out="$out $w"; done; printf '%s' "${out# }"; }
 
 # The command that re-runs this script. From a file it names that file; through a pipe or a redirect there is no file to
-# name, so it re-fetches the current script — a different revision than the one that refused, which the refusal says.
+# name, so it re-fetches the script from main, which may be a newer revision than the one that refused; self_note says
+# so under every remedy that uses it.
+self_note=""
 if [ -f "${BASH_SOURCE[0]:-}" ]; then
   selfdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   self="bash $(q "$selfdir/$(basename "${BASH_SOURCE[0]}")")"
 else
   self="bash <(curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh)"
+  self_note="These commands fetch install.sh from main again, which may be newer than the one that printed them."
 fi
+say_self_note() { [ -z "$self_note" ] || echo "$self_note" >&2; }
 
 # The environment that reproduces *this* install, carried only where it differs from the defaults: SEORI_SRC whenever it is
 # not the default checkout, SEORI_HOME and SKILLS_DIR when they are not theirs, and HOME and BUN_INSTALL when they are not
@@ -83,6 +89,10 @@ login_home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)" || login_home
 
 # The remedy that installs this checkout as it is: the one line every refusal offers.
 remedy_install_as_is="$(cat_words "SEORI_NO_PULL=1" "$env_prefix" "$self")"
+# The install a git remedy chains after its git step: the same environment *without* SEORI_NO_PULL, so the re-run goes
+# through the update check again. `git pull --rebase --autostash` exits 0 even when the autostash stops on a conflict,
+# and the re-run's `merge --ff-only` then refuses the unmerged index instead of installing a conflicted tree.
+remedy_reinstall="$(cat_words "$env_prefix" "$self")"
 
 # Local work: edits to tracked files, or commits upstream does not have. Untracked files never count (a test log, or
 # anything else `bun test` leaves behind, does not block a fast-forward), so they are filtered out here.
@@ -124,24 +134,40 @@ elif local_work && update_waits; then
   echo "This is a checkout you develop in; see \"Working on seori itself\" in README.md." >&2
   echo "  install this checkout as it is:  $remedy_install_as_is" >&2
   # The git remedies are built the same way: the path goes through `q`, the rest are literal words, and the tail is the
-  # full install line — not bare `$self` — so the chained install reproduces this one (its SEORI_SRC, HOME, BUN_INSTALL).
-  echo "  update it and keep the work:     $(cat_words "git -C $(q "$src") pull --rebase --autostash &&" "$remedy_install_as_is")" >&2
-  echo "  update it and drop the work:     $(cat_words "git -C $(q "$src") reset --hard '@{u}' &&" "$remedy_install_as_is")" >&2
+  # full re-install — not bare `$self` — so the chained install reproduces this one (its SEORI_SRC, HOME, BUN_INSTALL).
+  echo "  update it and keep the work:     $(cat_words "git -C $(q "$src") pull --rebase --autostash &&" "$remedy_reinstall")" >&2
+  echo "  update it and drop the work:     $(cat_words "git -C $(q "$src") reset --hard '@{u}' &&" "$remedy_reinstall")" >&2
   # `git pull --rebase --autostash` can stop on a conflict and still exit 0, leaving unmerged paths, so `&&` is not a
-  # success check; the line below says what to do when that happens. The chained install would still refuse on the
-  # unmerged index rather than install a conflicted tree.
+  # success check: the chained re-install refuses the unmerged index (below), and this line says what to do then.
   echo "If the autostash stops on a conflict, resolve it and commit before installing again." >&2
+  say_self_note
   exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
-  # Three states land here: no upstream at all (a scratch branch, a detached HEAD), local work a remedy left behind, or
-  # something only git can explain. Name the one it is instead of blaming local work by default.
-  if ! git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null; then
+  # The states that land here: a detached HEAD, a branch with no upstream (a scratch branch), unresolved conflicts (an
+  # autostash a remedy left stopped), local work, or something only git can explain. Name the one it is instead of
+  # blaming local work by default. Each remedy is on a line of its own, as in the refusal, so only the command is pasted.
+  if ! git -C "$src" symbolic-ref -q HEAD >/dev/null; then
+    echo "Could not update $src: HEAD is detached, so there is no branch to update." >&2
+    echo "  switch to main and update it:    $(cat_words "git -C $(q "$src") switch main &&" "$remedy_reinstall")" >&2
+    echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+    say_self_note
+  elif ! git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null; then
     echo "Could not update $src: its branch has no upstream to merge from (git's message above names the branch)." >&2
-    echo "Set one with $(cat_words "git -C $(q "$src") branch --set-upstream-to=origin/main") and then install it as it is with $remedy_install_as_is." >&2
+    echo "  set one:                         $(cat_words "git -C $(q "$src") branch --set-upstream-to=origin/main")" >&2
+    echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+    say_self_note
+  elif [ -n "$(git -C "$src" ls-files --unmerged)" ]; then
+    echo "Could not update $src: it has unresolved conflicts (listed below), so nothing was merged or installed." >&2
+    git -C "$src" status --short --branch --untracked-files=no >&2
+    echo "Resolve them and commit (a stopped autostash stays in \`git stash list\`), then install again:" >&2
+    echo "  $remedy_reinstall" >&2
+    say_self_note
   elif local_work; then
     echo "Could not update $src: it has local work (listed below), so nothing was merged." >&2
     git -C "$src" status --short --branch --untracked-files=no >&2
-    echo "Install it as it is with $remedy_install_as_is, or commit or stash the work first." >&2
+    echo "Commit or stash the work first, or:" >&2
+    echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+    say_self_note
   else
     echo "Could not update $src; git's message above says why." >&2
   fi
