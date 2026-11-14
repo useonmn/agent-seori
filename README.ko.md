@@ -78,7 +78,7 @@ seori restart --follow
 # RESTART_EXIT=0
 ```
 
-`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커(`setsid --fork`, 없으면 `systemd-run --user`)를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. 워커는 hc가 답하는지 확인하고, down을 실행하고, down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이면 거절하고, `--force`를 주면 끝낸 레인 키를 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
+`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커(`setsid --fork`, 없으면 `systemd-run --user`, 그것도 없으면 SIGHUP을 무시하는 `nohup`)를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. 워커는 hc가 답하는지 확인하고, down을 실행하고, down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 `nohup`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이면 거절하고, `--force`를 주면 끝낸 레인 키를 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
 
 `seori up`이나 `seori restart`가 새 리드를 열면 seori가 시작 안내 한 줄을 전달합니다: `seori boot`을 실행하고, 주인에게 짧은 한 줄(가장 오래된 열린 worklog 항목의 스레드, 없으면 주인 DM)로 seori가 돌아왔다는 것과 열린 항목 수, 아직 열린 레인을 알리라는 내용입니다. 그래서 재시작 뒤에 주인이 아무것도 입력하지 않아도 소식이 갑니다. `prompts/lead.md`도 같은 규칙을 담고 있어서 손으로 띄운 리드도 그렇게 합니다.
 
@@ -130,7 +130,7 @@ seori up [--cwd DIR] [--wait-hc]             이 홈의 리드, 듀티, 듀티 �
                                             기다립니다(로그온 훅)
 seori restart [--cwd DIR] [--force] [--follow]
                                             이 홈을 down 뒤 up 합니다. 리드나 듀티 패널 안에서 실행해도 안전합니다:
-                                            down이 그 패널을 닫으므로 분리된 자식(setsid/systemd-run)이 일합니다.
+                                            down이 그 패널을 닫으므로 분리된 자식(setsid/systemd-run/nohup)이 일합니다.
                                             레인이 working이면 --force 없이는 거절하고, --force면 끝낸 키를 알려 줍니다;
                                             새 ref와 모든 단계는 $SEORI_HOME/restart.log에 남습니다
 seori autostart install [--cwd DIR]          로그온 훅(systemd --user oneshot, `seori up --wait-hc`)을 쓰고 enable 합니다.

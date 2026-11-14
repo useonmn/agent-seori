@@ -3,9 +3,7 @@ import { shq } from "./runtime/index.ts";
 
 // `seori restart`: down then up, from inside a pane whose own down closes it. The command that does the work cannot be
 // the pane's process (down closes that pane, killing it mid-restart: the trap the hand-rolled /tmp/seori-restart.sh hit
-// with `setsid nohup ... &`), so the caller starts a detached child and leaves the work to it. The child is in its own
-// session through `setsid --fork`, whose intermediate process exits at once: the worker is reparented to init, so the
-// closed pane's SIGHUP reaches nothing that matters.
+// with `setsid nohup ... &`), so the caller starts a detached child and leaves the work to it.
 //
 // Nothing here sleeps: `seori down` waits for each process it stops (down.ts), and the up that follows starts from that
 // settled state. A boot hook that restarted itself would be a loop, so this is a one-shot script, not a unit.
@@ -54,6 +52,9 @@ export type ScriptOptions = {
  *
  * The last line is always `RESTART_EXIT=<code>`: the caller's pane is closed by the down, so the log is the only place
  * the outcome of a detached restart can be read (`seori restart --follow` reads it there).
+ *
+ * SIGHUP is ignored for the whole run: closing a terminal sends it to everything that pane started, and a restart must
+ * outlive precisely that. SIGTERM is left alone, so an operator can still kill a worker that hangs.
  */
 export function restartScript(o: ScriptOptions): string {
   const seori = o.seoriCmd;
@@ -61,6 +62,7 @@ export function restartScript(o: ScriptOptions): string {
     `exec >>${shq(o.log)} 2>&1`,
     // One exit path, so the code is logged whatever happened.
     `finish() { echo "RESTART_EXIT=$1"; exit "$1"; }`,
+    `trap '' HUP`,
     `echo "RESTART_BEGIN home=${o.home} cwd=${o.cwd}"`,
     // hc may be down after a crash or a core restart: no up could open a pane, so nothing is stopped either.
     `if ! hc --json server status >/dev/null 2>&1; then`,
@@ -77,17 +79,26 @@ export function restartScript(o: ScriptOptions): string {
 }
 
 /**
- * How a restart detaches: `setsid --fork` (a new session, the intermediate process exiting so the worker is reparented
- * to init), else `systemd-run --user` (a transient unit of the user manager, which outlives the session). Undefined when
- * neither is on PATH: the caller then refuses instead of running a restart its own pane would kill.
+ * How a restart detaches, best first: `setsid --fork` (a new session; the intermediate process exits at once, so the
+ * worker is reparented to init), `systemd-run --user` (a transient unit of the user manager), else `nohup` (portable:
+ * the worker keeps this session but ignores SIGHUP, the signal a closed pane sends, which is what the hand-rolled
+ * script this command replaces did). Undefined only when none of them is on PATH.
+ *
+ * `background`: the worker is started detached from this process's lifetime (`nohup ... &` inside a bare `sh -c`), so
+ * there is no child exit code to read; the log's RESTART_EXIT line is the only outcome either way.
  */
-export function detachArgv(script: string, has: (bin: string) => boolean, unit: string): readonly string[] | undefined {
-  if (has("setsid")) return ["setsid", "--fork", "/bin/sh", "-c", script];
-  if (has("systemd-run")) return ["systemd-run", "--user", "--collect", "--quiet", `--unit=${unit}`, "/bin/sh", "-c", script];
+export type Detach = { readonly argv: readonly string[]; readonly background: boolean };
+
+export function detachArgv(script: string, has: (bin: string) => boolean, unit: string): Detach | undefined {
+  if (has("setsid")) return { argv: ["setsid", "--fork", "/bin/sh", "-c", script], background: false };
+  if (has("systemd-run")) {
+    return { argv: ["systemd-run", "--user", "--collect", "--quiet", `--unit=${unit}`, "/bin/sh", "-c", script], background: false };
+  }
+  if (has("nohup")) return { argv: ["/bin/sh", "-c", `nohup /bin/sh -c ${shq(script)} >/dev/null 2>&1 &`], background: true };
   return undefined;
 }
 
 /** The refusal text for a host that cannot detach a restart: said before anything is stopped. */
 export const noDetachRefusal = (): string =>
-  "seori restart needs a way to detach the relaunch from this pane (setsid or systemd-run on PATH) and neither is there: " +
-  "run it from a shell outside the group instead, or install one of them";
+  "seori restart needs a way to detach the relaunch from this pane (setsid, systemd-run or nohup on PATH) and none is there: " +
+  "run it from a shell outside the group instead";

@@ -113,15 +113,17 @@ describe("the detached restart script", () => {
 
   /**
    * The script, run detached exactly as `seori restart` runs it, plus the worker's exit code from its log. A detached
-   * worker is nobody's child here, so its outcome is read where `--follow` reads it.
+   * worker is nobody's child here, so its outcome is read where `--follow` reads it. The detach is whatever this host
+   * offers (setsid on Linux, nohup on macOS): both must survive the pane that asked.
    */
   async function runDetached(seori: string, env: Record<string, string>): Promise<number> {
-    const script = restartScript({ home: dir, cwd: dir, seoriCmd: seori, log: join(dir, "restart.log") });
-    const argv = detachArgv(script, (bin) => Bun.which(bin, { PATH: `${env["PATH"] ?? ""}` }) !== null, "seori-restart-test");
-    if (argv === undefined) throw new Error("no detach available in this test host");
-    const p = Bun.spawn([...argv], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "ignore"] });
+    const log = join(dir, "restart.log");
+    const script = restartScript({ home: dir, cwd: dir, seoriCmd: seori, log });
+    const detach = detachArgv(script, (bin) => Bun.which(bin, { PATH: `${env["PATH"] ?? ""}` }) !== null, "seori-restart-test");
+    if (detach === undefined) throw new Error("no detach available in this test host");
+    const p = Bun.spawn([...detach.argv], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "ignore"] });
     await p.exited;
-    return restartExit(join(dir, "restart.log"));
+    return restartExit(log);
   }
 
   test("down then up; the up still runs after the down closed the caller pane", async () => {
@@ -173,11 +175,17 @@ describe("the detached restart script", () => {
 });
 
 describe("how a restart detaches", () => {
-  test("setsid first, then systemd-run, and a refusal when neither is there", () => {
-    expect(detachArgv("x", (b) => b === "setsid", "u")).toEqual(["setsid", "--fork", "/bin/sh", "-c", "x"]);
-    expect(detachArgv("x", (b) => b === "systemd-run", "u")).toEqual(["systemd-run", "--user", "--collect", "--quiet", "--unit=u", "/bin/sh", "-c", "x"]);
+  test("setsid first, then systemd-run, then portable nohup, and a refusal when none is there", () => {
+    expect(detachArgv("x", (b) => b === "setsid", "u")).toEqual({ argv: ["setsid", "--fork", "/bin/sh", "-c", "x"], background: false });
+    expect(detachArgv("x", (b) => b === "systemd-run", "u")).toEqual({
+      argv: ["systemd-run", "--user", "--collect", "--quiet", "--unit=u", "/bin/sh", "-c", "x"], background: false,
+    });
+    // macOS has neither: nohup still detaches from the pane's SIGHUP, which is the whole point.
+    const nohup = detachArgv("x", (b) => b === "nohup", "u");
+    expect(nohup?.background).toBe(true);
+    expect(nohup?.argv).toEqual(["/bin/sh", "-c", "nohup /bin/sh -c 'x' >/dev/null 2>&1 &"]);
     expect(detachArgv("x", () => false, "u")).toBeUndefined();
-    expect(noDetachRefusal()).toContain("setsid or systemd-run");
+    expect(noDetachRefusal()).toContain("setsid, systemd-run or nohup");
   });
 
   test("the log is inside the home, so the new refs can be read after the pane closed", () => {
@@ -301,7 +309,7 @@ describe("seori restart as a command", () => {
     const { d, started } = home({ api: "working", tests: "working", docs: "paused" });
     const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
     const lines: string[] = [];
-    const code = await restart(d, undefined, true, (l) => void lines.push(l), { spawn, has: () => true });
+    const code = await restart(d, undefined, true, (l) => void lines.push(l), { spawn, has: (b) => b === "setsid" });
     expect(code).toBe(0);
     // One detached worker, in this home, running the script: nothing of the old home is touched by this process.
     expect(started).toHaveLength(1);
@@ -316,7 +324,7 @@ describe("seori restart as a command", () => {
   test("a host that cannot detach refuses before anything is stopped", async () => {
     const { d, started } = home();
     const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
-    await expect(restart(d, undefined, false, () => {}, { spawn, has: () => false })).rejects.toThrow(/setsid or systemd-run/);
+    await expect(restart(d, undefined, false, () => {}, { spawn, has: () => false })).rejects.toThrow(/setsid, systemd-run or nohup/);
     expect(started).toEqual([]);
   });
 

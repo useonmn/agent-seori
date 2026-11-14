@@ -81,7 +81,7 @@ seori restart --follow
 # RESTART_EXIT=0
 ```
 
-`seori down all` closes the terminal the command runs in, so a restart cannot be its own pane's child: the command starts a detached worker (`setsid --fork`, else `systemd-run --user`) that survives the pane being closed, then reports where that worker writes. The worker checks that hc answers, runs the down, and runs the up only once the down has finished; every step and the final exit code go to `$SEORI_HOME/restart.log`, because the pane that asked is gone by then. `--follow` prints that log until the worker ends. Without a way to detach (no `setsid` and no `systemd-run`) it refuses, non-zero, before stopping anything. A restart closes every lane pane of the home, so it is refused while a lane is `working`; `--force` goes ahead and names the keys it ended, whose records stay and can be started again. Never hand-roll a restart script: this is the only supported way, because it is the only one that handles its own pane closing.
+`seori down all` closes the terminal the command runs in, so a restart cannot be its own pane's child: the command starts a detached worker (`setsid --fork`, else `systemd-run --user`, else `nohup` with SIGHUP ignored) that survives the pane being closed, then reports where that worker writes. The worker checks that hc answers, runs the down, and runs the up only once the down has finished; every step and the final exit code go to `$SEORI_HOME/restart.log`, because the pane that asked is gone by then. `--follow` prints that log until the worker ends. Without any way to detach (no `setsid`, `systemd-run` or `nohup`) it refuses, non-zero, before stopping anything. A restart closes every lane pane of the home, so it is refused while a lane is `working`; `--force` goes ahead and names the keys it ended, whose records stay and can be started again. Never hand-roll a restart script: this is the only supported way, because it is the only one that handles its own pane closing.
 
 After `seori up` or `seori restart` opens a new lead, seori hands it a start-up line: run `seori boot`, then post one short line to the owner (the thread of the oldest open worklog item, else the owner's direct message) saying seori is back, with the open item count and the lanes still open. The owner therefore hears from a restarted seori without typing anything; `prompts/lead.md` says the same, so a lead started by hand does it too.
 
@@ -131,7 +131,7 @@ seori up [--cwd DIR] [--wait-hc]             start this home's lead, duty, duty 
                                             for hc first (the logon hook)
 seori restart [--cwd DIR] [--force] [--follow]
                                             down then up for this home, safe from inside the lead or duty pane: the work
-                                            runs in a detached child (setsid/systemd-run), because down closes the
+                                            runs in a detached child (setsid/systemd-run/nohup), because down closes the
                                             caller's pane. Refused while a lane is working unless --force (which names
                                             the keys it ended); refs and every step go to $SEORI_HOME/restart.log
 seori autostart install [--cwd DIR]          write and enable the logon hook (a systemd --user oneshot running

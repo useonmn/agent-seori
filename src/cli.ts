@@ -56,7 +56,7 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               and leaves the running units alone; --wait-hc waits for hc first (the logon hook)
   seori restart [--cwd DIR] [--force] [--follow]
                                               down then up for this home, safe from inside the lead or duty pane: the
-                                              work runs in a detached child (setsid/systemd-run), because down closes the
+                                              work runs in a detached child (setsid/systemd-run/nohup), because down closes the
                                               caller's pane. Refused while a lane is working unless --force (which names
                                               the keys it ended); new refs go to $SEORI_HOME/restart.log, --follow prints them
   seori autostart install [--cwd DIR]          write and enable the logon hook (a systemd --user oneshot running
@@ -603,9 +603,9 @@ export const bootUnitName = (name: string, home: string): string => unitName(nam
  * A restart that would end working lanes is refused unless `--force` is given, and then says which keys it ended.
  */
 export type RestartDeps = {
-  /** Starts the detached worker and resolves with its immediate exit code (setsid --fork's is 0 at once). */
+  /** Starts the detached worker and resolves with its immediate exit code (0 at once for a backgrounded worker). */
   readonly spawn?: (argv: readonly string[], cwd: string) => Promise<number>;
-  /** Whether a command is on PATH (setsid, systemd-run). */
+  /** Whether a command is on PATH (setsid, systemd-run, nohup). */
   readonly has?: (bin: string) => boolean;
 };
 
@@ -618,13 +618,15 @@ export async function restart(
   const lanes = lanesARestartEnds(d.store.lanes());
   if (lanes.length > 0 && !force) throw new Refusal(lanesRefusal(lanes, d.seoriCmd));
   const script = restartScript({ home, cwd, seoriCmd: d.seoriCmd, log });
-  const argv = detachArgv(script, deps.has ?? ((bin) => Bun.which(bin) !== null), `seori-restart-${homeTag(home)}`);
-  if (argv === undefined) throw new Refusal(noDetachRefusal());
+  const detach = detachArgv(script, deps.has ?? ((bin) => Bun.which(bin) !== null), `seori-restart-${homeTag(home)}`);
+  if (detach === undefined) throw new Refusal(noDetachRefusal());
   const spawn = deps.spawn ?? (async (a: readonly string[], at: string) => {
     const child = Bun.spawn([...a], { env: process.env, stdio: ["ignore", "ignore", "ignore"], cwd: at });
     return child.exited;
   });
-  const code = await spawn(argv, home);
+  const code = await spawn(detach.argv, home);
+  // A detached worker reports through its own log, not this exit code: setsid --fork's intermediate and a `&` both exit
+  // 0 the moment the work starts, and a real failure to start is what RESTART_BEGIN missing in the log shows.
   if (code !== 0) {
     out(`RESTART_FAILED could not detach the relaunch (exit ${code}); nothing was stopped. See ${log}`);
     return 1;
