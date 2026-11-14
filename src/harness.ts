@@ -402,9 +402,12 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
   if (opts.done !== undefined) parseDone(opts.done);
   if (opts.thread !== undefined && !opts.thread.trim()) throw new Refusal("--thread needs a lead channel id");
-  // Lane reports and progress go into the lane's thread: only ever a thread that is the owner's alone.
-  if (opts.thread !== undefined && existsSync(join(d.store.root, "lead")) && new Channel(d.store.root).othersIds().has(opts.thread.trim())) {
-    throw new Refusal(`--thread ${opts.thread.trim()} is someone else's message or in their thread; a lane's thread must be the owner's alone`);
+  // Lane reports and progress go into the lane's thread: only ever a stored message that is the owner's alone.
+  const thread = opts.thread?.trim();
+  if (thread !== undefined && !(existsSync(join(d.store.root, "lead")) && new Channel(d.store.root).inbound().some((r) => r.kind === "messenger" && r.id === thread))) {
+    throw new Refusal(
+      `--thread ${thread} is not a stored message of the owner's alone (someone else's, in a thread the owner did not start, or unknown); start without --thread, or with the id of the owner's own message`,
+    );
   }
   if (opts.activityPaths?.some((p) => !p.trim())) throw new Refusal("--activity-path needs a path");
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");

@@ -102,7 +102,9 @@ describe("lanes", () => {
   test("start --thread refuses a message from someone other than the owner: lane reports never go into their thread", async () => {
     const { d, brief } = setup();
     new Channel(d.store.root).appendInbound({ id: "slack:C1:5", kind: "messenger", source: "slack", chat: "C1", from: "U2", notOwner: true, at: 1, text: "please fix" });
-    await expect(startLane(d, "fix-other", brief, { thread: "slack:C1:5" })).rejects.toThrow("slack:C1:5 is someone else's message or in their thread");
+    await expect(startLane(d, "fix-other", brief, { thread: "slack:C1:5" })).rejects.toThrow("--thread slack:C1:5 is not a stored message of the owner's alone");
+    // An id never stored is refused too: its thread may be anyone's.
+    await expect(startLane(d, "fix-other", brief, { thread: "slack:C1:9" })).rejects.toThrow("--thread slack:C1:9 is not a stored message of the owner's alone");
     expect(d.store.lane("fix-other")).toBeUndefined();
   });
 

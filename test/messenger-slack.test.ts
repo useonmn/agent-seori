@@ -601,7 +601,8 @@ describe("SlackAdapter receive", () => {
         const only = await collect(adapter(noScope, home(), { others }), () => noScope.acks.length >= 3);
         expect(only.map((m) => m.from)).toEqual([OWNER]);
         expect(noScope.opens).toBe(1);
-        expect(noScope.usersCalls).toEqual(others ? ["UOTHER", "UOTHER"] : []);
+        // Addressed messages only, and a missing scope is remembered: one users.info call for UOTHER in this receive.
+        expect(noScope.usersCalls).toEqual(others ? ["UOTHER"] : []);
       }
     } finally {
       console.error = error;
@@ -611,19 +612,70 @@ describe("SlackAdapter receive", () => {
     ]);
   });
 
-  test("a reply in a channel thread carries its thread's first message as root; top-level messages and DMs carry none", async () => {
+  test("a channel thread reply carries root (its thread's first message) and rootByOwner when the owner wrote it; top-level messages and DMs carry neither", async () => {
     const mock = startMock();
     mock.onConnect = (ws) => {
       ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> top")));
-      ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> reply", { thread_ts: "1700000000.000050" })));
-      ws.send(envelope("e3", dm("1700000000.000300", { thread_ts: "1700000000.000250" })));
+      ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> under my own plain message", { thread_ts: "1700000000.000050", parent_user_id: OWNER })));
+      ws.send(envelope("e3", chan("1700000000.000250", "<@UBOT> under someone else's", { thread_ts: "1700000000.000060", parent_user_id: "UZ" })));
+      ws.send(envelope("e4", dm("1700000000.000300", { thread_ts: "1700000000.000250", parent_user_id: OWNER })));
     };
-    const got = await collect(adapter(mock, home()), (g) => g.length >= 3);
-    expect(got.map((m) => [m.id, m.root])).toEqual([
-      ["slack:C1:1700000000.000100", undefined],
-      ["slack:C1:1700000000.000200", "slack:C1:1700000000.000050"],
-      ["slack:D1:1700000000.000300", undefined],
+    const got = await collect(adapter(mock, home()), (g) => g.length >= 4);
+    expect(got.map((m) => [m.id, m.root, m.rootByOwner])).toEqual([
+      ["slack:C1:1700000000.000100", undefined, undefined],
+      ["slack:C1:1700000000.000200", "slack:C1:1700000000.000050", true],
+      ["slack:C1:1700000000.000250", "slack:C1:1700000000.000060", undefined],
+      ["slack:D1:1700000000.000300", undefined, undefined],
     ]);
+  });
+
+  test("users.info still rate-limited after retries logs one line and ends the session instead of dropping the message; it arrives after the reconnect", async () => {
+    const mock = startMock();
+    mock.usersError = { ok: false, error: "ratelimited" };
+    mock.onConnect = (ws, n) => {
+      if (n === 2) mock.usersError = undefined;
+      ws.send(envelope(`e${n}`, chan("1700000000.000100", "<@UBOT> member", { user: "UOTHER", team: "T1" })));
+    };
+    const errors: string[] = [];
+    const error = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a.join(" "));
+    let got: InboundMessage[];
+    try {
+      got = await collect(adapter(mock, home(), { others: true }), (g) => g.length >= 1);
+    } finally {
+      console.error = error;
+    }
+    expect(got.map((m) => [m.id, m.from])).toEqual([["slack:C1:1700000000.000100", "UOTHER"]]);
+    expect(mock.opens).toBe(2);
+    expect(mock.acks).toEqual(["e2"]);
+    expect(errors).toEqual(["slack slack: users.info is rate limited for UOTHER; reconnecting so their message is handled again"]);
+  });
+
+  test("a users.info no is remembered for 10 minutes, then asked again (a scope added later takes effect without a restart)", async () => {
+    const mock = startMock();
+    mock.usersError = { ok: false, error: "missing_scope", needed: "users:read" };
+    let clock = 0;
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> one", { user: "UOTHER", team: "T1" })));
+      ws.send(envelope("e2", chan("1700000000.000150", "<@UBOT> two", { user: "UOTHER", team: "T1" })));
+      ws.send(envelope("e3", chan("1700000000.000200", "<@UBOT> owner", { team: "T1" })));
+      ws.send(envelope("e4", chan("1700000000.000300", "<@UBOT> three", { user: "UOTHER", team: "T1" })));
+    };
+    const error = console.error;
+    console.error = () => {};
+    try {
+      // The owner's message moves the clock past the recheck window; scope is added meanwhile.
+      const got = await collect(adapter(mock, home(), { others: true, now: () => clock }), () => mock.acks.length >= 4, async (m) => {
+        if (m.from === OWNER) {
+          clock += 11 * 60_000;
+          mock.usersError = undefined;
+        }
+      });
+      expect(got.map((m) => m.text)).toEqual(["<@UBOT> owner", "<@UBOT> three"]);
+    } finally {
+      console.error = error;
+    }
+    expect(mock.usersCalls).toEqual(["UOTHER", "UOTHER"]);
   });
 
   for (const others of [false, true]) {

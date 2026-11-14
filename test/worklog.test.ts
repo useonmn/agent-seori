@@ -19,10 +19,19 @@ const home = (): string => {
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+/** Stores the owner's own top-level messages, the only message ids a worklog source may name. */
+const owned = (root: string, ...ids: string[]): void => {
+  const channel = new Channel(root);
+  for (const id of ids) {
+    const [source, chat] = id.split(":");
+    channel.appendInbound({ id, kind: "messenger", source: source!, chat: chat!, from: "owner", at: T0, text: "request" });
+  }
+};
 
 describe("worklog", () => {
   test("add, next, note and close fold into one item and render worklog.md", () => {
     const root = home();
+    owned(root, "telegram:42:7");
     const added = worklogAdd(root, "  Fix the login bug ", "telegram:42:7", T0);
     expect(added.id).toMatch(/^[0-9a-f]{8}$/);
     expect(added).toEqual({ id: added.id, title: "Fix the login bug", source: "telegram:42:7", openedAt: new Date(T0).toISOString(), notes: [] });
@@ -50,6 +59,7 @@ describe("worklog", () => {
 
   test("refuses unknown and closed items, and text that is not one nonempty line", () => {
     const root = home();
+    owned(root, "slack:C1:1");
     const item = worklogAdd(root, "Task", "slack:C1:1", T0);
     expect(() => worklogNote(root, "deadbeef", "x", T0)).toThrow("worklog item not found: deadbeef");
     for (const bad of ["two\nlines", "tab\tinside", "   ", "nel\u0085x", "sep\u2028x"]) {
@@ -141,21 +151,37 @@ describe("worklog", () => {
     channel.appendInbound({ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", from: "u1", at: T0, text: "do it" });
     expect(() => worklogAdd(root, "their thing", "re fake:c:1 (u2)", T0)).toThrow(WorklogError);
     expect(worklogAdd(root, "the owner's thing", "fake:c:2", T0).source).toBe("fake:c:2");
-    // fake:c:10 is another id, not fake:c:1.
-    expect(worklogAdd(root, "free text", "fake:c:10", T0).source).toBe("fake:c:10");
+    // fake:c:10 is another id, not fake:c:1, so a note naming it is no request of someone else's.
+    expect(worklogAdd(root, "free text", "re fake:c:10", T0).source).toBe("re fake:c:10");
+  });
+
+  test("a source that is a message id must be a stored message of the owner's alone; pane and notes are free", () => {
+    const root = home();
+    expect(() => worklogAdd(root, "unknown", "slack:C1:404", T0)).toThrow("slack:C1:404 is not a stored message of the owner's alone");
+    owned(root, "slack:C1:1");
+    expect(() => worklogAdd(root, "still unknown", "slack:C1:404", T0)).toThrow("slack:C1:404 is not a stored message of the owner's alone");
+    expect(worklogAdd(root, "mine", "slack:C1:1", T0).source).toBe("slack:C1:1");
+    expect(worklogAdd(root, "typed here", "pane", T0).source).toBe("pane");
   });
 
   test("a source naming a message from someone other than the owner (others opt-in) is refused", () => {
     const root = home();
     new Channel(root).appendInbound({ id: "slack:C1:5", kind: "messenger", source: "slack", chat: "C1", from: "U2", notOwner: true, at: T0, text: "please deploy" });
-    expect(() => worklogAdd(root, "their deploy", "slack:C1:5", T0)).toThrow("slack:C1:5 is someone else's message or in their thread");
+    expect(() => worklogAdd(root, "their deploy", "slack:C1:5", T0)).toThrow("slack:C1:5 is not a stored message of the owner's alone");
     // The owner's own reply in that person's thread is refused too: the restart notice would post into their thread.
     new Channel(root).appendInbound({ id: "slack:C1:6", kind: "messenger", source: "slack", chat: "C1", thread: "5", root: "slack:C1:5", from: "U1", at: T0, text: "ok do it" });
-    expect(() => worklogAdd(root, "their deploy", "slack:C1:6", T0)).toThrow("slack:C1:6 is someone else's message or in their thread");
+    expect(() => worklogAdd(root, "their deploy", "slack:C1:6", T0)).toThrow("slack:C1:6 is not a stored message of the owner's alone");
+  });
+
+  test("the owner's mention in a thread under their own plain (never stored) message is the owner's: logged as a source", () => {
+    const root = home();
+    new Channel(root).appendInbound({ id: "slack:C1:8", kind: "messenger", source: "slack", chat: "C1", thread: "7", root: "slack:C1:7", rootByOwner: true, from: "U1", at: T0, text: "@seori do X" });
+    expect(worklogAdd(root, "do X", "slack:C1:8", T0).source).toBe("slack:C1:8");
   });
 
   test("formatters: item line, list output, boot lines", () => {
     const root = home();
+    owned(root, "telegram:1:2", "slack:C:3");
     const a = worklogAdd(root, 'Say "hi"', "telegram:1:2", T0);
     const b = worklogAdd(root, "Other", "slack:C:3", T0);
     worklogNext(root, a.id, "reply", T0);

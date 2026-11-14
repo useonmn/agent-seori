@@ -166,22 +166,30 @@ const namesId = (source: string, id: string): boolean => {
   return false;
 };
 
+/** A source that is one lead channel message id, `<source>:<chat>:<message id>` (rather than "pane" or a note). */
+const MESSAGE_ID_RE = /^[^\s:]+:[^\s:]+:\S+$/;
+
 /**
  * Records an owner request when it arrives. Title and source are each one line; the id is 8 random hex digits. A source
- * naming a message from someone other than the owner (the `others` opt-in, or channel.ts fromOther from an earlier
- * seori) is refused: the worklog and its threads are the owner's.
+ * that is a message id must be a stored message of the owner's alone (Channel's default view), and a source naming any
+ * other stored message (someone else's, one in a thread the owner did not start, a row an earlier seori stored from
+ * another sender) is refused: the worklog and the threads it points the restart notice at are the owner's.
  */
 export function worklogAdd(root: string, title: string, source: string, now: number): WorklogItem {
-  if (existsSync(join(root, "lead", "inbound.jsonl"))) {
-    const channel = new Channel(root);
-    const others = channel.othersIds();
-    const row = channel.inbound({ withOthers: true }).findLast((r) => namesId(source, r.id) && others.has(r.id));
-    if (row) throw new WorklogError(`${row.id} is someone else's message or in their thread; the worklog holds the owner's requests only (log it against the owner's own message)`);
+  const stored = existsSync(join(root, "lead", "inbound.jsonl"));
+  const channel = stored ? new Channel(root) : undefined;
+  const ownerIds = new Set((channel?.inbound() ?? []).flatMap((r) => (r.kind === "messenger" ? [r.id] : [])));
+  const shared = channel?.inbound({ withOthers: true }).findLast((r) => namesId(source, r.id) && !ownerIds.has(r.id));
+  const id = shared?.id ?? (MESSAGE_ID_RE.test(source.trim()) && !ownerIds.has(source.trim()) ? source.trim() : undefined);
+  if (id !== undefined) {
+    throw new WorklogError(
+      `${id} is not a stored message of the owner's alone (someone else's, in a thread the owner did not start, or unknown); the worklog holds the owner's requests only (use --source pane, or the id of the owner's own message, such as their DM)`,
+    );
   }
   const known = new Set(worklogRead(root).items.map((item) => item.id));
-  let id = randomBytes(4).toString("hex");
-  while (known.has(id)) id = randomBytes(4).toString("hex");
-  return write(root, { op: "add", id, at: new Date(now).toISOString(), title: title.trim(), source: source.trim() });
+  let itemId = randomBytes(4).toString("hex");
+  while (known.has(itemId)) itemId = randomBytes(4).toString("hex");
+  return write(root, { op: "add", id: itemId, at: new Date(now).toISOString(), title: title.trim(), source: source.trim() });
 }
 
 /** Sets the open item's next step (replaces the previous one). */

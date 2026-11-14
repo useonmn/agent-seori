@@ -16,8 +16,9 @@ export type MessengerRow = {
   readonly source: string;
   readonly chat: string;
   readonly thread?: string;
-  /** A reply in a thread outside DMs: the id of the thread's first message (InboundMessage.root). */
+  /** A reply in a thread outside DMs: the id of the thread's first message, and whether the owner wrote it (InboundMessage). */
   readonly root?: string;
+  readonly rootByOwner?: true;
   readonly from: string;
   /** Sent by someone other than the owner (the messenger's `others` opt-in); absent for the owner. */
   readonly notOwner?: true;
@@ -51,14 +52,12 @@ const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.
 
 /**
  * The ids that are not the owner's alone, denied by default: everything except the owner's own messages that are a DM, a
- * top-level message or a thread's first message (no `root`), or a reply whose thread's first message is a stored message
- * of that same kind. A reply under someone else's message, or under one never stored (it did not mention the bot), is
- * theirs too: whoever else is in that thread would see what is posted there.
+ * top-level message or a thread's first message (no `root`), or a reply in a thread whose first message the platform
+ * says the owner wrote (`rootByOwner`). A reply under someone else's message, or under one of unknown author, is shared:
+ * whoever else is in that thread would see what is posted there. Nothing is inferred from which rows happen to be stored.
  */
 function othersOf(rows: readonly InboundRow[]): Set<string> {
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const firstOfOwner = (row: InboundRow | undefined): boolean => row?.kind === "messenger" && !nonOwner(row) && row.root === undefined;
-  const ownerAlone = (row: InboundRow): boolean => firstOfOwner(row) || (row.kind === "messenger" && !nonOwner(row) && row.root !== undefined && firstOfOwner(byId.get(row.root)));
+  const ownerAlone = (row: InboundRow): boolean => row.kind === "messenger" && !nonOwner(row) && (row.root === undefined || row.rootByOwner === true);
   return new Set(rows.filter((row) => row.kind === "messenger" && !ownerAlone(row)).map((row) => row.id));
 }
 

@@ -64,7 +64,7 @@ describe("bootReport", () => {
     d.store.saveLane(lane("slow", "t6", "paused", { pausedFrom: "working", log: [{ at: 2_000, kind: "pause", text: "owner said wait" }] }));
     d.store.saveLane(lane("old", "t7", "done"));
 
-    const item = worklogAdd(root, "Ship the release", "telegram:42:9", now);
+    const item = worklogAdd(root, "Ship the release", "pane", now);
     worklogNext(root, item.id, "wait for api lane", now);
 
     new Channel(root).appendInbound({ id: "telegram:42:10", kind: "messenger", source: "telegram", chat: "42", from: "owner", at: now - 30_000, text: "status?" });
@@ -104,7 +104,7 @@ describe("bootReport", () => {
       `PAUSED slow from=working since=${iso(2_000)}`,
       `NO-REPORT slow status=paused started=${iso(1_000)}`,
       "WORKLOG open=1",
-      `OPEN ${item.id} "Ship the release" source="telegram:42:9" next="wait for api lane"`,
+      `OPEN ${item.id} "Ship the release" source="pane" next="wait for api lane"`,
       "CHANNEL open=2",
       'MSG telegram:42:10 messenger from=owner age=30s deliveries=0 "status?"',
       'MSG slack:C1:11 messenger from=U2 (not owner) age=30s deliveries=0 "merge it"',
