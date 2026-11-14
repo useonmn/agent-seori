@@ -402,11 +402,9 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
   if (opts.done !== undefined) parseDone(opts.done);
   if (opts.thread !== undefined && !opts.thread.trim()) throw new Refusal("--thread needs a lead channel id");
-  const threadId = opts.thread?.trim();
-  if (threadId !== undefined && existsSync(join(d.store.root, "lead"))) {
-    // Lane reports and progress go into the lane's thread: never into the thread of someone other than the owner.
-    const row = new Channel(d.store.root).inbound().find((r) => r.id === threadId);
-    if (row?.kind === "messenger" && row.notOwner) throw new Refusal(`--thread ${threadId} is a message from someone other than the owner; a lane's thread must be the owner's`);
+  // Lane reports and progress go into the lane's thread: never into the thread of someone other than the owner.
+  if (opts.thread !== undefined && existsSync(join(d.store.root, "lead")) && new Channel(d.store.root).fromNonOwner(opts.thread.trim())) {
+    throw new Refusal(`--thread ${opts.thread.trim()} is a message from someone other than the owner; a lane's thread must be the owner's`);
   }
   if (opts.activityPaths?.some((p) => !p.trim())) throw new Refusal("--activity-path needs a path");
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
@@ -762,8 +760,8 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   await messengerAlerts(d, messengers, now, events);
   if (broken !== undefined) return;
 
-  // Lead status is internal: only the owner's open messages are told when the lead is offline or stuck.
-  const open = channel.open().filter((s): s is IdState & { readonly row: MessengerRow } => s.row.kind === "messenger" && s.row.notOwner !== true);
+  // Lead status is internal: the owner-only view, so only the owner's open messages are told the lead is offline or stuck.
+  const open = channel.open().filter((s): s is IdState & { readonly row: MessengerRow } => s.row.kind === "messenger");
   // Send-uncertain and gave-up ids are final: they are never delivered again, so "kept" or "queued" would be false.
   const waiting = open.filter((s) => !s.uncertain && !s.gaveUp);
   const waited = (at: number | undefined): boolean => at !== undefined && now - at > ALERT_AFTER_MS;

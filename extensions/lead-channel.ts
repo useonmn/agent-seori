@@ -84,7 +84,8 @@ export default function leadChannel(pi: ExtensionAPI) {
     if (!active || !ctx) return;
     const now = Date.now();
     if (!holdLock(now)) return;
-    const decision = schedule.decide(channel.states(), now, ctx.isIdle(), trigger);
+    // The lead is told everyone's messages; other people's are marked (not owner) when rendered.
+    const decision = schedule.decide(channel.states({ withOthers: true }), now, ctx.isIdle(), trigger);
     for (const g of decision.giveUp) {
       channel.appendLedger({ id: g.id, ev: "gave-up", at: now, attempts: g.attempts });
       // Nobody answers a watch event, so a given-up one would stay open for good; `seori watch list` still has the watch.

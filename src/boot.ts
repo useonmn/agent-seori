@@ -177,8 +177,9 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
   }
 
   try {
-    // Channel's constructor creates lead/; with no lead/ there is no message to list.
-    const states = existsSync(join(root, "lead")) ? new Channel(root).open() : [];
+    // Channel's constructor creates lead/; with no lead/ there is no message to list. Other people's open messages are
+    // listed too (marked), so the lead still sees them after a restart.
+    const states = existsSync(join(root, "lead")) ? new Channel(root).open({ withOthers: true }) : [];
     lines.push(`CHANNEL open=${states.length}`);
     for (const s of states) {
       const flags = [s.uncertain ? "uncertain" : "", s.gaveUp ? "gave-up" : "", s.entered ? "entered" : ""].filter(Boolean);

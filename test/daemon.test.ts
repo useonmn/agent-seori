@@ -77,7 +77,7 @@ describe("runDaemon", () => {
     const d = start(root, { adapterFor: fakePoll });
     await until("both stored", () => d.events.filter((e) => e.ev === "stored").length === 2);
     await d.stop();
-    expect(new Channel(root).inbound()).toEqual([
+    expect(new Channel(root).inbound({ withOthers: true })).toEqual([
       { id: "fake:c:1", kind: "messenger", source: "fake", chat: "c", from: "u2", notOwner: true, at: 3, text: "question" },
       { id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", from: "u1", at: 4, text: "mine" },
     ]);

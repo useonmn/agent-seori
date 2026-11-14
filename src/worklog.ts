@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { Channel, fromOther } from "./channel.ts";
+import { Channel, nonOwner } from "./channel.ts";
 import { Refusal } from "./harness.ts";
 
 // The lead's list of owner requests: `$SEORI_HOME/worklog.jsonl` is the record, one O_APPEND write per change, so
@@ -173,7 +173,7 @@ const namesId = (source: string, id: string): boolean => {
  */
 export function worklogAdd(root: string, title: string, source: string, now: number): WorklogItem {
   if (existsSync(join(root, "lead", "inbound.jsonl"))) {
-    const row = new Channel(root).inbound().findLast((r) => namesId(source, r.id) && (fromOther(r) || (r.kind === "messenger" && r.notOwner === true)));
+    const row = new Channel(root).inbound({ withOthers: true }).findLast((r) => namesId(source, r.id) && nonOwner(r));
     if (row) throw new WorklogError(`${row.id} came from someone other than the owner; the worklog holds the owner's requests only (log it against the owner's own message)`);
   }
   const known = new Set(worklogRead(root).items.map((item) => item.id));

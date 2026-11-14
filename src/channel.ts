@@ -44,6 +44,16 @@ export const fromOther = (row: InboundRow): boolean => {
   return row.kind === "messenger" && kind !== undefined && kind !== "owner";
 };
 
+/** A message from someone other than the owner: the messenger's `others` opt-in (`notOwner`), or `fromOther`. */
+export const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.notOwner === true || fromOther(row));
+
+/**
+ * How a reader sees the lead channel. By default only the owner's messages (and watch events) exist; `withOthers`
+ * also shows messages from anyone else, for the few readers that must see them: delivering them to the lead, replying
+ * to or listing them, and refusing to use one where only the owner's may go.
+ */
+export type ChannelView = { readonly withOthers?: boolean };
+
 /**
  * - delivered: the extension handed the id to omp (attempt counts from 1; mode is how).
  * - entered: the delivered message appeared in the lead's conversation.
@@ -176,8 +186,15 @@ export class Channel {
     return true;
   }
 
-  inbound(): InboundRow[] {
-    return readJsonl<InboundRow>(this.inboundPath);
+  /** Stored rows, oldest first: the owner's messages and watch events, plus other people's with `withOthers`. */
+  inbound(view: ChannelView = {}): InboundRow[] {
+    const rows = readJsonl<InboundRow>(this.inboundPath);
+    return view.withOthers === true ? rows : rows.filter((row) => !nonOwner(row));
+  }
+
+  /** Whether `id` names a stored message from someone other than the owner: where only the owner's may go, refuse it. */
+  fromNonOwner(id: string): boolean {
+    return this.inbound({ withOthers: true }).some((row) => row.id === id && nonOwner(row));
   }
 
   appendLedger(e: LedgerEvent): void {
@@ -189,7 +206,7 @@ export class Channel {
   }
 
   /** One pass over the ledger grouped by id: the lead extension and duty call this every tick, for all history. */
-  states(): IdState[] {
+  states(view: ChannelView = {}): IdState[] {
     type Acc = { deliveries: number; lastDeliveredAt?: number; entered: boolean; replied: boolean; closed: boolean; sendUncertain: boolean; inFlight: boolean; gaveUp: boolean; alerted: string[] };
     const byId = new Map<string, Acc>();
     for (const e of this.ledger()) {
@@ -230,7 +247,7 @@ export class Channel {
           break;
       }
     }
-    return this.inbound().map((row) => {
+    return this.inbound(view).map((row) => {
       const a = byId.get(row.id);
       if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: fromOther(row), uncertain: false, gaveUp: false, alerted: [] };
       return {
@@ -248,8 +265,8 @@ export class Channel {
   }
 
   /** Ids still waiting for a reply or close. */
-  open(): IdState[] {
-    return this.states().filter((s) => !s.replied && !s.closed);
+  open(view: ChannelView = {}): IdState[] {
+    return this.states(view).filter((s) => !s.replied && !s.closed);
   }
 
   lockConsumer(now: number): (() => void) | undefined {

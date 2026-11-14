@@ -190,6 +190,19 @@ describe("progressTick", () => {
     expect((await progressTick(d)).map((e) => e.action)).toEqual(["posted"]);
   });
 
+  test("never posts into the thread of someone other than the owner, by messenger or hook", async () => {
+    for (const hooks of [undefined, { threadReply: ["notify-owner", "{thread}", "{text}"] }]) {
+      const { w, d, lane, reportNow } = setup({ progressEveryMin: 15, ...(hooks ? { hooks } : {}) });
+      new Channel(d.store.root).appendInbound({ id: "fake:c1:m1", kind: "messenger", source: "fake", chat: "c1", from: "u2", notOwner: true, at: 1, text: "please fix" });
+      lane();
+      reportNow("working on it");
+      w.clock += 15 * MIN;
+      expect(await progressTick(d)).toEqual([{ lane: "fix-a", action: "post-failed", detail: "thread fake:c1:m1 is a message from someone other than the owner; lane progress never posts there" }]);
+      expect(w.notified).toEqual([]);
+      expect(w.calls.filter((c) => c.cmd === "notify-owner")).toEqual([]);
+    }
+  });
+
   test("hooks.threadReply carries the post: the argv runs, the messenger does not", async () => {
     const { w, d, lane, reportNow } = setup({
       progressEveryMin: 15,

@@ -141,8 +141,13 @@ export async function progressTick(d: Deps, timeoutMs = THREAD_REPLY_TIMEOUT_MS)
     }
   }
   const events: DutyEvent[] = [];
+  const channel = new Channel(d.store.root);
   for (const { lane, report } of due) {
     const thread = lane.thread!;
+    if (channel.fromNonOwner(thread)) {
+      events.push({ lane: lane.key, action: "post-failed", detail: `thread ${thread} is a message from someone other than the owner; lane progress never posts there` });
+      continue;
+    }
     const text = progressText(report, d.store.root);
     let via: Transport;
     let uncertain: string | undefined;
