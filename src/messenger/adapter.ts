@@ -25,6 +25,9 @@ export type InboundMessage = {
 
 export type SendTarget = { readonly chat: string; readonly thread?: string; readonly replyTo?: string };
 
+/** seori's reaction on a message it accepted: `read` once it is stored for the lead, `answered` once the lead answered it. */
+export type Reaction = "read" | "answered";
+
 /** An edit waits out a rate limit only this long; a longer one fails at once with when to retry, so the lead is not held. */
 export const ACTION_MAX_RETRY_AFTER_MS = 10_000;
 
@@ -59,6 +62,13 @@ export interface MessengerAdapter {
    * request that may have arrived is simply retried; a definite refusal rejects with the platform's reason.
    */
   edit(target: SendTarget, message: string, text: string): Promise<void>;
+  /**
+   * Marks one upstream message (`message`: its id as in `target.replyTo`, without an `:edit:` suffix) with seori's
+   * reaction: `read` puts the eyes on it, `answered` replaces them with the platform's check mark (Slack
+   * white_check_mark, Discord ✅, Telegram 👌, since ✅ is not among Telegram's allowed reactions). Idempotent: a mark
+   * already in place, or eyes already gone, is no error. A refusal rejects; the caller logs it and carries on.
+   */
+  react(target: SendTarget, message: string, reaction: Reaction): Promise<void>;
 }
 
 export type MessengerConfig = {

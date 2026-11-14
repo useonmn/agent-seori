@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type InboundMessage, type MessengerAdapter, type SendTarget, SendUncertain } from "./adapter.ts";
+import { type InboundMessage, type MessengerAdapter, type Reaction, type SendTarget, SendUncertain } from "./adapter.ts";
 
 // A messenger made of files under $SEORI_HOME/messenger/fake/, so tests and humans can drive the whole channel without a
 // platform account: append a row to in.jsonl to "send" a message to the lead; read out.jsonl to see what was sent back;
@@ -11,8 +11,8 @@ export type FakeInboundRow = { msgId: string; chat: string; thread?: string; fro
 /** One line of out.jsonl. */
 export type FakeOutboundRow = { messageId: string; chat: string; thread?: string; replyTo?: string; text: string; at: number };
 export type FakeSendMode = "ok" | "timeout" | "error";
-/** One line of actions.jsonl: an edit, as it was asked. */
-export type FakeActionRow = { action: "edit"; at: number } & Record<string, unknown>;
+/** One line of actions.jsonl: an edit or a reaction, as it was asked. */
+export type FakeActionRow = { action: "edit" | "react"; at: number } & Record<string, unknown>;
 
 export const fakeDir = (root: string): string => join(root, "messenger", "fake");
 
@@ -148,6 +148,12 @@ export class FakeAdapter implements MessengerAdapter {
   async edit(target: SendTarget, message: string, text: string): Promise<void> {
     if (this.sendMode() === "error") throw new Error("fake messenger: edit failed (send-mode error)");
     appendFileSync(this.actionsPath, `${JSON.stringify({ action: "edit", ...target, message, text, at: this.now() })}\n`);
+  }
+
+  /** send-mode error makes a reaction fail too. */
+  async react(target: SendTarget, message: string, reaction: Reaction): Promise<void> {
+    if (this.sendMode() === "error") throw new Error("fake messenger: reaction failed (send-mode error)");
+    appendFileSync(this.actionsPath, `${JSON.stringify({ action: "react", ...target, message, reaction, at: this.now() })}\n`);
   }
 
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {

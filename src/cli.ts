@@ -132,11 +132,14 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               still runs after 30 s
   seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
-  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
+  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack]
                                               answer messenger messages (one reply per id) or send a notice; it goes out
                                               at once, so answer as soon as you have written it; --again sends another
-                                              reply to an id already answered (a correction)
-  seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
+                                              reply to an id already answered (a correction, a job's result); the eyes
+                                              seori put on the message become a check mark, except with --ack (a job's
+                                              acknowledgement, its status message, which keeps the eyes)
+  seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no
+                                              reply; a messenger message gets the check mark
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
   seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
@@ -169,9 +172,9 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "purge", "help", "global",
-  // up --wait-hc (the logon hook), restart --follow (watch the detached restart's log) and down --keep-autostart (what
-  // the restart worker runs) never take a value.
-  "wait-hc", "follow", "keep-autostart",
+  // up --wait-hc (the logon hook), restart --follow (watch the detached restart's log), down --keep-autostart (what
+  // the restart worker runs) and msg send --ack never take a value.
+  "wait-hc", "follow", "keep-autostart", "ack",
 ]);
 
 function parse(argv: readonly string[]): Args {
@@ -963,7 +966,7 @@ function workflowFlag(v: string): Workflow | null {
  * outside its subcommand's list is refused by name instead.
  */
 const MSG_FLAGS: Readonly<Record<string, readonly string[]>> = {
-  send: ["reply-to", "to", "text", "again"],
+  send: ["reply-to", "to", "text", "again", "ack"],
   close: ["why"],
   list: ["all"],
   check: [],
@@ -991,6 +994,7 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
       ...(to !== undefined ? { to: parseTo(to) } : {}),
       text: await textOf(a),
       again: one(a, "again") === "true",
+      ack: one(a, "ack") === "true",
     }, msgDepsFor(root, d.now));
     const what = r.ids.length ? r.ids.join(",") : to!;
     if (r.status === "SENT") {
@@ -1004,7 +1008,7 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
   }
   if (sub === "close") {
     const id = need(a.pos[2], "message id");
-    msgClose(root, id, need(one(a, "why"), "--why"), d.now());
+    await msgClose(root, id, need(one(a, "why"), "--why"), msgDepsFor(root, d.now));
     console.log(`CLOSED ${id}`);
     return 0;
   }

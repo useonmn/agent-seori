@@ -1,7 +1,8 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { Channel, fromOther, type IdState, type MessengerRow } from "./channel.ts";
+import { Channel, fromOther, type IdState, type InboundRow, type MessengerRow } from "./channel.ts";
 import { Refusal } from "./harness.ts";
 import { loadMessengers, SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
+import { upstreamMessage } from "./messenger/common.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 
 // `seori msg ...`: the lead answers messenger messages. A reply closes its ids only after the messenger returned a
@@ -18,11 +19,22 @@ export type MsgDeps = {
   readonly adapterFor: (c: MessengerConfig) => MessengerAdapter;
   readonly configs: readonly MessengerConfig[];
   readonly now: () => number;
+  /** Where a reaction that could not be set is reported; stderr by default. */
+  readonly warn?: (line: string) => void;
 };
 
-/** What the CLI and the lead extension send with: the messengers in messengers.json, read now. */
+/**
+ * What the CLI and the lead extension send with: the messengers in messengers.json, read when a messenger is needed, so
+ * `msg close` still closes when the file is broken (its check mark then fails with the file's error, as a warning).
+ */
 export function msgDepsFor(root: string, now: () => number = Date.now): MsgDeps {
-  return { adapterFor: (c) => defaultAdapterFor(c, root), configs: loadMessengers(root), now };
+  return {
+    adapterFor: (c) => defaultAdapterFor(c, root),
+    get configs() {
+      return loadMessengers(root);
+    },
+    now,
+  };
 }
 
 export type NoticeTarget = { readonly source: string; readonly chat: string; readonly thread?: string };
@@ -32,6 +44,11 @@ export type MsgSendOptions = {
   readonly to?: NoticeTarget;
   readonly text: string;
   readonly again?: boolean;
+  /**
+   * The reply acknowledges the message (a job's status message) instead of answering it: the eyes stay on it. Any other
+   * reply answers it, and the eyes give way to the check mark.
+   */
+  readonly ack?: boolean;
 };
 
 /**
@@ -64,6 +81,7 @@ function adapterFor(d: MsgDeps, source: string): MessengerAdapter {
 
 export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Promise<MsgSendResult> {
   if ([o.replyTo, o.to].filter((x) => x !== undefined).length !== 1) throw new Refusal("give exactly one of --reply-to or --to");
+  if (o.to && o.ack === true) throw new Refusal("--ack marks a reply to a message as its acknowledgement; it needs --reply-to");
   if (!o.text.trim()) throw new Refusal("refusing to send an empty message");
 
   if (o.to) {
@@ -88,18 +106,22 @@ async function sendNotice(adapter: MessengerAdapter, to: NoticeTarget, text: str
   }
 }
 
-async function replyNow(channel: Channel, ids: readonly string[], o: { readonly text: string; readonly again?: boolean }, d: MsgDeps): Promise<MsgSendResult> {
+async function replyNow(channel: Channel, ids: readonly string[], o: MsgSendOptions, d: MsgDeps): Promise<MsgSendResult> {
   const release = channel.lockReply(d.now());
   if (!release) throw new Refusal(`BUSY: another seori msg send is replying right now (${channel.replyLockPath}); nothing was sent, retry shortly`);
+  let sent: LockedReply;
   try {
-    return await replyLocked(channel, ids, o, d);
+    sent = await replyLocked(channel, ids, o, d);
   } finally {
     release();
   }
+  // After the lock is released: the reply is out, and a slow reaction must not hold the next reply.
+  if (sent.result.status === "SENT" && o.ack !== true) await markAnswered(sent.rows, d);
+  return sent.result;
 }
 
-/** The refusals every reply gets: unknown ids, watch events, mixed chats, ALREADY_REPLIED, UNCERTAIN. */
-function checkReply(channel: Channel, ids: readonly string[], again: boolean): IdState & { readonly row: MessengerRow } {
+/** The refusals every reply gets: unknown ids, watch events, mixed chats, ALREADY_REPLIED, UNCERTAIN. Returns the ids' states. */
+function checkReply(channel: Channel, ids: readonly string[], again: boolean): (IdState & { readonly row: MessengerRow })[] {
   const states = channel.states({ withOthers: true }); // the lead answers other people too
   const picked = ids.map((id) => {
     const s = states.find((x) => x.row.id === id);
@@ -124,12 +146,19 @@ function checkReply(channel: Channel, ids: readonly string[], again: boolean): I
         throw new Refusal(`UNCERTAIN ${s.row.id}: an earlier reply may or may not have arrived; check the chat, then pass --again to resend`);
     }
   }
-  return first;
+  return picked;
 }
 
+/** What a reply under the lock sent, and the rows it answered. */
+type LockedReply = { readonly result: MsgSendResult; readonly rows: readonly MessengerRow[] };
+
 /** The reply under the reply lock: states are read only once it is held, so a concurrent reply is already recorded. */
-async function replyLocked(channel: Channel, ids: readonly string[], o: { readonly text: string; readonly again?: boolean }, d: MsgDeps): Promise<MsgSendResult> {
-  const first = checkReply(channel, ids, o.again === true);
+async function replyLocked(
+  channel: Channel, ids: readonly string[], o: { readonly text: string; readonly again?: boolean }, d: MsgDeps,
+): Promise<LockedReply> {
+  const picked = checkReply(channel, ids, o.again === true);
+  const rows = picked.map((s) => s.row);
+  const first = picked[0]!;
   // The upstream message id part of `<source>:<chat>:<message id>`; chat ids may contain colons, so slice by known parts.
   const replyTo = first.row.id.slice(first.row.source.length + first.row.chat.length + 2);
   const target: SendTarget = { chat: first.row.chat, ...(first.row.thread ? { thread: first.row.thread } : {}), replyTo };
@@ -140,7 +169,7 @@ async function replyLocked(channel: Channel, ids: readonly string[], o: { readon
     const { messageId } = await adapter.send(target, o.text);
     const at = d.now();
     for (const id of ids) channel.appendLedger({ id, ev: "replied", at, messageId });
-    return { status: "SENT", messageId, ids };
+    return { result: { status: "SENT", messageId, ids }, rows };
   } catch (e) {
     const at = d.now();
     if (!(e instanceof SendUncertain)) {
@@ -150,12 +179,29 @@ async function replyLocked(channel: Channel, ids: readonly string[], o: { readon
       throw e;
     }
     for (const id of ids) channel.appendLedger({ id, ev: "send-uncertain", at, detail: e.message });
-    return { status: "HELD", ids };
+    return { result: { status: "HELD", ids }, rows };
+  }
+}
+
+/**
+ * The check mark in place of the eyes the daemon put on each messenger message among `rows` (src/daemon.ts): the
+ * message is answered. Every reply answers its messages except one sent with `--ack` (a job's acknowledgement, its
+ * status message), and so does `msg close`. Never fails the answer it follows: the answer is already out or recorded,
+ * so a refused reaction is only reported through `d.warn`.
+ */
+async function markAnswered(rows: readonly InboundRow[], d: MsgDeps): Promise<void> {
+  for (const row of rows) {
+    if (row.kind !== "messenger") continue;
+    try {
+      await adapterFor(d, row.source).react({ chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}) }, upstreamMessage(row), "answered");
+    } catch (e) {
+      (d.warn ?? console.error)(`seori: ${row.id} is answered, but its check mark could not be set: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }
 
 // ---------- edit ----------
-// Never touches the ledger: an edit answers no id.
+// Never touches the ledger or the reactions: an edit answers no id.
 
 function messengerRow(root: string, id: string): MessengerRow {
   const row = new Channel(root).inbound({ withOthers: true }).find((r) => r.id === id);
@@ -185,14 +231,15 @@ export async function msgEditReplyOf(root: string, id: string, text: string, d: 
   return first.messageId;
 }
 
-/** Closes an id without replying (handled elsewhere, not worth an answer). */
-export function msgClose(root: string, id: string, why: string, now: number): void {
+/** Closes an id without replying (handled elsewhere, not worth an answer); a messenger message gets its check mark. */
+export async function msgClose(root: string, id: string, why: string, d: MsgDeps): Promise<void> {
   const channel = new Channel(root);
   const s = channel.states({ withOthers: true }).find((x) => x.row.id === id);
   if (!s) throw new Refusal(`unknown message id ${id}`);
   if (s.replied) throw new Refusal(`${id} is already replied`);
   if (s.closed) throw new Refusal(`${id} is already closed`);
-  channel.appendLedger({ id, ev: "closed", at: now, why });
+  channel.appendLedger({ id, ev: "closed", at: d.now(), why });
+  await markAnswered([s.row], d);
 }
 
 function stateOf(s: IdState): string {

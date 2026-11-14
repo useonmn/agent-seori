@@ -6,8 +6,8 @@ import { DiscordAdapter } from "../src/messenger/discord.ts";
 import { SlackAdapter } from "../src/messenger/slack.ts";
 import { TelegramAdapter } from "../src/messenger/telegram.ts";
 
-// Editing a message seori sent, on each platform, against an HTTP stand-in that records every call: the platform API is
-// mocked at the HTTP boundary only.
+// Editing a message seori sent, and seori's reactions, on each platform, against an HTTP stand-in that records every
+// call: the platform API is mocked at the HTTP boundary only.
 
 type Call = { method: string; path: string; body: unknown };
 type Answer = (c: Call) => Response | undefined;
@@ -67,6 +67,18 @@ describe("Telegram edit", () => {
     t.answers.push(() => Response.json({ ok: false, error_code: 400, description: "Bad Request: message to edit not found" }, { status: 400 }));
     await expect(t.a.edit({ chat: "42" }, "5", "x")).rejects.toThrow(/message to edit not found/);
   });
+
+  test("react sets the eyes, then replaces them with 👌 (✅ is not an allowed reaction); a refusal is an error", async () => {
+    const t = setup();
+    await t.a.react({ chat: "42", thread: "9" }, "5", "read");
+    await t.a.react({ chat: "42" }, "5", "answered");
+    expect(t.sent()).toEqual([
+      ["setMessageReaction", { chat_id: "42", message_id: 5, reaction: [{ type: "emoji", emoji: "👀" }] }],
+      ["setMessageReaction", { chat_id: "42", message_id: 5, reaction: [{ type: "emoji", emoji: "👌" }] }],
+    ]);
+    t.answers.push(() => Response.json({ ok: false, error_code: 400, description: "Bad Request: REACTION_INVALID" }, { status: 400 }));
+    await expect(t.a.react({ chat: "42" }, "5", "read")).rejects.toThrow(/REACTION_INVALID/);
+  });
 });
 
 describe("Discord edit", () => {
@@ -110,6 +122,21 @@ describe("Discord edit", () => {
     await expect(t.a.edit({ chat: "C1" }, "..", "x")).rejects.toThrow(/".." is not an id/);
     expect(t.calls).toHaveLength(1);
   });
+
+  test("react: the bot's own eyes; the check mark goes on, then the eyes come off, in the message's thread", async () => {
+    const t = setup();
+    t.answers.push(() => new Response(null, { status: 204 }));
+    await t.a.react({ chat: "C1" }, "55", "read");
+    await t.a.react({ chat: "C1", thread: "T9" }, "55", "answered");
+    expect(t.sent()).toEqual([
+      ["PUT", "/api/channels/C1/messages/55/reactions/👀/@me", undefined],
+      ["PUT", "/api/channels/T9/messages/55/reactions/✅/@me", undefined],
+      ["DELETE", "/api/channels/T9/messages/55/reactions/👀/@me", undefined],
+    ]);
+    t.answers.length = 0;
+    t.answers.push(() => Response.json({ message: "Missing Permissions", code: 50013 }, { status: 403 }));
+    await expect(t.a.react({ chat: "C1" }, "55", "read")).rejects.toThrow(/Missing Permissions/);
+  });
 });
 
 describe("Slack edit", () => {
@@ -139,5 +166,20 @@ describe("Slack edit", () => {
     await expect(t.a.edit({ chat: "D1" }, "1", "x")).rejects.toThrow(/retry after 120 s/);
     expect(t.sleeps).toEqual([]);
     expect(t.calls).toHaveLength(2);
+  });
+
+  test("react: eyes with reactions.add; the check mark goes on, then the eyes come off; a mark already set or gone is fine", async () => {
+    const t = setup();
+    await t.a.react({ chat: "C1", thread: "1700000000.000001" }, "1700000000.000009", "read");
+    t.answers.push((c) => (c.path.endsWith("reactions.add") ? Response.json({ ok: false, error: "already_reacted" }) : Response.json({ ok: false, error: "no_reaction" })));
+    await t.a.react({ chat: "C1" }, "1700000000.000009", "answered");
+    expect(t.sent()).toEqual([
+      ["reactions.add", { channel: "C1", timestamp: "1700000000.000009", name: "eyes" }],
+      ["reactions.add", { channel: "C1", timestamp: "1700000000.000009", name: "white_check_mark" }],
+      ["reactions.remove", { channel: "C1", timestamp: "1700000000.000009", name: "eyes" }],
+    ]);
+    t.answers.length = 0;
+    t.answers.push(() => Response.json({ ok: false, error: "missing_scope", needed: "reactions:write" }));
+    await expect(t.a.react({ chat: "C1" }, "1", "read")).rejects.toThrow(/lacks scope reactions:write/);
   });
 });
