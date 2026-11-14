@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COPY_MARK, installSkill, SEORI_SRC, uninstall } from "../src/install.ts";
@@ -76,7 +76,7 @@ describe("install.sh and a checkout you develop in", () => {
    * it), while a hand-built expected path keeps the form it was built from. Resolve the longest existing prefix on each
    * side and compare that plus the remainder, which also works for directories that do not exist yet.
    */
-  const samePath = (a: string, b: string) => {
+  const samePath = (a: string | undefined, b: string) => {
     const norm = (p: string) => {
       const parts = p.split("/").filter(Boolean);
       for (let n = parts.length; n > 0; n--) {
@@ -85,8 +85,17 @@ describe("install.sh and a checkout you develop in", () => {
       }
       return p;
     };
-    return norm(a) === norm(b);
+    // A field that was never printed is a real failure, reported as such instead of throwing out of the assertion.
+    expect(a).toBeDefined();
+    return norm(a!) === norm(b);
   };
+
+  /**
+   * Reads one `NAME=value` out of a printed remedy. install.sh writes these with `printf %q`, which quotes only when it
+   * has to: a plain path appears as `SEORI_SRC=/tmp/x/dev`. Both the quoted and the bare form are accepted.
+   */
+  const remedyField = (line: string, name: string) =>
+    line.match(new RegExp(`${name}=(?:"([^"]+)"|(\\S+))`))?.slice(1).find((v) => v !== undefined);
   const gitEnv = {
     GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
@@ -181,10 +190,10 @@ describe("install.sh and a checkout you develop in", () => {
     // resolving both sides: on macOS /var is a symlink to /private/var, so a hand-built expected string mixes forms.
     const remedy = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
     expect(remedy).toBeDefined();
-    const field = (name: string) => remedy!.match(new RegExp(`${name}="([^"]+)"`))?.[1];
-    expect(samePath(field("SEORI_SRC")!, dev)).toBe(true);
-    expect(samePath(field("SEORI_HOME")!, join(root, "state"))).toBe(true);
-    expect(samePath(field("SKILLS_DIR")!, join(root, "skills"))).toBe(true);
+    // `printf %q` leaves a plain path bare and quotes only when it must, so the reader accepts both forms.
+    expect(samePath(remedyField(remedy!, "SEORI_SRC"), dev)).toBe(true);
+    expect(samePath(remedyField(remedy!, "SEORI_HOME"), join(root, "state"))).toBe(true);
+    expect(samePath(remedyField(remedy!, "SKILLS_DIR"), join(root, "skills"))).toBe(true);
     expect(samePath(remedy!.split("bash ")[1]!.replace(/"/g, ""), INSTALL)).toBe(true);
     expect(remedy).toContain("SEORI_NO_PULL=1");
     expect(r.err).toContain("pull --rebase --autostash");
@@ -254,9 +263,11 @@ describe("install.sh and a checkout you develop in", () => {
 
     const r = install(dev, root);
     expect(r.code).toBe(1);
-    // The update block never claimed anything about local work: git's own "no upstream" message is the explanation.
-    expect(r.err).not.toContain("has local work");
+    // With no upstream there is no update to wait for, so the refusal block stays out of it; the merge fails on git's own
+    // "no upstream" line, and the fallback names the state it found — the local work that is still there.
+    expect(r.err).not.toContain("has commits it does not");
     expect(r.err).toContain("Could not update");
+    expect(r.err).toContain("it has local work (listed below), so nothing was merged");
     expect(readFileSync(join(dev, "tracked.txt"), "utf8")).toBe("edited\n");
   });
 
@@ -357,10 +368,62 @@ describe("install.sh and a checkout you develop in", () => {
     expect(line).toBeDefined();
     // Every path field compared with the same resolved-prefix rule as the file mode: /var and /private/var are one place
     // on macOS, and a hand-built `toContain(realpathSync(...))` string mixes the two forms.
-    const field = (name: string) => line!.match(new RegExp(`${name}="([^"]+)"`))?.[1];
-    expect(samePath(field("SEORI_SRC")!, dev)).toBe(true);
-    expect(samePath(field("SEORI_HOME")!, join(root, "state"))).toBe(true);
-    expect(samePath(field("SKILLS_DIR")!, join(root, "skills"))).toBe(true);
+    // Same reader for both forms: `printf %q` leaves a plain path bare and quotes only when it must.
+    expect(samePath(remedyField(line!, "SEORI_SRC"), dev)).toBe(true);
+    expect(samePath(remedyField(line!, "SEORI_HOME"), join(root, "state"))).toBe(true);
+    expect(samePath(remedyField(line!, "SKILLS_DIR"), join(root, "skills"))).toBe(true);
     expect(line).toContain("curl -fsSL");
+  });
+  // The remedies must carry the *resolved* checkout. A relative SEORI_SRC is the sharpest test: pasted from any other
+  // directory, a raw `./dev` names a different tree (or none), and installing that repoints the machine-wide `seori` at
+  // it. This is the failure the review reproduced, so it is pinned here: run the printed line from an unrelated cwd and
+  // check that the global link landed on the intended dev checkout.
+  test("a relative SEORI_SRC: the printed remedy, run from another cwd, installs that same checkout", () => {
+    const { root, upstream, dev, git } = seoriCheckout();
+    writeFileSync(join(dev, "tracked.txt"), "edited\n");
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    git(upstream, "commit", "--quiet", "-am", "two");
+
+    // Relative to the clone's parent, which is how `SEORI_SRC=./dev bash install.sh` is normally written.
+    const parent = join(root);
+    const rel = `./${dev.slice(parent.length + 1)}`;
+    const env = (): Record<string, string | undefined> => {
+      const e: Record<string, string | undefined> = { ...process.env };
+      for (const k of Object.keys(e)) if (k.startsWith("SEORI_")) delete e[k];
+      Object.assign(e, { HOME: join(root, "home"), BUN_INSTALL: join(root, "bun"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), SEORI_HOME: join(root, "state"), SKILLS_DIR: join(root, "skills"), SEORI_SRC: rel });
+      return e;
+    };
+    // The refusal from the parent directory, with the relative SEORI_SRC.
+    const first = Bun.spawnSync(["bash", INSTALL], { env: env(), cwd: parent, stdout: "pipe", stderr: "pipe" });
+    expect(first.exitCode).toBe(1);
+    const line = first.stderr.toString().split("\n").find((l) => l.includes("install this checkout as it is:"));
+    expect(line).toBeDefined();
+    // The remedy names an absolute, resolved path — not the `./dev` it was given.
+    expect(samePath(remedyField(line!, "SEORI_SRC"), dev)).toBe(true);
+
+    // Paste it from somewhere unrelated: the global link must end up on the intended checkout, not on a default clone.
+    const command = line!.slice(line!.indexOf("SEORI_NO_PULL=1"));
+    const r = Bun.spawnSync(["bash", "-c", command], { env: env(), cwd: root, stdout: "pipe", stderr: "pipe" });
+    expect(r.stdout.toString()).toContain(`Installed seori from ${realpathSync(dev)}`);
+    expect(realpathSync(join(root, "bun", "install", "global", "node_modules", "seori"))).toBe(realpathSync(dev));
+  });
+
+  // A symlinked checkout has two spellings; the refusal prints the resolved one, so the remedy must agree with it, or a
+  // reader pasting it installs a path the rest of the message never named.
+  test("a symlinked SEORI_SRC: the remedy names the same path the refusal does", () => {
+    const { root, upstream, dev, git } = seoriCheckout();
+    writeFileSync(join(dev, "tracked.txt"), "edited\n");
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    git(upstream, "commit", "--quiet", "-am", "two");
+    const link = join(root, "dev-link");
+    symlinkSync(dev, link);
+
+    const r = install(link, root);
+    expect(r.code).toBe(1);
+    // The refusal and the remedy agree: both name the resolved checkout, and neither echoes the symlink.
+    expect(r.err).toContain(`${realpathSync(dev)} has local work`);
+    const line = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
+    expect(samePath(remedyField(line!, "SEORI_SRC"), dev)).toBe(true);
+    expect(remedyField(line!, "SEORI_SRC")).not.toBe(link);
   });
 });

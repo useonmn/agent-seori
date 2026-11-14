@@ -18,19 +18,6 @@ repo="https://github.com/useonmn/agent-seori.git"
 home="${SEORI_HOME:-$HOME/.seori}"
 src="${SEORI_SRC:-$home/src}"
 skills="${SKILLS_DIR:-$HOME/.omp/agent/skills}"
-# How the remedies below tell the user to run this script again. The command has to reproduce *this* install, so it
-# carries the resolved SEORI_SRC (otherwise a remedy silently installs a different tree, repointing the machine-wide
-# `seori` at it) plus SEORI_HOME and SKILLS_DIR when they are not the defaults. Through `curl | bash` there is no file to
-# name, so the one-liner is the way back; run from a file, name that file, resolved without needing `readlink -f`.
-if [ -f "${BASH_SOURCE[0]:-}" ]; then
-  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  self="bash \"$dir/$(basename "${BASH_SOURCE[0]}")\""
-else
-  self="bash <(curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh)"
-fi
-[ "$src" = "$home/src" ] || self="SEORI_SRC=\"$src\" $self"
-[ "$home" = "$HOME/.seori" ] || self="SEORI_HOME=\"$home\" $self"
-[ "$skills" = "$HOME/.omp/agent/skills" ] || self="SKILLS_DIR=\"$skills\" $self"
 command -v bun >/dev/null || { echo "bun 1.3 or newer is required: https://bun.sh" >&2; exit 1; }
 
 if [ "${1:-}" = "--uninstall" ]; then
@@ -47,6 +34,22 @@ chmod 700 "$home"
 # Absolute, so the skill symlink resolves from the skills directory whatever SEORI_SRC was relative to.
 mkdir -p "$src"
 src="$(cd "$src" && pwd -P)"
+
+# How the remedies below tell the user to run this script again. The command has to reproduce *this* install, so it
+# carries the resolved values (SEORI_SRC plumbed in by `cd … pwd -P` above, so a relative or symlinked path is not echoed
+# raw), plus SEORI_HOME and SKILLS_DIR when they are not the defaults. Values are `printf %q`-escaped: the line is meant
+# to be pasted, so a quote or a `$` inside one must not become shell syntax. Run from a file, the remedy names that file;
+# through a pipe or a redirect there is no file to name, so it re-fetches the current script — a different revision than
+# the one that refused, which the message itself says.
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+  selfdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  self="bash $(printf '%q' "$selfdir/$(basename "${BASH_SOURCE[0]}")")"
+else
+  self="bash <(curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh)"
+fi
+[ "$src" = "$home/src" ] || self="SEORI_SRC=$(printf '%q' "$src") $self"
+[ "$home" = "$HOME/.seori" ] || self="SEORI_HOME=$(printf '%q' "$home") $self"
+[ "$skills" = "$HOME/.omp/agent/skills" ] || self="SKILLS_DIR=$(printf '%q' "$skills") $self"
 
 # Local work: edits to tracked files, or commits upstream does not have. Untracked files never count (a test log, or
 # anything else `bun test` leaves behind, does not block a fast-forward), so they are filtered out here.
@@ -87,11 +90,20 @@ elif local_work && update_waits; then
   fi
   echo "This is a checkout you develop in; see \"Working on seori itself\" in README.md." >&2
   echo "  install this checkout as it is:  SEORI_NO_PULL=1 $self" >&2
-  echo "  update it and keep the work:     git -C \"$src\" pull --rebase --autostash" >&2
+  # Autostash can stop on a conflict and still exit 0, leaving the tree conflicted, so the install only runs on success.
+  echo "  update it and keep the work:     git -C \"$src\" pull --rebase --autostash && $self" >&2
   echo "  update it and drop the work:     git -C \"$src\" reset --hard '@{u}' && $self" >&2
+  echo "If the autostash stops on a conflict, resolve it and commit before installing again." >&2
   exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
-  echo "Could not update $src; git's message above says why." >&2
+  # Local work lands here after a remedy changed the tree under it, so name that state, not only git's own message.
+  if local_work; then
+    echo "Could not update $src: it has local work (listed below), so nothing was merged." >&2
+    git -C "$src" status --short --branch --untracked-files=no >&2
+    echo "Install it as it is with SEORI_NO_PULL=1 $self, or commit or stash the work first." >&2
+  else
+    echo "Could not update $src; git's message above says why." >&2
+  fi
   exit 1
 fi
 
