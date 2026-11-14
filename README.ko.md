@@ -12,7 +12,7 @@ seori의 설계는 [dori-superagent](https://github.com/sisyphuslabs/dori-supera
 curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 ```
 
-그다음 hc 터미널을 열고, omp를 실행해 `서리 모드`(또는 `seori mode`)라고 말하면 됩니다. 나머지는 seori-mode 스킬이 차례로 안내합니다. 사람이 고르거나 직접 해야 하는 단계에서는 멈추고 묻습니다. 순서는 이렇습니다: 봇 이름 정하기, 설치, 메신저 고르기(텔레그램, 슬랙, 디스코드), 브라우저에서 함께 봇 만들기, `secrets.json`과 `seori msg check`, `seori msg pair`로 나를 주인으로 등록하기, 봇으로 첫인사 보내기, `seori up`, 그리고 온보딩. 온보딩에서는 내가 허락한 도구만 읽기 전용으로 살펴보고 에이전트 메모리에 기억해 둡니다. 설정이 끝난 뒤에 다시 `서리 모드`라고 하면 `seori boot`를 돌리고 그 결과를 알려 줍니다. 자세한 내용은 [서리 모드 스킬](#서리-모드-스킬)에 있습니다.
+그다음 hc 터미널을 열고, omp를 실행해 `서리 모드`(또는 `seori mode`)라고 말하면 됩니다. 나머지는 seori-mode 스킬이 차례로 안내합니다. 사람이 고르거나 직접 해야 하는 단계에서는 멈추고 묻습니다. 순서는 이렇습니다: 봇 이름 정하기, 설치, 메신저 고르기(텔레그램, 슬랙, 디스코드), 브라우저에서 함께 봇 만들기, `secrets.json`과 `seori msg check`, `seori msg pair`로 나를 주인으로 등록하기, 봇으로 첫인사 보내기, `seori up`, 그리고 온보딩. 온보딩에서는 내가 허락한 도구만 읽기 전용으로 살펴보고 에이전트 메모리와, 내가 직접 열어 고칠 수 있는 [주인 프로필](#주인-프로필) 파일에 기억해 둡니다. 설정이 끝난 뒤에 다시 `서리 모드`라고 하면 `seori boot`를 돌리고 그 결과를 알려 줍니다. 자세한 내용은 [서리 모드 스킬](#서리-모드-스킬)에 있습니다.
 
 ## seori가 하는 일
 
@@ -387,10 +387,21 @@ seori worklog list --open
 
 리드 규칙: 요청이 오면 바로 `add`, 진행하면서 `next`와 `note`, 끝나면 결과와 함께 `close --result`.
 
+## 주인 프로필
+
+`$SEORI_HOME/owner.md`(기본값 `~/.seori/owner.md`)는 리드가 아는 주인의 프로필입니다: 누구인지, 어떻게 부르고 어떻게 써 주기를 바라는지, 하는 일과 프로젝트, 쓰는 도구와 계정(이름과 위치만, 비밀값은 절대 넣지 않음), 주인이 정해 둔 선호와 규칙. Who, Addressing and writing, Work and projects, Tools and accounts, Preferences and rules 섹션 아래 사실을 짧게 적는 마크다운 파일입니다.
+
+- 온보딩이 요약을 이 파일에 씁니다. 그 뒤로는 리드가 최신으로 유지합니다: 주인에 대해 오래 갈 사실이나 선호를 알게 되면 메모리와 함께 이 파일도 고칩니다. 새 사실이 대신하는 줄은 바꿔 써서, 가장 최근 결정이 적혀 있게 합니다.
+- 주인의 문서입니다: 언제든 열어서 고치면 됩니다. 리드는 세션을 시작할 때마다 이 파일을 읽고([부팅 점검](#부팅-점검boot) 참고), 파일 내용이 메모리보다 우선합니다.
+- 비밀값과 다른 사람의 사적인 메시지는 절대 넣지 않고, 주인이 아닌 사람에게는 그 내용을 보여 주지 않습니다.
+
+seori 자체는 이 파일을 만들거나 다시 쓰지 않습니다. 쓰는 것은 리드와 온보딩뿐이고, `seori boot`는 읽기만 합니다.
+
 ## 부팅 점검(boot)
 
 `seori boot`는 리드가 재시작, `/new`, 압축 뒤에 기억대로 움직이기 전에 돌리는 읽기 전용 점검입니다. 아무것도 바꾸지 않습니다: 레인이나 역할을 쓰지 않고, 다시 띄우지 않고, 감시를 멈추지 않고, 메시지를 닫지 않고, 레인, 역할, 감시, 메시지 기록을 쓰지 않습니다(쓴 적 없는 홈에는 빈 상태 폴더만 생깁니다). 출력 줄은 이 순서입니다:
 
+- `OWNER`와 그 아래 [주인 프로필](#주인-프로필). 프로필의 각 줄은 두 칸 들여 써서 어느 줄도 부팅 점검 줄로 읽히지 않게 합니다. 앞의 8000자까지만 줄바꿈에서 끊어 보여 주고, 나머지는 파일을 보라는 `OWNER truncated` 줄을 붙입니다. 파일이 없으면 `OWNER none: no profile at <path> yet` 한 줄이고 실패가 아닙니다. 파일은 있는데 읽을 수 없으면 `OWNER unreadable`이고 점검이 incomplete가 됩니다. 프로필이 맨 앞인 이유는 그 아래 모든 것을 읽는 바탕이기 때문이고, 새 리드가 받는 시작 줄이 이미 `seori boot`를 돌리므로 따로 한 단계를 두지 않아도 새 리드마다 프로필을 읽게 됩니다.
 - `CONFIG`(ok, defaults, invalid)와 `MESSENGERS`
 - `LEAD`, `DUTY`: 창과 상태
 - `PANES`(요약), `VANISHED`(창이 사라진 열린 레인. 기록은 남기고 다시 띄우지 않음), `UNREGISTERED`(어느 역할이나 열린 레인의 것도 아닌 에이전트 창)
@@ -649,7 +660,7 @@ hc, omp, gh를 설치하지는 않고, hc의 설정을 고치지도 않습니다
 
 ## 상태 저장 위치
 
-모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON과 JSONL 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일과 자원 감시 상태(`duty/guard.json`), 멈춤 판단용 변경 기록(`duty/supervision.json`), 패널 상태 기록(`duty/panes.json`)이 있는 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록, 그 기록), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, 레인마다의 체크포인트 기록(`<key>.jsonl`)용 `checkpoints/`, 무거운 작업 자리 잠금(`<n>.lock`)용 `heavy/`, `lessons.jsonl`, `worklog.jsonl`과 거기서 만든 `worklog.md`, `config.json`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
+모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON과 JSONL 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일과 자원 감시 상태(`duty/guard.json`), 멈춤 판단용 변경 기록(`duty/supervision.json`), 패널 상태 기록(`duty/panes.json`)이 있는 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록, 그 기록), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, 레인마다의 체크포인트 기록(`<key>.jsonl`)용 `checkpoints/`, 무거운 작업 자리 잠금(`<n>.lock`)용 `heavy/`, `lessons.jsonl`, `worklog.jsonl`과 거기서 만든 `worklog.md`, `owner.md`([주인 프로필](#주인-프로필), 마크다운), `config.json`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
 
 ## 한 PC에서 여러 인스턴스 돌리기
 

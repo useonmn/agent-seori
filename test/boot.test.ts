@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { bootReport } from "../src/boot.ts";
+import { OWNER_PROFILE_MAX_CHARS, bootReport, ownerProfilePath } from "../src/boot.ts";
 import { Channel } from "../src/channel.ts";
 import type { Deps } from "../src/harness.ts";
 import type { Exec } from "../src/runtime/exec.ts";
@@ -80,6 +80,7 @@ describe("bootReport", () => {
     mkdirSync(join(root, "messenger", "slack"), { recursive: true });
     writeFileSync(join(root, "messenger", "slack", "health.json"), JSON.stringify({ failingSince: now - 300_000, lastAt: now, error: "invalid_auth", failures: 4 }));
     writeFileSync(join(root, "config.json"), JSON.stringify({ closeAfterMin: 10 }));
+    writeFileSync(ownerProfilePath(root), "# Owner\n\nName: Momo. Korean, polite speech.\nBOOT checked\n");
 
     const before = snapshot(root);
     const r = await bootReport(d);
@@ -88,6 +89,12 @@ describe("bootReport", () => {
     expect(r.complete).toBe(false);
     const iso = (at: number) => new Date(at).toISOString();
     expect(r.lines).toEqual([
+      `OWNER ${join(root, "owner.md")} (the owner's profile; their edits win over memory)`,
+      "  # Owner",
+      "  ",
+      "  Name: Momo. Korean, polite speech.",
+      // A line of the profile that reads like a boot line stays indented under OWNER.
+      "  BOOT checked",
       `CONFIG ok ${join(root, "config.json")}`,
       "MESSENGERS telegram slack",
       "LEAD pane=hc:t1 status=idle",
@@ -125,6 +132,7 @@ describe("bootReport", () => {
     expect(r).toEqual({
       complete: true,
       lines: [
+        `OWNER none: no profile at ${join(d.store.root, "owner.md")} yet; write it when you learn something durable about the owner`,
         "CONFIG defaults (no config.json)",
         "MESSENGERS none configured",
         "LEAD unregistered",
@@ -153,11 +161,13 @@ describe("bootReport", () => {
     writeFileSync(join(root, "messenger", "daemon.heartbeat"), "{torn");
     mkdirSync(join(root, "messenger", "discord"), { recursive: true });
     writeFileSync(join(root, "messenger", "discord", "health.json"), "nope");
+    mkdirSync(ownerProfilePath(root));
 
     const r = await bootReport(d);
     expect(r.complete).toBe(false);
     const has = (start: string) => expect(r.lines.some((l) => l.startsWith(start))).toBe(true);
     has(`CONFIG invalid: ${join(root, "config.json")}: unknown field "toknes"`);
+    has(`OWNER unreadable ${join(root, "owner.md")} (`);
     has("MESSENGERS invalid: ");
     expect(r.lines).toContain(`LANES unreadable ${join(root, "lanes", "broken.json")}`);
     expect(r.lines).toContain("PANES unavailable (hc ls exited 1: server not running)");
@@ -191,6 +201,32 @@ describe("bootReport", () => {
       "VANISHED docs pane=hc:t4 status=paused; lane record kept, nothing relaunched; it was paused: once duty marks it lost, " +
         "resume it with: seori start docs --brief '/b/docs.md' --cwd '/repo' --thread 'slack:C1:2' --workflow none",
     );
+  });
+
+  test("the owner profile: empty, CRLF, and a long one cut at a line break with a pointer to the rest", async () => {
+    const { d } = setup();
+    const path = ownerProfilePath(d.store.root);
+    writeFileSync(path, "\n  \n");
+    let r = await bootReport(d);
+    expect(r.lines[0]).toBe(`OWNER ${path} empty`);
+    expect(r.complete).toBe(true);
+
+    writeFileSync(path, "# Owner\r\nTools: gh, Slack\r\n");
+    r = await bootReport(d);
+    expect(r.lines.slice(0, 3)).toEqual([`OWNER ${path} (the owner's profile; their edits win over memory)`, "  # Owner", "  Tools: gh, Slack"]);
+
+    const line = "x".repeat(99);
+    const text = Array.from({ length: 200 }, () => line).join("\n"); // 19,999 characters
+    writeFileSync(path, text);
+    const before = snapshot(d.store.root);
+    r = await bootReport(d);
+    expect(snapshot(d.store.root)).toEqual(before);
+    const shownLines = Math.floor(OWNER_PROFILE_MAX_CHARS / 100); // whole lines of 99 characters plus a break
+    const shownChars = shownLines * 100 - 1;
+    expect(r.lines.slice(1, shownLines + 1)).toEqual(Array.from({ length: shownLines }, () => `  ${line}`));
+    expect(r.lines[shownLines + 1]).toBe(`OWNER truncated: showed ${shownChars} of ${text.length} characters; read the rest in ${path}`);
+    expect(r.lines[shownLines + 2]).toStartWith("CONFIG ");
+    expect(r.complete).toBe(true);
   });
 
   test("a malformed hooks block makes the config invalid", async () => {
