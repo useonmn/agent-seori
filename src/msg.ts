@@ -100,12 +100,12 @@ async function replyNow(channel: Channel, ids: readonly string[], o: { readonly 
 
 /** The refusals every reply gets: unknown ids, watch events, mixed chats, ALREADY_REPLIED, UNCERTAIN. */
 function checkReply(channel: Channel, ids: readonly string[], again: boolean): IdState & { readonly row: MessengerRow } {
-  const states = channel.states();
+  const states = channel.states({ withOthers: true }); // the lead answers other people too
   const picked = ids.map((id) => {
     const s = states.find((x) => x.row.id === id);
     if (!s) throw new Refusal(`unknown message id ${id}`);
     if (s.row.kind === "watch") throw new Refusal(`${id} is a watch event: watch events need no reply (msg close closes one)`);
-    if (fromOther(s.row)) throw new Refusal(`${id} came from someone other than the owner; seori answers only the owner`);
+    if (fromOther(s.row)) throw new Refusal(`${id} came from someone other than the owner and was stored by an earlier seori; it stays closed`);
     return { ...s, row: s.row };
   });
   const first = picked[0]!;
@@ -158,7 +158,7 @@ async function replyLocked(channel: Channel, ids: readonly string[], o: { readon
 // Never touches the ledger: an edit answers no id.
 
 function messengerRow(root: string, id: string): MessengerRow {
-  const row = new Channel(root).inbound().find((r) => r.id === id);
+  const row = new Channel(root).inbound({ withOthers: true }).find((r) => r.id === id);
   if (!row) throw new Refusal(`unknown message id ${id}`);
   if (row.kind !== "messenger") throw new Refusal(`${id} is a watch event, not a messenger message`);
   return row;
@@ -188,7 +188,7 @@ export async function msgEditReplyOf(root: string, id: string, text: string, d: 
 /** Closes an id without replying (handled elsewhere, not worth an answer). */
 export function msgClose(root: string, id: string, why: string, now: number): void {
   const channel = new Channel(root);
-  const s = channel.states().find((x) => x.row.id === id);
+  const s = channel.states({ withOthers: true }).find((x) => x.row.id === id);
   if (!s) throw new Refusal(`unknown message id ${id}`);
   if (s.replied) throw new Refusal(`${id} is already replied`);
   if (s.closed) throw new Refusal(`${id} is already closed`);
@@ -215,9 +215,9 @@ function age(ms: number): string {
 /** One line per id: id, state, age, kind, sender (a watch's name), the first 60 characters of the text JSON-escaped (one line, no control bytes). */
 export function msgList(root: string, o: { readonly all?: boolean }, now: number): string[] {
   const channel = new Channel(root);
-  const shown = o.all ? channel.states() : channel.open();
+  const shown = o.all ? channel.states({ withOthers: true }) : channel.open({ withOthers: true });
   return shown.map((s) => {
     const { row } = s;
-    return `${row.id}  ${stateOf(s)}  ${age(now - row.at)}  ${row.kind}  ${row.kind === "watch" ? row.name : row.from}  ${JSON.stringify(row.text.slice(0, 60))}`;
+    return `${row.id}  ${stateOf(s)}  ${age(now - row.at)}  ${row.kind}  ${row.kind === "watch" ? row.name : `${row.from}${row.notOwner ? " (not owner)" : ""}`}  ${JSON.stringify(row.text.slice(0, 60))}`;
   });
 }

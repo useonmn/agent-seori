@@ -16,7 +16,12 @@ export type MessengerRow = {
   readonly source: string;
   readonly chat: string;
   readonly thread?: string;
+  /** A reply in a thread outside DMs: the id of the thread's first message, and whether the owner wrote it (InboundMessage). */
+  readonly root?: string;
+  readonly rootByOwner?: true;
   readonly from: string;
+  /** Sent by someone other than the owner (the messenger's `others` opt-in); absent for the owner. */
+  readonly notOwner?: true;
   readonly at: number;
   readonly text: string;
 };
@@ -41,6 +46,27 @@ export const fromOther = (row: InboundRow): boolean => {
   const kind = (row as { readonly sender?: { readonly kind?: unknown } }).sender?.kind;
   return row.kind === "messenger" && kind !== undefined && kind !== "owner";
 };
+
+/** A message from someone other than the owner: the messenger's `others` opt-in (`notOwner`), or `fromOther`. */
+const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.notOwner === true || fromOther(row));
+
+/**
+ * The ids that are not the owner's alone, denied by default: everything except the owner's own messages that are a DM, a
+ * top-level message or a thread's first message (no `root`), or a reply in a thread whose first message the platform
+ * says the owner wrote (`rootByOwner`). A reply under someone else's message, or under one of unknown author, is shared:
+ * whoever else is in that thread would see what is posted there. Nothing is inferred from which rows happen to be stored.
+ */
+function othersOf(rows: readonly InboundRow[]): Set<string> {
+  const ownerAlone = (row: InboundRow): boolean => row.kind === "messenger" && !nonOwner(row) && (row.root === undefined || row.rootByOwner === true);
+  return new Set(rows.filter((row) => row.kind === "messenger" && !ownerAlone(row)).map((row) => row.id));
+}
+
+/**
+ * How a reader sees the lead channel. By default only what is the owner's alone exists (see othersOf; watch events
+ * too); `withOthers` also shows the rest, for the few readers that must see it: delivering it to the lead, replying to
+ * or listing it. Where only the owner's message or thread may go, refuse an id in `othersIds()`.
+ */
+export type ChannelView = { readonly withOthers?: boolean };
 
 /**
  * - delivered: the extension handed the id to omp (attempt counts from 1; mode is how).
@@ -174,8 +200,17 @@ export class Channel {
     return true;
   }
 
-  inbound(): InboundRow[] {
-    return readJsonl<InboundRow>(this.inboundPath);
+  /** Stored rows, oldest first: the owner's alone and watch events, plus everything else with `withOthers`. */
+  inbound(view: ChannelView = {}): InboundRow[] {
+    const rows = readJsonl<InboundRow>(this.inboundPath);
+    if (view.withOthers === true) return rows;
+    const others = othersOf(rows);
+    return rows.filter((row) => !others.has(row.id));
+  }
+
+  /** Ids that are not the owner's alone (see othersOf): where only the owner's message or thread may go, refuse them. */
+  othersIds(): Set<string> {
+    return othersOf(this.inbound({ withOthers: true }));
   }
 
   appendLedger(e: LedgerEvent): void {
@@ -187,7 +222,7 @@ export class Channel {
   }
 
   /** One pass over the ledger grouped by id: the lead extension and duty call this every tick, for all history. */
-  states(): IdState[] {
+  states(view: ChannelView = {}): IdState[] {
     type Acc = { deliveries: number; lastDeliveredAt?: number; entered: boolean; replied: boolean; closed: boolean; sendUncertain: boolean; inFlight: boolean; gaveUp: boolean; alerted: string[] };
     const byId = new Map<string, Acc>();
     for (const e of this.ledger()) {
@@ -228,7 +263,7 @@ export class Channel {
           break;
       }
     }
-    return this.inbound().map((row) => {
+    return this.inbound(view).map((row) => {
       const a = byId.get(row.id);
       if (!a) return { row, deliveries: 0, entered: false, replied: false, closed: fromOther(row), uncertain: false, gaveUp: false, alerted: [] };
       return {
@@ -246,8 +281,8 @@ export class Channel {
   }
 
   /** Ids still waiting for a reply or close. */
-  open(): IdState[] {
-    return this.states().filter((s) => !s.replied && !s.closed);
+  open(view: ChannelView = {}): IdState[] {
+    return this.states(view).filter((s) => !s.replied && !s.closed);
   }
 
   lockConsumer(now: number): (() => void) | undefined {

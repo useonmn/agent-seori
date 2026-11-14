@@ -41,6 +41,10 @@ class MockDiscord {
   afterReady: [string, unknown][] = [];
   history: Record<string, Msg[]> = {};
   historyCalls: string[] = [];
+  /** Server (guild text) channels; every other channel id answers GET /channels/{id} as a DM. */
+  guildChannels = new Set<string>();
+  /** GET /channels/{id} answers this HTTP status instead (403 no access, 404 gone). */
+  channelStatus: Record<string, number> = {};
   posts: { channel: string; body: Record<string, unknown> }[] = [];
   postPlan: PostMode[] = [];
   gatewayStatus = 200;
@@ -116,6 +120,12 @@ class MockDiscord {
     if (req.headers.get("authorization") !== "Bot T0K") return Response.json({ message: "401: Unauthorized", code: 0 }, { status: 401 });
     if (path === "/gateway/bot") return Response.json({ url: this.ws }, { status: this.gatewayStatus });
     if (path === "/users/@me") return Response.json({ id: "BOT", username: "seori" });
+    const ch = /^\/channels\/([^/]+)$/.exec(path);
+    if (ch && req.method === "GET") {
+      const status = this.channelStatus[ch[1]!];
+      if (status) return Response.json({ message: "nope", code: status === 404 ? 10003 : 50001 }, { status });
+      return Response.json({ id: ch[1], type: this.guildChannels.has(ch[1]!) ? 0 : 1 });
+    }
     const m = /^\/channels\/([^/]+)\/messages$/.exec(path);
     if (m && req.method === "GET") {
       const after = BigInt(url.searchParams.get("after") ?? "0");
@@ -283,6 +293,68 @@ describe("DiscordAdapter receive", () => {
       ["discord:C1:403", "look\n[attachment: a.png (image/png, 12 bytes) https://cdn/a.png]"],
     ]);
     expect(got[0]!.at).toBe(Date.parse("2026-11-07T00:00:05.000Z"));
+  });
+
+  test("in a server channel only a mention of the bot or a reply to it is delivered, edits included; DMs need neither", async () => {
+    const m = mock();
+    const g = (id: string, over: Partial<Msg> = {}) => msg(id, { guild_id: "G1", ...over });
+    const edited = "2026-11-07T00:00:05.000Z";
+    m.afterReady = [
+      ["MESSAGE_CREATE", g("501", { content: "chatter" })],
+      ["MESSAGE_CREATE", g("502", { content: "<@BOT> hi", mentions: [{ id: "BOT" }] })],
+      ["MESSAGE_CREATE", g("503", { type: 19, content: "on it?", referenced_message: { author: { id: "BOT" } } })],
+      ["MESSAGE_CREATE", g("504", { type: 19, content: "to myself", referenced_message: { author: { id: OWNER } } })],
+      ["MESSAGE_UPDATE", g("501", { content: "still chatter", edited_timestamp: edited })],
+      ["MESSAGE_UPDATE", g("502", { content: "<@BOT> hello", mentions: [{ id: "BOT" }], edited_timestamp: edited })],
+      ["MESSAGE_CREATE", msg("505", { content: "in a DM" })],
+    ];
+    const got = await collect(adapter(m, home()), 4);
+    expect(got.map((x) => [x.id, x.text])).toEqual([
+      ["discord:C1:502", "<@BOT> hi"],
+      ["discord:C1:503", "on it?"],
+      [`discord:C1:502:edit:${Date.parse(edited)}`, "(edited) <@BOT> hello"],
+      ["discord:C1:505", "in a DM"],
+    ]);
+  });
+
+  test("catch-up skips a channel it may not see (kept) or that is gone (forgotten); the others are still caught up", async () => {
+    const m = mock();
+    const root = home();
+    CursorFile.for<DiscordCursor>(root, "discord").save({ channels: { C3: "1000", C4: "1000", C1: "1000" } });
+    m.channelStatus = { C3: 403, C4: 404 };
+    m.history["C1"] = [msg("1001")];
+    const got = await collect(adapter(m, root), 1);
+    expect(got.map((x) => x.id)).toEqual(["discord:C1:1001"]);
+    expect(cursorOf(root)!.channels).toEqual({ C3: "1000", C1: "1001" });
+  });
+
+  test("catch-up of a server channel delivers only what mentions the bot; a resumed session asks /users/@me who the bot is", async () => {
+    const m = mock();
+    const root = home();
+    CursorFile.for<DiscordCursor>(root, "discord").save({ channels: { C2: "1000" } });
+    m.guildChannels.add("C2");
+    m.history["C2"] = [msg("1001", { channel_id: "C2", content: "chatter" }), msg("1002", { channel_id: "C2", content: "<@BOT> look", mentions: [{ id: "BOT" }] })];
+    const got = await collect(adapter(m, root), 1);
+    expect(got.map((x) => x.id)).toEqual(["discord:C2:1002"]);
+
+    // Restarted: the session resumes (no READY, so no bot id from it) and a live server mention still arrives.
+    await until(() => m.closeCodes.length > 0);
+    m.emit("MESSAGE_CREATE", msg("1003", { channel_id: "C2", guild_id: "G1", content: "<@BOT> again", mentions: [{ id: "BOT" }] }));
+    const again = await collect(adapter(m, root), 1);
+    expect(again.map((x) => x.id)).toEqual(["discord:C2:1003"]);
+    expect(m.resumes.length).toBe(1);
+  });
+
+  test("only the owner is delivered: another person's mention or DM, and a bot's mention, are dropped", async () => {
+    const m = mock();
+    m.afterReady = [
+      ["MESSAGE_CREATE", msg("601", { guild_id: "G1", author: { id: "7" }, content: "<@BOT> q", mentions: [{ id: "BOT" }] })],
+      ["MESSAGE_CREATE", msg("602", { author: { id: "7" }, content: "dm" })],
+      ["MESSAGE_CREATE", msg("603", { guild_id: "G1", author: { id: "9", bot: true }, content: "<@BOT> beep", mentions: [{ id: "BOT" }] })],
+      ["MESSAGE_CREATE", msg("604", { content: "owner" })],
+    ];
+    const got = await collect(adapter(m, home()), 1);
+    expect(got.map((x) => [x.id, x.from])).toEqual([["discord:C1:604", OWNER]]);
   });
 
   test("op 9 (session invalid) re-identifies, waiting at least 5s since the last identify", async () => {

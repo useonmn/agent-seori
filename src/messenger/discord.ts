@@ -1,10 +1,10 @@
 import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, secret, splitText } from "./common.ts";
 
-// Discord: inbound over the gateway websocket (owner DMs and guild channels the owner writes in), catch-up and sends over
-// REST. The gateway session (id, resume url, last committed sequence) is persisted so a restart RESUMEs and Discord
-// replays what was missed instead of the bot burning one of its 1000 daily identifies; a lost session falls back to a
-// fresh identify plus a REST catch-up of every channel the owner has written in, from the last committed message id.
+// Discord: inbound over the gateway websocket (DMs to the bot, and server channel messages that mention the bot or reply
+// to it), catch-up and sends over REST. The gateway session (id, resume url, last committed sequence) is persisted so a
+// restart RESUMEs and Discord replays what was missed instead of the bot burning one of its 1000 daily identifies; a lost
+// session falls back to a fresh identify plus a REST catch-up of every tracked channel, from the last committed message id.
 
 const DEFAULT_API = "https://discord.com/api/v10";
 /** DIRECT_MESSAGES | GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT. */
@@ -34,13 +34,16 @@ type Attachment = { filename?: string; content_type?: string; size?: number; url
 type Message = {
   id: string;
   channel_id: string;
-  /** Set on gateway messages from a server channel; absent in direct messages. */
+  /** Set on gateway messages from a server channel; absent in direct messages and in every REST answer. */
   guild_id?: string;
   type?: number;
   content?: string;
   timestamp?: string;
   edited_timestamp?: string | null;
   author?: { id?: string; bot?: boolean };
+  mentions?: { id?: string }[];
+  /** The message this one replies to (type 19). */
+  referenced_message?: { author?: { id?: string } } | null;
   attachments?: Attachment[];
 };
 type Payload = { op: number; d?: unknown; s?: number | null; t?: string | null };
@@ -95,6 +98,10 @@ export class DiscordAdapter implements MessengerAdapter {
   /** Catch-up runs after the first READY/RESUMED of a process and after every READY, until one pass completes. */
   private catchupPending = true;
   private readonly pairing: boolean;
+  /** The bot's own user id (READY, or /users/@me after a resume): what a mention or a reply must point at. */
+  private botId: string | undefined;
+  /** Per channel id, whether it is a direct message channel; REST messages carry no guild_id to tell. */
+  private readonly dms = new Map<string, boolean>();
 
   constructor(
     config: MessengerConfig,
@@ -370,7 +377,8 @@ export class DiscordAdapter implements MessengerAdapter {
   private async dispatch(p: Payload, onMessage: (m: InboundMessage) => Promise<void>, signal: AbortSignal): Promise<void> {
     switch (p.t) {
       case "READY": {
-        const d = p.d as { session_id?: string; resume_gateway_url?: string };
+        const d = p.d as { session_id?: string; resume_gateway_url?: string; user?: { id?: unknown } };
+        if (typeof d?.user?.id === "string" && d.user.id) this.botId = d.user.id;
         if (typeof d?.session_id === "string" && typeof d.resume_gateway_url === "string") {
           this.state.session = { sessionId: d.session_id, resumeUrl: d.resume_gateway_url, seq: typeof p.s === "number" ? p.s : null };
           this.save();
@@ -380,10 +388,13 @@ export class DiscordAdapter implements MessengerAdapter {
       }
       case "RESUMED":
         return this.catchup(onMessage, signal);
-      case "MESSAGE_CREATE":
-        return this.created(p.d as Message, onMessage);
+      case "MESSAGE_CREATE": {
+        const m = p.d as Message;
+        if (typeof m?.channel_id === "string") this.dms.set(m.channel_id, m.guild_id === undefined);
+        return this.created(m, onMessage, m?.guild_id === undefined, signal);
+      }
       case "MESSAGE_UPDATE":
-        return this.edited(p.d as Message, onMessage);
+        return this.edited(p.d as Message, onMessage, signal);
     }
   }
 
@@ -401,43 +412,101 @@ export class DiscordAdapter implements MessengerAdapter {
     if (this.delivered.size > 10_000) this.delivered.delete(this.delivered.values().next().value as string);
   }
 
-  /** A new message, from the gateway or catch-up. Owner messages are delivered; the channel cursor moves past every message. */
-  private async created(m: Message, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
+  /** The sender of `m` when it may reach the lead: the owner, never a bot ("others" is refused for Discord). */
+  private sender(m: Message): string | undefined {
+    const id = m.author?.id;
+    return typeof id === "string" && id === this.owner && m.author?.bot !== true ? id : undefined;
+  }
+
+  /**
+   * Whether `m` is meant for the bot. A DM always is; in a server channel (threads included) only a mention of the bot or
+   * a reply to one of its messages: seori answers with a reply, so answering that reply continues the conversation.
+   */
+  private async addressed(m: Message, dm: boolean, signal: AbortSignal): Promise<boolean> {
+    if (dm) return true;
+    const bot = await this.bot(signal);
+    return m.mentions?.some((u) => u.id === bot) === true || m.referenced_message?.author?.id === bot;
+  }
+
+  private async bot(signal: AbortSignal): Promise<string> {
+    if (this.botId !== undefined) return this.botId;
+    let body: unknown;
+    try {
+      body = (await httpJson(`${this.api}/users/@me`, { headers: this.headers(this.token()), signal }, { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs })).body;
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 401) throw this.tokenRejected("401 on GET /users/@me");
+      throw e;
+    }
+    const id = (body as { id?: unknown } | undefined)?.id;
+    if (typeof id !== "string" || !id) throw new Error(`${this.source}: GET /users/@me returned no id`);
+    return (this.botId = id);
+  }
+
+  /**
+   * A new message, from the gateway or catch-up (`dm`: it is in a direct message channel). A message from an accepted
+   * sender that is addressed to the bot is delivered; the channel cursor moves past every message.
+   */
+  private async created(m: Message, onMessage: (m: InboundMessage) => Promise<void>, dm: boolean, signal: AbortSignal): Promise<void> {
     if (typeof m?.id !== "string" || typeof m.channel_id !== "string") return;
     const chat = m.channel_id;
     const committed = this.state.channels[chat];
     if (committed !== undefined && snowflakeCmp(m.id, committed) <= 0) return;
     const id = messageId(this.source, chat, m.id);
     if (this.delivered.has(id)) return;
-    const owner = this.pairing
-      ? m.guild_id === undefined && typeof m.author?.id === "string" && m.author.id !== "" && m.author.bot !== true
-      : m.author?.id === this.owner && m.author.bot !== true;
-    if (owner && (m.type === undefined || m.type === 0 || m.type === 19)) {
+    const from = this.pairing ? (dm && typeof m.author?.id === "string" && m.author.id !== "" && m.author.bot !== true ? m.author.id : undefined) : this.sender(m);
+    let delivered = false;
+    if (from !== undefined && (m.type === undefined || m.type === 0 || m.type === 19)) {
       const text = this.body(m);
-      if (text) {
+      if (text && (await this.addressed(m, dm, signal))) {
         const at = Date.parse(m.timestamp ?? "");
-        const from = this.pairing ? (m.author?.id as string) : this.owner;
         await onMessage({ id, source: this.source, chat, from, at: Number.isFinite(at) ? at : this.now(), text });
         this.remember(id);
+        delivered = true;
       }
     }
-    // Only channels the owner writes in are tracked (and caught up); others' chatter in unrelated channels is not.
-    if (owner || committed !== undefined) {
+    // Only channels the owner writes in, or where a message reached the lead, are tracked (and caught up).
+    if (delivered || (m.author?.id === this.owner && m.author.bot !== true) || committed !== undefined) {
       this.state.channels[chat] = m.id;
       this.save();
     }
   }
 
-  private async edited(m: Message, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
-    if (this.pairing || typeof m?.id !== "string" || typeof m.channel_id !== "string" || !m.edited_timestamp || m.author?.id !== this.owner || m.author.bot === true) return;
+  private async edited(m: Message, onMessage: (m: InboundMessage) => Promise<void>, signal: AbortSignal): Promise<void> {
+    if (this.pairing || typeof m?.id !== "string" || typeof m.channel_id !== "string" || !m.edited_timestamp) return;
+    const from = this.sender(m);
+    if (from === undefined) return;
     const editedAt = Date.parse(m.edited_timestamp);
     const stamp = Number.isFinite(editedAt) ? String(editedAt) : m.edited_timestamp;
     const id = editId(this.source, m.channel_id, m.id, stamp);
     if (this.delivered.has(id)) return;
     const text = this.body(m);
-    if (!text) return;
-    await onMessage({ id, source: this.source, chat: m.channel_id, from: this.owner, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
+    if (!text || !(await this.addressed(m, m.guild_id === undefined, signal))) return;
+    await onMessage({ id, source: this.source, chat: m.channel_id, from, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
     this.remember(id);
+  }
+
+  /**
+   * Whether `chat` is a direct message channel; undefined when the bot may not see it (403: kept, so catch-up resumes
+   * once access is back) or it is gone (404: forgotten, like a channel Slack reports gone).
+   */
+  private async isDm(chat: string, token: string, signal: AbortSignal): Promise<boolean | undefined> {
+    const known = this.dms.get(chat);
+    if (known !== undefined) return known;
+    try {
+      const res = await httpJson(`${this.api}/channels/${seg(chat)}`, { headers: this.headers(token), signal }, { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs });
+      const dm = (res.body as { type?: unknown } | undefined)?.type === 1;
+      this.dms.set(chat, dm);
+      return dm;
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 401) throw this.tokenRejected("401 on GET /channels/{id}");
+      if (e instanceof HttpError && e.status === 404) {
+        delete this.state.channels[chat];
+        this.save();
+        return undefined;
+      }
+      if (e instanceof HttpError && e.status === 403) return undefined;
+      throw e;
+    }
   }
 
   /** Every tracked channel from its committed message id, oldest first, a page of 100 at a time. */
@@ -445,6 +514,8 @@ export class DiscordAdapter implements MessengerAdapter {
     if (!this.catchupPending || this.pairing) return;
     const token = this.token();
     for (const chat of Object.keys(this.state.channels)) {
+      const dm = await this.isDm(chat, token, signal);
+      if (dm === undefined) continue; // channel gone or no access: nothing to catch up
       for (;;) {
         const after = this.state.channels[chat];
         if (after === undefined) break;
@@ -462,7 +533,7 @@ export class DiscordAdapter implements MessengerAdapter {
           throw e;
         }
         page.sort((a, b) => snowflakeCmp(a.id, b.id));
-        for (const m of page) await this.created(m, onMessage);
+        for (const m of page) await this.created(m, onMessage, dm, signal);
         if (page.length < PAGE) break;
         const last = page[page.length - 1]!.id;
         if (snowflakeCmp(this.state.channels[chat] ?? after, last) < 0) this.state.channels[chat] = last;

@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
-import { ALERT_TEXT, dutyTick } from "../src/harness.ts";
+import { ALERT_TEXT, dutyTick, startLane } from "../src/harness.ts";
+import { worklogAdd } from "../src/worklog.ts";
 import { SendUncertain } from "../src/messenger/adapter.ts";
 import { World, paneRef } from "./fake.ts";
 
@@ -108,6 +109,50 @@ describe("duty channel alerts", () => {
     w.consumerLock(root, "none");
     expect(await dutyTick(d)).toEqual([]);
     expect(w.notified).toHaveLength(1);
+  });
+
+  test("lead status is never sent into the thread of someone other than the owner", async () => {
+    const { w, d, root, channel, advance } = setup();
+    channel.appendInbound({ id: "fake:c1:m2", kind: "messenger", source: "fake", chat: "c1", thread: "t2", from: "u2", notOwner: true, at: w.clock, text: "hey" });
+    w.consumerLock(root, "dead");
+    advance(3 * MIN);
+    expect(await dutyTick(d)).toEqual([{ action: "alerted", detail: "fake:c1:m1 lead-offline" }]);
+    expect(w.notified.map((n) => n.target.replyTo)).toEqual(["m1"]);
+  });
+
+  test("the reviewer's repro: Z's unstored first message, Y's mention, the owner's reply there; the reply is not the owner's alone", async () => {
+    const { w, d, root, channel, advance } = setup();
+    // Z posted fake:c1:z without a mention (never stored); Y mentioned seori in Z's thread; the owner answered there.
+    channel.appendInbound({ id: "fake:c1:y", kind: "messenger", source: "fake", chat: "c1", thread: "z", root: "fake:c1:z", from: "u2", notOwner: true, at: w.clock, text: "@seori help" });
+    channel.appendInbound({ id: "fake:c1:o", kind: "messenger", source: "fake", chat: "c1", thread: "z", root: "fake:c1:z", from: "u1", at: w.clock, text: "@seori go ahead" });
+    expect(channel.open().map((s) => s.row.id)).toEqual(["fake:c1:m1"]);
+    expect(() => worklogAdd(root, "go ahead", "fake:c1:o", w.clock)).toThrow("fake:c1:o is not a stored message of the owner's alone");
+    const brief = join(root, "brief.md");
+    writeFileSync(brief, "Do it.");
+    await expect(startLane(d, "go-ahead", brief, { thread: "fake:c1:o" })).rejects.toThrow("--thread fake:c1:o is not a stored message of the owner's alone");
+    w.consumerLock(root, "dead");
+    advance(3 * MIN);
+    expect(await dutyTick(d)).toEqual([{ action: "alerted", detail: "fake:c1:m1 lead-offline" }]);
+    expect(w.notified.map((n) => n.target.replyTo)).toEqual(["m1"]);
+  });
+
+  test("others off: the owner's mention under their own plain (never stored) channel message is the owner's alone", async () => {
+    const { w, d, root, channel, advance } = setup();
+    // The owner posted fake:c1:p without a mention (never stored), then mentioned seori in its thread; the platform
+    // says the owner wrote the thread's first message (Slack's parent_user_id).
+    channel.appendInbound({ id: "fake:c1:q", kind: "messenger", source: "fake", chat: "c1", thread: "p", root: "fake:c1:p", rootByOwner: true, from: "u1", at: w.clock, text: "@seori do X" });
+    expect(channel.open().map((s) => s.row.id)).toEqual(["fake:c1:m1", "fake:c1:q"]);
+    expect(worklogAdd(root, "do X", "fake:c1:q", w.clock).source).toBe("fake:c1:q");
+    const brief = join(root, "brief.md");
+    writeFileSync(brief, "Do X.");
+    expect((await startLane(d, "do-x", brief, { thread: "fake:c1:q" })).thread).toBe("fake:c1:q");
+    w.consumerLock(root, "dead");
+    advance(3 * MIN);
+    const alerts = (await dutyTick(d)).filter((e) => e.action === "alerted");
+    expect(alerts).toEqual([
+      { action: "alerted", detail: "fake:c1:m1 lead-offline" },
+      { action: "alerted", detail: "fake:c1:q lead-offline" },
+    ]);
   });
 
   test("lead offline is not raised while a live consumer holds the lock, or for a replied id", async () => {

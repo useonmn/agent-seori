@@ -177,12 +177,13 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
   }
 
   try {
-    // Channel's constructor creates lead/; with no lead/ there is no message to list.
-    const states = existsSync(join(root, "lead")) ? new Channel(root).open() : [];
+    // Channel's constructor creates lead/; with no lead/ there is no message to list. Other people's open messages are
+    // listed too (marked), so the lead still sees them after a restart.
+    const states = existsSync(join(root, "lead")) ? new Channel(root).open({ withOthers: true }) : [];
     lines.push(`CHANNEL open=${states.length}`);
     for (const s of states) {
       const flags = [s.uncertain ? "uncertain" : "", s.gaveUp ? "gave-up" : "", s.entered ? "entered" : ""].filter(Boolean);
-      const who = s.row.kind === "watch" ? `watch=${s.row.name}` : `from=${s.row.from}`;
+      const who = s.row.kind === "watch" ? `watch=${s.row.name}` : `from=${s.row.from}${s.row.notOwner ? " (not owner)" : ""}`;
       lines.push(`MSG ${s.row.id} ${s.row.kind} ${who} age=${ageText(now - s.row.at)} deliveries=${s.deliveries}${flags.length ? ` ${flags.join(",")}` : ""} ${preview(s.row.text)}`);
     }
   } catch (e) {

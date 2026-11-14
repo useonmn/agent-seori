@@ -17,9 +17,63 @@ describe("rows stored by an earlier seori from someone other than the owner", ()
     c.appendInbound(stored("fake:c1:2", "owner"));
     for (const [n, kind] of [["3", "person"], ["4", "agent"], ["5", "trusted"]] as const) c.appendInbound(stored(`fake:c1:${n}`, kind));
     c.appendLedger({ id: "fake:c1:3", ev: "delivered", at: T0, attempt: 1, mode: "followUp" });
-    expect(c.open().map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2"]);
-    expect(c.states().filter((s) => s.closed).map((s) => s.row.id)).toEqual(["fake:c1:3", "fake:c1:4", "fake:c1:5"]);
+    expect(c.open({ withOthers: true }).map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2"]);
+    expect(c.states({ withOthers: true }).filter((s) => s.closed).map((s) => s.row.id)).toEqual(["fake:c1:3", "fake:c1:4", "fake:c1:5"]);
+    expect(c.states().map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2"]); // owner-only by default: never seen at all
     expect(msgList(c.root, { all: true }, T0).map((l) => l.split("  ")[1])).toEqual(["open", "open", "closed-other", "closed-other", "closed-other"]);
+  });
+});
+
+describe("owner-only by default", () => {
+  test("inbound, states and open hide what is not the owner's alone unless asked withOthers; othersIds names it", () => {
+    const c = fresh();
+    c.appendInbound(row("fake:c1:1"));
+    c.appendInbound({ id: "fake:c1:2", kind: "messenger", source: "fake", chat: "c1", thread: "2", from: "u2", notOwner: true, at: T0, text: "question" });
+    // The owner's own reply inside that person's thread is theirs to see, not the owner's alone.
+    c.appendInbound({ id: "fake:c1:3", kind: "messenger", source: "fake", chat: "c1", thread: "2", root: "fake:c1:2", from: "u1", at: T0, text: "@bot answer them" });
+    c.appendInbound({ id: "watch:w1:1", kind: "watch", watchId: "w1", name: "ci", at: T0, text: "done" });
+    expect(c.inbound().map((r) => r.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
+    expect(c.states().map((s) => s.row.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
+    expect(c.open().map((s) => s.row.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
+    expect(c.inbound({ withOthers: true }).map((r) => r.id)).toEqual(["fake:c1:1", "fake:c1:2", "fake:c1:3", "watch:w1:1"]);
+    expect(c.open({ withOthers: true }).map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2", "fake:c1:3", "watch:w1:1"]);
+    expect([...c.othersIds()].sort()).toEqual(["fake:c1:2", "fake:c1:3"]);
+  });
+
+  test("deny by default: the owner's reply is the owner's alone only when the platform says the owner wrote the thread's first message", () => {
+    const c = fresh();
+    const m = (id: string, o: { root?: string; other?: boolean; rootByOwner?: boolean } = {}): InboundRow => ({
+      id: `fake:c1:${id}`,
+      kind: "messenger",
+      source: "fake",
+      chat: "c1",
+      thread: o.root?.split(":")[2] ?? id,
+      ...(o.root ? { root: o.root } : {}),
+      ...(o.rootByOwner ? { rootByOwner: true as const } : {}),
+      from: o.other ? "u2" : "u1",
+      ...(o.other ? { notOwner: true as const } : {}),
+      at: T0,
+      text: id,
+    });
+    // The reviewer's repro: Z's first message (no mention) was never stored; Y asked seori there; the owner replied.
+    c.appendInbound(m("51", { root: "fake:c1:50", other: true }));
+    c.appendInbound(m("52", { root: "fake:c1:50" }));
+    // The owner started thread 60; Y joined; the owner's reply there (parent_user_id = owner) stays the owner's.
+    c.appendInbound(m("60"));
+    c.appendInbound(m("61", { root: "fake:c1:60", rootByOwner: true, other: true }));
+    c.appendInbound(m("62", { root: "fake:c1:60", rootByOwner: true }));
+    // Even under the owner's stored message, a reply without the author is not guessed from what is stored: shared.
+    c.appendInbound(m("63", { root: "fake:c1:60" }));
+    // A reply under a first message never stored and of unknown author: shared.
+    c.appendInbound(m("71", { root: "fake:c1:70" }));
+    // A reply under Y's own top-level message.
+    c.appendInbound(m("81", { other: true }));
+    c.appendInbound(m("82", { root: "fake:c1:81" }));
+    // others off: the owner's plain message (no mention, never stored) and their "@seori do X" under it; Slack says
+    // the owner wrote the first message, so the reply is the owner's alone.
+    c.appendInbound(m("91", { root: "fake:c1:90", rootByOwner: true }));
+    expect([...c.othersIds()].sort()).toEqual(["fake:c1:51", "fake:c1:52", "fake:c1:61", "fake:c1:63", "fake:c1:71", "fake:c1:81", "fake:c1:82"]);
+    expect(c.inbound().map((r) => r.id)).toEqual(["fake:c1:60", "fake:c1:62", "fake:c1:91"]);
   });
 });
 

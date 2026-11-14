@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Channel } from "../src/channel.ts";
 import { autoCloseTick, objectDone } from "../src/done-flow.ts";
 import { done, ready, Refusal, startLane } from "../src/harness.ts";
 import { addLesson } from "../src/lessons.ts";
@@ -41,6 +42,7 @@ describe("start with a Done line", () => {
   test("stores the Done line, thread and ceilings, and the footer states the line and the close rule", async () => {
     const { d, brief, cwd } = setup();
     const ceilings = { wallMinutes: 90, tokens: null, costUsd: 5 };
+    new Channel(d.store.root).appendInbound({ id: "telegram:42:5", kind: "messenger", source: "telegram", chat: "42", from: "42", at: 1, text: "fix login" });
     const lane = await startLane(d, "fix-login", brief, { cwd, done: "Done = merged o/r#1", thread: "telegram:42:5", ceilings });
     expect(lane.done).toBe("merged o/r#1");
     expect(lane.thread).toBe("telegram:42:5");

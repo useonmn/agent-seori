@@ -425,7 +425,9 @@ seori worklog list --open
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
 ```
 
-`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 seori가 일해 주는 주인의 보낸 사람 id입니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 다른 사람이나 봇이 보낸 메시지는 버립니다. 안전 규칙은 이것뿐이고 dori와 같습니다. 주인만 리드에게 말할 수 있고, 주인의 메시지에는 따로 제한을 두지 않습니다. 예전 seori가 저장해 둔 다른 사람이나 에이전트의 메시지(예전에 신뢰하던 사람의 열린 요청 포함)는 업그레이드하면 닫힙니다. 리드에게 전하지 않고, `seori msg list --all`에는 `closed-other`로 보입니다. 기다리던 사람이 있으면 직접 알려 주세요. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
+`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 seori가 일해 주는 주인의 보낸 사람 id입니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 봇이 보낸 메시지(봇 자신의 것 포함)는 언제나 버리고, 다른 사람이 보낸 메시지도 그 메신저에 `"others": true`가 없으면 버립니다. DM이 아닌 곳에서는 봇을 부른 메시지만 리드에게 갑니다. 슬랙에서는 봇을 멘션한 메시지, 또는 봇이 들어가 있는 스레드(봇이 글을 쓴 스레드, 또는 seori가 답하는 사람이 봇을 멘션한 스레드)의 답글이고, 이때는 다시 멘션하지 않아도 됩니다. 디스코드에서는 봇을 멘션한 메시지, 또는 봇의 메시지에 단 답장입니다. 채널의 일반 대화는 실시간이든 재시작 뒤 따라잡기든 전하지 않습니다. 봇에게 보낸 DM은 언제나 전합니다. 예전 seori가 저장해 둔 다른 사람이나 에이전트의 메시지(예전에 신뢰하던 사람의 열린 요청 포함)는 업그레이드하면 닫힙니다. 리드에게 전하지 않고, `seori msg list --all`에는 `closed-other`로 보입니다. 기다리던 사람이 있으면 직접 알려 주세요. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
+
+`"others": true`(지금은 슬랙만 됩니다. 텔레그램은 누구나 봇에게 말을 걸 수 있어서, 디스코드는 공개 봇이면 누구나 같은 서버에 들어올 수 있어서 서버 허용 목록이 생기기 전까지 거절합니다)를 켜면 다른 사람도 같은 규칙으로 seori와 이야기할 수 있습니다. 예를 들어 함께 쓰는 슬랙 채널의 동료들입니다: `{ "messengers": [ { "source": "slack", "owner": "U012OWNER", "others": true } ] }`. "다른 사람"은 봇과 같은 워크스페이스의 정식 멤버입니다. 게스트(단일·다중 채널)는 빼는데, `users.info`로 확인하므로 봇 권한 `users:read`가 필요합니다(없으면 주인에게만 답하고, 데몬이 한 번 알려 줍니다). 공유 채널(Slack Connect)에 들어온 다른 조직의 사용자와, 워크스페이스 정보가 없는 메시지는 전하지 않습니다. 그 사람들의 메시지는 그 사람의 id로, `(not owner)` 표시를 달고 리드에게 갑니다. 리드는 그 스레드에서 대화하고 질문에 답하지만, 그 내용을 주인의 지시로 받아들이지 않습니다. 그 사람들의 작업 요청(레인, 코드, 머지, 파일, 설정, 다른 곳으로 보내는 메시지)은 먼저 주인 DM으로 보내 승인을 받고, 내부 정보(주인에 대한 기억, 다른 스레드, 경로, 비밀 값, 작업 기록)는 알려 주지 않습니다. seori의 상태 알림, 레인의 `--thread`, 작업 기록의 출처에는 저장된 주인만의 메시지만 씁니다. DM, 주인의 최상위 메시지, 그리고 슬랙이 첫 메시지를 주인이 썼다고 알려 주는 스레드 안의 주인 답글이 그렇고, 그 밖의 스레드 답글(다른 사람의 메시지 아래나, 누가 썼는지 모르는 첫 메시지 아래)은 함께 보는 것으로 치며, seori가 저장하지 않은 id는 거절합니다. 빼거나 `false`면 주인에게만 답합니다.
 
 토큰은 `$SEORI_HOME/secrets.json`에 씁니다. 이 파일은 `chmod 600`이어야 합니다(다른 사람이 읽을 수 있으면 seori가 거절합니다). 환경 변수가 있으면 그쪽이 먼저입니다. hc에서는 리드, 듀티, 레인, 시간 단위 루프 터미널에서 이 변수들을 지우므로 데몬과 듀티 루프에만 닿습니다. 리드의 `seori msg`가 보낼 수 있도록 토큰은 `secrets.json`에 두세요:
 
@@ -436,7 +438,7 @@ seori worklog list --open
 | source | 만들 것 | `owner` | 환경 변수 |
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
+| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`, `others`를 쓰려면 `users:read`), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
 | `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
@@ -481,7 +483,7 @@ seori msg pair telegram --write
 
 메시지가 가는 길:
 
-1. 데몬(Linux에서는 systemd 유닛, macOS에서는 `seori up`이 연 hc 터미널)이 메시지를 받습니다. 주인이 보낸 것이면 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. `seori daemon-loop`가 다시 켜 주므로, 데몬이 죽어도 1초쯤 뒤에 다시 뜹니다(Linux에서는 systemd가 루프 자체도 다시 켜 줍니다). `messengers.json`이 바뀌면(새로 만들기, 고치기, 지우기) 데몬이 스스로 끝나고 루프가 새 설정으로 다시 켭니다. 그래서 `seori up` 뒤에 메신저를 설정해도 됩니다. `messengers.json`을 읽을 수 없으면 그 창에 오류를 남기고, 파일이 바뀔 때까지 메신저 없이 돕니다(heartbeat와 감시는 계속 돕니다). 그 창에서 Ctrl-C를 누르거나(종료 코드 130) 데몬 프로세스를 `kill`하면(143) 데몬과 루프가 함께 멈춥니다. SIGHUP(129, 창을 닫을 때도 이 신호가 갑니다)을 받으면 데몬은 감시 명령까지 깔끔하게 멈추고, 루프가 아직 돌고 있으면 루프가 다시 켭니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
+1. 데몬(Linux에서는 systemd 유닛, macOS에서는 `seori up`이 연 hc 터미널)이 메시지를 받습니다. 주인이 보낸 것이면(`others`가 켜져 있으면 다른 사람이 보낸 것도) 먼저 `$SEORI_HOME/lead/`에 저장하고(디스크에 확실히 기록), 그다음에야 메신저에 받았다고 알립니다. 같은 메시지가 두 번 와도 한 번만 저장합니다. 데몬은 몇 초마다 살아 있다는 표시(heartbeat)를 남깁니다. `seori daemon-loop`가 다시 켜 주므로, 데몬이 죽어도 1초쯤 뒤에 다시 뜹니다(Linux에서는 systemd가 루프 자체도 다시 켜 줍니다). `messengers.json`이 바뀌면(새로 만들기, 고치기, 지우기) 데몬이 스스로 끝나고 루프가 새 설정으로 다시 켭니다. 그래서 `seori up` 뒤에 메신저를 설정해도 됩니다. `messengers.json`을 읽을 수 없으면 그 창에 오류를 남기고, 파일이 바뀔 때까지 메신저 없이 돕니다(heartbeat와 감시는 계속 돕니다). 그 창에서 Ctrl-C를 누르거나(종료 코드 130) 데몬 프로세스를 `kill`하면(143) 데몬과 루프가 함께 멈춥니다. SIGHUP(129, 창을 닫을 때도 이 신호가 갑니다)을 받으면 데몬은 감시 명령까지 깔끔하게 멈추고, 루프가 아직 돌고 있으면 루프가 다시 켭니다. `$SEORI_HOME` 하나에 데몬은 하나만 돕니다(`messenger/daemon.lock`).
 2. 리드의 omp는 `extensions/lead-channel.ts`를 불러옵니다. 리드만 불러오고, 듀티, 레인, 리뷰어는 불러오지 않습니다. 이 확장이 저장된 메시지를 id와 함께 리드의 대화에 넣고, 넣을 때마다 기록(ledger)을 남깁니다. 에이전트를 다시 켜거나 `/new`, `/resume`, `/fork`를 해도 답하지 않은 메시지는 남아 있습니다.
 3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 답은 리드가 쓴 즉시 바로 나갑니다. 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 `--again` 없이는 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
 4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다. 메신저가 받아 준 답이나 닫기만 id를 답한 것으로 치므로, 그 id는 다시 전하지 않습니다.

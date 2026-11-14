@@ -18,6 +18,8 @@ function setup(config?: unknown) {
   const w = new World();
   const d = w.deps();
   w.messengers(d.store.root, [FAKE]);
+  // The lanes' thread: a stored message of the owner's alone, as `seori start --thread` requires.
+  new Channel(d.store.root).appendInbound({ id: "fake:c1:m1", kind: "messenger", source: "fake", chat: "c1", from: "u1", at: 1, text: "fix it" });
   if (config !== undefined) writeFileSync(join(d.store.root, "config.json"), JSON.stringify(config));
   const lane = (over: Partial<Lane> = {}): Lane => {
     const l: Lane = {
@@ -141,15 +143,12 @@ describe("progressDue with progressEveryMin set", () => {
 });
 
 describe("threadTarget", () => {
-  test("uses the lead channel row (topic/thread) when it is there", () => {
-    const { d } = setup();
-    new Channel(d.store.root).appendInbound({ id: "fake:c1:m1", kind: "messenger", source: "fake", chat: "c1", thread: "t7", from: "u1", at: 1, text: "hi" });
-    expect(threadTarget(d.store.root, "fake:c1:m1")).toEqual({ source: "fake", target: { chat: "c1", thread: "t7", replyTo: "m1" } });
-  });
-  test("else splits the id; a message id may contain colons", () => {
-    const { d } = setup();
-    expect(threadTarget(d.store.root, "slack:C9:1.2:3")).toEqual({ source: "slack", target: { chat: "C9", replyTo: "1.2:3" } });
-    expect(threadTarget(d.store.root, "fake:c1")).toBeUndefined();
+  test("answers a stored message in its chat, under its topic or thread", () => {
+    expect(threadTarget({ id: "fake:c1:m1", kind: "messenger", source: "fake", chat: "c1", thread: "t7", from: "u1", at: 1, text: "hi" })).toEqual({
+      source: "fake",
+      target: { chat: "c1", thread: "t7", replyTo: "m1" },
+    });
+    expect(threadTarget({ id: "slack:C9:1.2:3", kind: "messenger", source: "slack", chat: "C9", from: "U1", at: 1, text: "hi" })).toEqual({ source: "slack", target: { chat: "C9", replyTo: "1.2:3" } });
   });
 });
 
@@ -188,6 +187,19 @@ describe("progressTick", () => {
     reportNow("halfway");
     w.clock += 2 * MIN;
     expect((await progressTick(d)).map((e) => e.action)).toEqual(["posted"]);
+  });
+
+  test("never posts into the thread of someone other than the owner, by messenger or hook", async () => {
+    for (const hooks of [undefined, { threadReply: ["notify-owner", "{thread}", "{text}"] }]) {
+      const { w, d, lane, reportNow } = setup({ progressEveryMin: 15, ...(hooks ? { hooks } : {}) });
+      new Channel(d.store.root).appendInbound({ id: "fake:c1:m9", kind: "messenger", source: "fake", chat: "c1", from: "u2", notOwner: true, at: 1, text: "please fix" });
+      lane({ thread: "fake:c1:m9" });
+      reportNow("working on it");
+      w.clock += 15 * MIN;
+      expect(await progressTick(d)).toEqual([{ lane: "fix-a", action: "post-failed", detail: "thread fake:c1:m9 is not a stored message of the owner's alone; lane progress never posts there" }]);
+      expect(w.notified).toEqual([]);
+      expect(w.calls.filter((c) => c.cmd === "notify-owner")).toEqual([]);
+    }
   });
 
   test("hooks.threadReply carries the post: the argv runs, the messenger does not", async () => {
@@ -289,14 +301,15 @@ describe("progressTick", () => {
     expect(d.store.lane("fix-a")!.log.filter((e) => e.kind === "report").map((e) => e.text)).toEqual(["one", "two"]);
   });
 
-  test("names a missing messenger and a malformed thread", async () => {
+  test("names a missing messenger, and refuses a thread that is not a stored message of the owner's alone", async () => {
     const { w, d, lane } = setup({ progressEveryMin: 15 });
+    new Channel(d.store.root).appendInbound({ id: "telegram:5:6", kind: "messenger", source: "telegram", chat: "5", from: "1", at: 1, text: "x" });
     lane({ key: "a", thread: "telegram:5:6", log: [{ at: w.clock, kind: "report", text: "x" }] });
-    lane({ key: "b", thread: "bad", log: [{ at: w.clock, kind: "report", text: "x" }] });
+    lane({ key: "b", thread: "slack:C9:1.2", log: [{ at: w.clock, kind: "report", text: "x" }] });
     w.clock += 15 * MIN;
     expect(await progressTick(d)).toEqual([
       { lane: "a", action: "post-failed", detail: "messenger: no messenger configured for source telegram" },
-      { lane: "b", action: "post-failed", detail: "messenger: thread bad is not <source>:<chat>:<message id>" },
+      { lane: "b", action: "post-failed", detail: "thread slack:C9:1.2 is not a stored message of the owner's alone; lane progress never posts there" },
     ]);
   });
 });

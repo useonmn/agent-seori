@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Channel } from "./channel.ts";
+import { Channel, type MessengerRow } from "./channel.ts";
 import { loadConfig, type SeoriConfig } from "./config.ts";
 import type { Deps, DutyEvent } from "./harness.ts";
 import { loadHooks, substitute, type ArgvTemplate } from "./hooks.ts";
@@ -56,20 +56,10 @@ export const PROGRESS_HEADER = "Progress (from the lane's last report): ";
 export const progressText = (report: string, stateRoot?: string, home?: string): string =>
   `${PROGRESS_HEADER}${scrubForOwner(report, home, stateRoot)}`;
 
-/**
- * Where a thread id (`<source>:<chat>:<message id>`) is answered: the lead channel row when it is there (it knows the
- * topic or thread the message came in), else the id itself split at its first two colons. Undefined: not that shape.
- */
-export function threadTarget(root: string, thread: string): { source: string; target: SendTarget } | undefined {
-  const row = new Channel(root).inbound().find((r) => r.id === thread && r.kind === "messenger");
-  if (row && row.kind === "messenger") {
-    const replyTo = thread.slice(row.source.length + row.chat.length + 2);
-    return { source: row.source, target: { chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}), ...(replyTo ? { replyTo } : {}) } };
-  }
-  const [source, chat, ...rest] = thread.split(":");
-  const replyTo = rest.join(":");
-  if (!source || !chat || !replyTo) return undefined;
-  return { source, target: { chat, replyTo } };
+/** Where a lane thread (a stored lead channel message) is answered: its chat, its topic or thread, and the message. */
+export function threadTarget(row: MessengerRow): { source: string; target: SendTarget } {
+  const replyTo = row.id.slice(row.source.length + row.chat.length + 2);
+  return { source: row.source, target: { chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}), ...(replyTo ? { replyTo } : {}) } };
 }
 
 /** The lane's newest report text, or undefined when it has not reported yet. */
@@ -141,8 +131,14 @@ export async function progressTick(d: Deps, timeoutMs = THREAD_REPLY_TIMEOUT_MS)
     }
   }
   const events: DutyEvent[] = [];
+  const ownerRows = new Map(new Channel(d.store.root).inbound().flatMap((r) => (r.kind === "messenger" ? [[r.id, r] as const] : [])));
   for (const { lane, report } of due) {
     const thread = lane.thread!;
+    const row = ownerRows.get(thread);
+    if (!row) {
+      events.push({ lane: lane.key, action: "post-failed", detail: `thread ${thread} is not a stored message of the owner's alone; lane progress never posts there` });
+      continue;
+    }
     const text = progressText(report, d.store.root);
     let via: Transport;
     let uncertain: string | undefined;
@@ -177,11 +173,7 @@ export async function progressTick(d: Deps, timeoutMs = THREAD_REPLY_TIMEOUT_MS)
         clearTimeout(timer);
       }
     } else {
-      const where = threadTarget(d.store.root, thread);
-      if (!where) {
-        events.push({ lane: lane.key, action: "post-failed", detail: `messenger: thread ${thread} is not <source>:<chat>:<message id>` });
-        continue;
-      }
+      const where = threadTarget(row);
       const found = messengers.find((m) => m.source === where.source);
       if (!found) {
         events.push({ lane: lane.key, action: "post-failed", detail: `messenger: no messenger configured for source ${where.source}` });

@@ -202,6 +202,13 @@ describe("msg send --to", () => {
 });
 
 describe("msg close and list", () => {
+  test("list marks a message from someone other than the owner", () => {
+    const { root, add } = setup();
+    add("fake:c1:100");
+    add("fake:c1:101", { from: "u2", notOwner: true });
+    expect(msgList(root, {}, T0).map((l) => l.split("  ")[4])).toEqual(["u1", "u2 (not owner)"]);
+  });
+
   test("close refuses unknown, replied and closed ids, else closes", async () => {
     const { root, channel, d, add } = setup();
     add("fake:c1:100");
