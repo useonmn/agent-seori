@@ -39,12 +39,13 @@ export function parseDfAvailableKb(stdout: string): number | undefined {
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
- * Where new work lands: the working directory of every open lane that still exists, or the user's home directory
- * (where repos and worktrees live) when no lane is open. $SEORI_HOME is not measured: it only holds small state files
- * and may sit on a small tmpfs (e.g. under /tmp), which says nothing about the room lanes have to work.
+ * Where new work lands: the working directory of every open lane that still exists (its worktree when seori gave it
+ * one, else its cwd), or the user's home directory (where repos and worktrees live) when no lane is open. $SEORI_HOME
+ * itself is not measured: it holds small state files and may sit on a small tmpfs (e.g. under /tmp), which says
+ * nothing about the room lanes have to work; a lane worktree under it is measured, since the lane works there.
  */
 function workPaths(d: Deps): string[] {
-  const cwds = d.store.lanes().filter((l) => l.status !== "done" && existsSync(l.cwd)).map((l) => l.cwd);
+  const cwds = d.store.lanes().filter((l) => l.status !== "done").map((l) => l.worktree ?? l.cwd).filter((p) => existsSync(p));
   return cwds.length > 0 ? [...new Set(cwds)] : [homedir()];
 }
 

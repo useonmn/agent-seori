@@ -76,14 +76,14 @@ describe("sampleHost", () => {
     expect(w).toBeDefined();
   });
 
-  test("open lanes' directories are measured and the least free volume wins; done lanes and missing dirs are skipped", async () => {
+  test("open lanes' working directories (a worktree seori gave one, else its cwd) are measured and the least free volume wins; done lanes and missing dirs are skipped", async () => {
     const { d, host, dfArgs } = setup();
     const lane = (key: string, cwd: string, status: Lane["status"]): Lane => ({ key, sessionRef: paneRef(`w1:${key}`), paneId: `w1:${key}`, tabId: "t1", brief: "b", cwd, status, createdAt: 0, lastActivityAt: 0, nudges: 0, log: [] });
     const a = mkdtempSync(join(tmpdir(), "seori-guard-a-"));
     const b = mkdtempSync(join(tmpdir(), "seori-guard-b-"));
     try {
       d.store.saveLane(lane("a", a, "working"));
-      d.store.saveLane(lane("b", b, "working"));
+      d.store.saveLane({ ...lane("b", homedir(), "working"), worktree: b });
       d.store.saveLane(lane("gone", join(a, "missing"), "working"));
       d.store.saveLane(lane("old", homedir(), "done"));
       host.df = { code: 0, stdout: dfOut(30 * 1024 * 1024), stderr: "" };

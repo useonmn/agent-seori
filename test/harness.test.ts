@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { defaultSeoriCmd, done, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
@@ -259,8 +259,9 @@ describe("lanes", () => {
 });
 
 describe("lanes started in the checkout seori runs from", () => {
+  // The developer's own git config (signing, hooks) must not decide whether a commit here works.
   const git = async (dir: string, ...argv: string[]): Promise<string> => {
-    const r = await spawnExec("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...argv]);
+    const r = await spawnExec("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...argv]);
     if (r.code !== 0) throw new Error(`git ${argv.join(" ")}: ${r.stderr}`);
     return r.stdout.trim();
   };
@@ -313,13 +314,16 @@ describe("lanes started in the checkout seori runs from", () => {
     expect(footer).toContain(`\`${worktree}\``);
   });
 
-  test("a lane started elsewhere keeps its cwd and runs no git; its footer still names the checkout seori runs from", async () => {
+  test("a lane started elsewhere, or in $SEORI_HOME inside the checkout, keeps its cwd and runs no git; its footer still names the checkout", async () => {
     const { w, d, brief, top, install, gitCalls } = await installed();
     const lane = await startLane(d, "docs", brief, { cwd: top });
     expect(lane.worktree).toBeUndefined();
-    expect(opened(w)).toEqual([top]);
-    expect(gitCalls).toEqual([]);
     expect(readFileSync(lane.brief, "utf8")).toContain(`\`${install}\``);
+    const home = join(d.store.root, "notes");
+    mkdirSync(home);
+    expect((await startLane({ ...d, installDir: dirname(d.store.root) }, "notes", brief, { cwd: home })).worktree).toBeUndefined();
+    expect(opened(w)).toEqual([top, home]);
+    expect(gitCalls).toEqual([]);
   });
 
   test("started again it takes its worktree as it is, or its branch when only that is left; anything else there is refused before a pane opens", async () => {
