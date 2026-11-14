@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { Channel } from "./channel.ts";
 import { loadConfig, type SeoriConfig } from "./config.ts";
 import type { Deps, DutyEvent } from "./harness.ts";
@@ -13,28 +14,34 @@ import type { Lane } from "./store.ts";
 /** hc terminal refs (`hc:t7`, `hc:t1b`): meaningless to the owner, and they say which terminal to type into. */
 const PANE_ID_RE = /\bhc:t[0-9a-z]+\b/g;
 
-/** A string as a literal for a `RegExp`. */
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/**
- * Where seori keeps its state ($SEORI_HOME): secrets.json, messengers.json and every lane record live there, and none
- * of it belongs in a chat. One path under it becomes `(state path)`.
- */
-const statePathRe = (root: string): RegExp => new RegExp(`${escapeRe(root)}(?![\\w.-])[^\\s'\`]*`, "g");
-
 /** Trailing punctuation is a sentence's, not the path's: `(state path).` keeps its full stop. */
 const maskPath = (mask: string) => (all: string): string => `${mask}${/[.,;:!?)\]}]+$/.exec(all)?.[0] ?? ""}`;
+
+/**
+ * How long one `hooks.threadReply` run may take before it is killed and counted as a failed post. The tick awaits it, so
+ * a sender that never returns would otherwise hold up inbox flushing, nudges and the rest of the duty pass.
+ */
+const THREAD_REPLY_TIMEOUT_MS = 30_000;
 
 /**
  * The text as it goes to a messenger. The owner needs the evidence a report cites, so only what is theirs or seori's is
  * taken out: the home directory becomes `~`, a path under the state root `(state path)`, and pane refs `<pane>`. Every
  * other absolute path (a test log, a clone) stays as the lane wrote it.
+ *
+ * The state root is masked whether or not a caller passes one: it holds secrets.json and messengers.json, so leaving it
+ * to the home replacement alone would print `~/.seori/secrets.json` to the owner. The mask is the literal path under the
+ * real root: a report spelling it as `~/.seori/...` or `$SEORI_HOME/...` is not a path the lane could have read from
+ * disk, and is left as written.
  */
 export function scrubForOwner(text: string, home: string = homedir(), stateRoot?: string): string {
   const h = home.replace(/\/+$/, "");
-  // The state root first: under the home directory, replacing the home first would leave `~/.seori/...` readable.
-  const r = stateRoot?.replace(/\/+$/, "");
-  const noState = r && r !== "/" ? text.replace(statePathRe(r), maskPath("(state path)")) : text;
+  // The state root first: it sits under the home directory, and replacing the home first would leave `~/.seori/...`.
+  // Unset means the documented default (~/.seori): reading $SEORI_HOME here would make the masking depend on the caller's
+  // environment, and progressTick always passes the store's real root.
+  const r = (stateRoot ?? join(home, ".seori")).replace(/\/+$/, "");
+  // Stop at whitespace or any quote, so a quoted path keeps its closing quote: `see "(state path)" here`.
+  const stopAtQuote = r && r !== "/" ? new RegExp(`${r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w.-])[^\\s'"\`]*`, "g") : undefined;
+  const noState = stopAtQuote ? text.replace(stopAtQuote, maskPath("(state path)")) : text;
   const noHome = h && h !== "/" ? noState.split(h).join("~") : noState;
   return noHome.replace(PANE_ID_RE, "<pane>");
 }
@@ -136,11 +143,19 @@ export async function progressTick(d: Deps): Promise<DutyEvent[]> {
     const text = progressText(report, d.store.root);
     let via: Transport;
     let uncertain: string | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     if (hook) {
       via = "hooks.threadReply";
       const [cmd, ...rest] = substitute(hook, { key: lane.key, text, thread });
       try {
-        const res = cmd === undefined ? { code: 127, stdout: "", stderr: "empty argv" } : await d.exec(cmd, rest);
+        const res =
+          cmd === undefined
+            ? { code: 127, stdout: "", stderr: "empty argv" }
+            : await d.exec(cmd, rest, {
+                onSpawn: (proc) => {
+                  timer = setTimeout(() => proc.kill(), THREAD_REPLY_TIMEOUT_MS);
+                },
+              });
         // A hook that exits non-zero may have sent anyway, but nothing is recorded: the next tick tries the same report.
         if (res.code !== 0) {
           const why = (res.stderr || res.stdout).trim().split("\n")[0] || `exit ${res.code}`;
@@ -150,6 +165,9 @@ export async function progressTick(d: Deps): Promise<DutyEvent[]> {
       } catch (e) {
         events.push({ lane: lane.key, action: "post-failed", detail: `hooks.threadReply: ${detailOf(e)}` });
         continue;
+      } finally {
+        // The tick awaits this: a sender that never returns must not hold up inbox flushing, nudges and the rest.
+        clearTimeout(timer);
       }
     } else {
       const where = threadTarget(d.store.root, thread);

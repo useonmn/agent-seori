@@ -604,7 +604,7 @@ config.json의 `hooks`는 argv 템플릿을 받습니다(비어 있지 않은 �
 | `transcribe` | 오디오 파일을 글로 바꿉니다: `seori transcribe <file>`과 텔레그램 음성 메시지 | `file` |
 | `threadReply` | 레인의 진행 상황을 그 스레드에 올립니다. 내장 메신저 대신 이 명령을 씁니다(진행 상황 올리기 참고) | `thread`, `text`, `key` |
 
-수명 주기 후크는 돌려 놓고 기다리지 않습니다. 실패하면 stderr에 `seori: hook <name> failed (...)` 한 줄을 남길 뿐 명령의 결과는 바뀌지 않고, CLI는 끝날 때 아직 도는 후크를 최대 2초까지만 기다립니다. 리뷰어를 대신하는 후크는 없습니다. `seori review`는 늘 omp를 돌리고, `hooks.reviewCommand` 키는 거절합니다. `transcribe`와 `threadReply`는 앞에서 돌고 0으로 끝나야 합니다: `transcribe`는 필사본을 stdout에 출력하고, `threadReply`가 0이 아닌 코드로 끝나면 아무것도 올리지 않으므로 다음 듀티 차례에 같은 보고를 다시 시도하고 이벤트에 `via hooks.threadReply`가 남습니다. `transcribe`를 설정하지 않으면 음성 메시지는 그냥 첨부 줄로 남고, `threadReply`를 설정하지 않으면 진행 상황은 설정된 메신저로 갑니다. `hooks` 값이 잘못되면 설정 오류입니다(종료 코드 2).
+수명 주기 후크는 돌려 놓고 기다리지 않습니다. 실패하면 stderr에 `seori: hook <name> failed (...)` 한 줄을 남길 뿐 명령의 결과는 바뀌지 않고, CLI는 끝날 때 아직 도는 후크를 최대 2초까지만 기다립니다. 리뷰어를 대신하는 후크는 없습니다. `seori review`는 늘 omp를 돌리고, `hooks.reviewCommand` 키는 거절합니다. `transcribe`와 `threadReply`는 앞에서 돌고 0으로 끝나야 합니다: `transcribe`는 필사본을 stdout에 출력하고, `threadReply`가 0이 아닌 코드로 끝나거나 30초를 넘겨 강제 종료되면 아무것도 올리지 않으므로 다음 듀티 차례에 같은 보고를 다시 시도하고, 이벤트는 `post-failed`에 `hooks.threadReply: <후크의 첫 오류 줄>`로 남습니다. `transcribe`를 설정하지 않으면 음성 메시지는 그냥 첨부 줄로 남고, `threadReply`를 설정하지 않으면 진행 상황은 설정된 메신저로 갑니다. `hooks` 값이 잘못되면 설정 오류입니다(종료 코드 2).
 
 ```json
 { "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"], "threadReply": ["agent-slackbot", "message", "send", "{thread}", "--text", "{text}"] } }

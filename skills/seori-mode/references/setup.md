@@ -76,6 +76,7 @@ Tell the owner the lead is up and which terminal it is in.
 - `guard`: host load, memory, disk and pane-count lines; `seori can-launch` holds new lanes past them.
 - `heavy`: slots and load limit for `seori heavy`.
 - `hooks.threadReply`: an argv template (`{thread}`, `{text}`, `{key}`) whose command posts a lane's progress into its thread, in place of the built-in messenger send; see `hooks` in `README.md`.
+
 Write it only with the owner's go, and only the fields they want changed.
 
 - `workflow`: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` starts every lane under that omp-ulw workflow (below); leave it out for plain omp goal mode. `seori start --workflow <W>|none` picks it per lane.

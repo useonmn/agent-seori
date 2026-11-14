@@ -60,6 +60,22 @@ describe("scrubForOwner", () => {
     expect(scrubForOwner(`state at ${state}`, home, state)).toBe("state at (state path)");
   });
 
+  test("the state root is masked by default, so secrets.json never reaches the owner", () => {
+    const home = "/home/owner";
+    const state = join(home, ".seori");
+    // No stateRoot argument: the path must still not come out as `~/.seori/secrets.json`.
+    expect(scrubForOwner(`token in ${state}/secrets.json`, home)).toBe("token in (state path)");
+    expect(scrubForOwner(`SEORI_HOME=${state}`, home)).toBe("SEORI_HOME=(state path)");
+  });
+
+  test("a quoted state path keeps its quotes", () => {
+    const home = "/home/owner";
+    const state = join(home, ".seori");
+    expect(scrubForOwner(`see "${state}/secrets.json" here`, home, state)).toBe('see "(state path)" here');
+    expect(scrubForOwner(`see '${state}/secrets.json' here`, home, state)).toBe("see '(state path)' here");
+    expect(scrubForOwner("see `" + state + "/secrets.json` here", home, state)).toBe("see `(state path)` here");
+  });
+
   test("other absolute paths stay: a cited log or clone is the lane's evidence", () => {
     const home = "/home/owner";
     const state = join(home, ".seori");
@@ -102,6 +118,8 @@ describe("progressEveryMin off by default", () => {
 
   test("0 is refused: it is not a second spelling of off", () => {
     const { d } = setup({ progressEveryMin: 0 });
+    // The file setup wrote holds 0: assert it before the loop below replaces it, or this case is never tested.
+    expect(() => loadConfig(d.store.root)).toThrow(/progressEveryMin must be a positive number of minutes, or null/);
     for (const bad of [-1, "15"]) {
       writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ progressEveryMin: bad }));
       expect(() => loadConfig(d.store.root)).toThrow(ConfigError);
@@ -204,6 +222,36 @@ describe("progressTick", () => {
     w.reviewer = () => ({ code: 0, stdout: "", stderr: "" });
     expect(await progressTick(d)).toEqual([{ lane: "fix-a", action: "posted", detail: "via hooks.threadReply" }]);
     expect(w.notified).toEqual([]);
+  });
+
+  test("the hook run is bounded: onSpawn gets the process and a killed run is a definite failure", async () => {
+    const { w, d, lane, reportNow } = setup({
+      progressEveryMin: 15,
+      hooks: { threadReply: ["notify-owner", "{thread}", "{text}"] },
+    });
+    lane();
+    reportNow("halfway");
+    w.clock += 15 * MIN;
+    // The tick awaits the sender, so it must be able to kill it (THREAD_REPLY_TIMEOUT_MS does that on a real run).
+    // Here the kill is fired straight away instead of waiting 30 s; the observable contract is the same.
+    let onSpawnGiven = false;
+    const exec = d.exec;
+    const hanging = {
+      ...d,
+      exec: (cmd: string, argv: readonly string[], opts?: { onSpawn?: (p: { kill(): void }) => void }) => {
+        if (cmd !== "notify-owner") return exec(cmd, argv, opts);
+        const { promise, reject } = Promise.withResolvers<never>();
+        // Stand in for the deadline: the tick hands over a kill, and firing it must end the run as a definite failure.
+        const proc = { kill: () => reject(new Error("killed")) };
+        onSpawnGiven = opts?.onSpawn !== undefined;
+        opts?.onSpawn?.(proc);
+        proc.kill();
+        return promise;
+      },
+    };
+    expect(await progressTick(hanging)).toEqual([{ lane: "fix-a", action: "post-failed", detail: "hooks.threadReply: killed" }]);
+    expect(onSpawnGiven).toBe(true);
+    expect(d.store.lane("fix-a")!.posted).toBeUndefined();
   });
 
   test("skips lanes without a thread, without a report, or not working/waiting", async () => {
