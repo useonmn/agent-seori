@@ -111,6 +111,7 @@ export function ceiling(v: unknown, where: string, fallback: number | null): num
   if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ConfigError(`${where} must be a nonnegative number or null`);
   return v;
 }
+
 export function loadConfig(root: string): SeoriConfig {
   const path = configPath(root);
   if (!existsSync(path)) return DEFAULT_CONFIG;
