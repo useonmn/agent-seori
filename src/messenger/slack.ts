@@ -22,8 +22,9 @@ const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
 const THREAD_LIMIT = 60;
 /**
  * Pages (of 200) catch-up's history read may take in all to reach back to the oldest tracked thread, so a parent's
- * latest_reply tells which threads got replies; it reads on past this only until the cursor. A tracked thread older
- * than what was read gets a conversations.replies call of its own.
+ * latest_reply tells which tracked threads got replies; it reads on past this only until the cursor. A tracked thread
+ * older than what was read gets a conversations.replies call of its own. Each page past the cursor is one more
+ * rate-limited call (and Slack may serve fewer than 200 per page), so the lookback stays this short.
  */
 const THREAD_HISTORY_PAGES = 3;
 const THREAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -467,8 +468,8 @@ export class SlackAdapter implements MessengerAdapter {
     for (const channel of Object.keys(ctx.cursor.channels)) {
       const oldest = ctx.cursor.channels[channel];
       if (!oldest) continue;
-      const tracked = Object.keys(ctx.cursor.threads[channel] ?? {});
-      const since = tracked.map(tsBefore).reduce((a, b) => (compareTs(a, b) <= 0 ? a : b), oldest);
+      const tracked = new Set(Object.keys(ctx.cursor.threads[channel] ?? {}));
+      const since = [...tracked].map(tsBefore).reduce((a, b) => (compareTs(a, b) <= 0 ? a : b), oldest);
       let read = 0;
       let messages: SlackMessage[];
       try {
@@ -489,8 +490,10 @@ export class SlackAdapter implements MessengerAdapter {
       for (const m of messages) {
         if (!m.ts) continue;
         seen.add(m.ts);
-        if (compareTs(m.ts, oldest) > 0) byTs.set(m.ts, m);
-        if (m.thread_ts === m.ts && (m.reply_count ?? 0) > 0 && m.latest_reply && compareTs(m.latest_reply, oldest) > 0) roots.add(m.ts);
+        const fresh = compareTs(m.ts, oldest) > 0;
+        if (fresh) byTs.set(m.ts, m);
+        // A thread started before the cursor is read only when tracked: someone else's old thread costs no call.
+        if ((fresh || tracked.has(m.ts)) && m.thread_ts === m.ts && (m.reply_count ?? 0) > 0 && m.latest_reply && compareTs(m.latest_reply, oldest) > 0) roots.add(m.ts);
       }
       for (const root of tracked) if (!seen.has(root)) roots.add(root);
       for (const root of roots) {

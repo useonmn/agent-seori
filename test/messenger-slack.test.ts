@@ -460,16 +460,17 @@ describe("SlackAdapter receive", () => {
     expect(mock.repliesCalls.every((q) => q.get("oldest") === "1700000000.000100")).toBe(true);
   });
 
-  test("catch-up reads conversations.replies only for tracked threads with a reply after the cursor, or older than its history read", async () => {
+  test("catch-up reads conversations.replies only for tracked threads with a reply after the cursor, or older than its history read; someone else's old thread never", async () => {
     const mock = startMock();
     const root = home();
     const at = (n: number) => `1700000000.000${String(n).padStart(3, "0")}`;
     writeCursor(root, { channels: { C1: at(500) }, threads: { C1: Object.fromEntries([50, 100, 200, 300].map((n) => [at(n), at(n)])) } });
     const parent = (n: number, extra: Record<string, unknown> = {}) => ({ type: "message", user: "UBOT", bot_id: "B1", text: "done", ts: at(n), ...extra });
     // Newest first, one page per call: the third page passes the cursor, so the fourth (thread 50) is never read.
+    // Thread 220 is people talking among themselves before the cursor: seori does not track it, so it is not read.
     const pages = [
       [{ type: "message", user: OWNER, text: "<@UBOT> new", ts: at(800) }, parent(300, { thread_ts: at(300), reply_count: 2, latest_reply: at(700) })],
-      [parent(200, { thread_ts: at(200), reply_count: 1, latest_reply: at(250) })],
+      [{ type: "message", user: "UX", text: "chat", ts: at(220), thread_ts: at(220), reply_count: 1, latest_reply: at(750) }, parent(200, { thread_ts: at(200), reply_count: 1, latest_reply: at(250) })],
       [parent(100)],
       [parent(50, { thread_ts: at(50), reply_count: 1, latest_reply: at(650) })],
     ];
@@ -479,6 +480,7 @@ describe("SlackAdapter receive", () => {
     };
     mock.replies[`C1:${at(300)}`] = [{ type: "message", user: OWNER, text: "on 300", ts: at(700), thread_ts: at(300) }];
     mock.replies[`C1:${at(50)}`] = [{ type: "message", user: OWNER, text: "on 50", ts: at(650), thread_ts: at(50) }];
+    mock.replies[`C1:${at(220)}`] = [{ type: "message", user: OWNER, text: "<@UBOT> in their thread", ts: at(750), thread_ts: at(220) }];
     const got = await collect(adapter(mock, root), () => cursorOf(root).channels["C1"] === at(800));
     expect(got.map((m) => [m.id, m.text])).toEqual([
       [`slack:C1:${at(650)}`, "on 50"],
