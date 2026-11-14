@@ -7,7 +7,7 @@ import { type Ceilings, type Lane, type LaneLogKind, lockFile } from "./store.ts
 
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
 import { refText } from "./refs.ts";
-import { startAgain } from "./restart.ts";
+import { lostText } from "./restart.ts";
 import { runHook } from "./hooks.ts";
 
 /** How long a close waits for another process's hold on the cost ledger before giving up (one stderr line). */
@@ -267,8 +267,8 @@ function mark(d: Deps, key: string, change: (lane: Lane) => void, log?: { kind: 
  *   with a "stalled" log entry. A waiting lane said it waits, so its quiet is no stall (as it gets no nudge).
  * - paused lanes: no ceiling or stall report; a pane read working on two passes in a row is reported once per working
  *   stretch as `[WORKING-WHILE-PAUSED <key>]` and the lane stays paused. A gone pane (a restart or a down closes paused
- *   panes too) marks the lane lost and is told as `[LOST <key>]`, as dutyTick does for running lanes, but as a lane that
- *   was paused, with the command that resumes it: the pause meant "later", not "failed".
+ *   panes too) marks the lane lost and is told as `[LOST <key>]` with the command that resumes it, as dutyTick does for
+ *   running lanes: the pause meant "later", not "failed".
  * The lane is never messaged or killed. One lane's failure is an event and the pass goes on.
  */
 export async function superviseTick(d: Deps): Promise<DutyEvent[]> {
@@ -308,13 +308,7 @@ async function pausedCheck(d: Deps, lane: Lane, events: DutyEvent[]): Promise<vo
     // As dutyTick does for running lanes: otherwise the key stays paused with no pane, and done/start both refuse it.
     mark(d, lane.key, (l) => { l.status = "lost"; delete l.pausedFrom; }, { kind: "lost", text: "pane disappeared while paused" });
     void runHook(d, "onLost", { key: lane.key, text: "pane disappeared while paused", evidence: "" });
-    await tell(
-      d,
-      `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed while the lane was paused (a seori restart or down closes ` +
-        `paused lanes' panes too). It was paused, not failed: its record and brief stay; to resume it: ${startAgain(lane, d.seoriCmd)}`,
-      lane.key,
-      events,
-    );
+    await tell(d, lostText(lane, refText(lane.sessionRef), d.seoriCmd), lane.key, events);
     events.push({ lane: lane.key, action: "lost" });
     return;
   }

@@ -7,6 +7,8 @@ import { ConfigError, loadConfig } from "../src/config.ts";
 import { defaultSeoriCmd, done, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { backlogAdd } from "../src/loop.ts";
 import { deliverOrThrow } from "../src/runtime/index.ts";
+import { refText } from "../src/refs.ts";
+import { startAgain } from "../src/restart.ts";
 import { Channel } from "../src/channel.ts";
 import { ompJson, World, paneRef } from "./fake.ts";
 
@@ -497,6 +499,19 @@ describe("duty loop", () => {
     w.panes.delete(lane.paneId);
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
     expect(lead.received.at(-1)).toContain("[LOST busy]");
+  });
+
+  test("a waiting lane whose pane is gone (a restart closed it) is LOST with what it waited on and the command that resumes it", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "busy", brief, {});
+    await report(d, "busy", "waiting on CI", "waiting");
+    w.panes.delete(lane.paneId);
+    expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
+    expect(d.store.lane("busy")!.status).toBe("lost");
+    const told = lead.received.at(-1)!;
+    expect(told).toStartWith(`[LOST busy] pane ${refText(lane.sessionRef)} closed while the lane was waiting`);
+    expect(told).toContain("the watches it armed end once it is lost");
+    expect(told).toEndWith(`to resume it: ${startAgain(d.store.lane("busy")!, d.seoriCmd)}`);
   });
 
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */

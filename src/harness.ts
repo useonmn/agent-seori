@@ -26,6 +26,7 @@ import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
 import { refText, sameSession } from "./refs.ts";
 import { loadHooks, runHook } from "./hooks.ts";
+import { lostText } from "./restart.ts";
 
 export { KEY_RE, reservedKey };
 export { resolveTarget };
@@ -609,7 +610,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
         });
         if (!lost) continue;
         void runHook(d, "onLost", { key: lane.key, text: "pane disappeared without READY", evidence: "" });
-        await tellLead(d, `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed without a final answer`, "duty");
+        await tellLead(d, lostText(lane, refText(lane.sessionRef), d.seoriCmd), "duty");
         events.push({ lane: lane.key, action: "lost" });
         continue;
       }
