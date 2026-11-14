@@ -18,7 +18,7 @@ import { OMP_ULW_URL, type Workflow, workflowPrefix } from "./workflow.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
 import { agentGone, panesTick } from "./panes.ts";
-import { progressTick } from "./progress.ts";
+import { progressTick, threadTarget } from "./progress.ts";
 import { recordCloseCost, superviseTick } from "./supervision.ts";
 import { checkSignals, parseDone } from "./signals.ts";
 import { GLOBAL_LESSONS_HEADING, LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
@@ -371,7 +371,7 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
 /**
  * Opens a lane: a session running the agent in goal mode on the brief. `done` is the lane's Done line (src/signals.ts),
  * checked before anything opens; with it, seori closes the lane on its own after READY (src/done-flow.ts). `thread`
- * is the lead channel id progress posts thread under; `ceilings` override the configured supervision defaults;
+ * is the lead channel id progress posts attach to; `ceilings` override the configured supervision defaults;
  * `activityPaths` are files or directories whose change counts as the lane's progress besides git status; `model`
  * is the model this lane's omp runs with instead of SEORI_MODEL.
  */
@@ -823,15 +823,13 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   for (const s of open) if (s.gaveUp && !s.alerted.includes("gave-up")) due.push([s, "gave-up"]);
 
   for (const [s, why] of due) {
-    const { id, source, chat, thread } = s.row;
+    const { id, source } = s.row;
     const config = messengers.find((m) => m.source === source);
     if (!config) {
       events.push({ action: "alert-failed", detail: `${id} ${why}: no messenger configured for source ${source}` });
       continue;
     }
-    // Ids are `<source>:<chat>:<message id>`; the messenger replies to its own message id.
-    const prefix = `${source}:${chat}:`;
-    const target: SendTarget = { chat, ...(thread !== undefined ? { thread } : {}), replyTo: id.startsWith(prefix) ? id.slice(prefix.length) : id };
+    const { target } = threadTarget(s.row);
     try {
       await d.notify(config, target, ALERT_TEXT[why]);
     } catch (e) {

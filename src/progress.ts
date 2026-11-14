@@ -8,8 +8,8 @@ import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } 
 import type { Lane } from "./store.ts";
 
 // Progress posts: a lane started with `--thread <lead channel id>` works on one owner message. Duty posts the lane's
-// newest report as a threaded reply under that message, at most every config.progressEveryMin minutes and only when the
-// report changed, so the owner sees the work move without asking. Off unless config.json sets progressEveryMin.
+// newest report attached to that message (see threadTarget), at most every config.progressEveryMin minutes and only
+// when the report changed, so the owner sees the work move without asking. Off unless config.json sets progressEveryMin.
 
 /** hc terminal refs (`hc:t7`, `hc:t1b`): meaningless to the owner, and they say which terminal to type into. */
 const PANE_ID_RE = /\bhc:t[0-9a-z]+\b/g;
@@ -56,10 +56,13 @@ export const PROGRESS_HEADER = "Progress (from the lane's last report): ";
 export const progressText = (report: string, stateRoot?: string, home?: string): string =>
   `${PROGRESS_HEADER}${scrubForOwner(report, home, stateRoot)}`;
 
-/** Where a lane thread (a stored lead channel message) is answered: its chat, its topic or thread, and the message. */
+/**
+ * Where a post about a stored lead channel message (a progress post, a duty alert) goes: its chat, its topic or thread,
+ * and attached to the message itself, so it says which message it is about even where a reply would go top-level.
+ */
 export function threadTarget(row: MessengerRow): { source: string; target: SendTarget } {
   const replyTo = row.id.slice(row.source.length + row.chat.length + 2);
-  return { source: row.source, target: { chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}), ...(replyTo ? { replyTo } : {}) } };
+  return { source: row.source, target: { chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}), ...(replyTo ? { replyTo, attached: true as const } : {}) } };
 }
 
 /** The lane's newest report text, or undefined when it has not reported yet. */

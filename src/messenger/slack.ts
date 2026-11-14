@@ -14,8 +14,12 @@ const BACKOFF_CAP_MS = 30_000;
 const DEFAULT_PING_INTERVAL_MS = 10_000;
 /** Slack sends hello right after the socket opens; without one by then the connection is retried. */
 const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
-/** Threads per channel catch-up reads with conversations.replies (the most recently active), and how long they stay. */
-const THREAD_LIMIT = 20;
+/**
+ * Threads per channel catch-up reads with conversations.replies (the most recently active), and how long they stay.
+ * seori answers a top-level message top-level, so one exchange tracks about three roots (the request, the
+ * acknowledgement, the result): the limit keeps about twenty exchanges.
+ */
+const THREAD_LIMIT = 60;
 const THREAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Threads per receive remembered as not involving seori, so a busy thread is looked up once (see `involved`). */
 const UNTRACKED_LIMIT = 1000;
@@ -140,6 +144,12 @@ function bodyText(m: SlackMessage): string {
   const text = unescape(m.text ?? "").trim();
   return [...(text ? [text] : []), ...lines].join("\n");
 }
+
+/**
+ * The thread `m` (its own ts is `ts`) was written in: its thread_ts when it is a reply in a thread, in a DM or a channel.
+ * A top-level message, a thread's first message included, has none, so it is answered top-level where it was written.
+ */
+const threadOf = (m: SlackMessage, ts: string): string | undefined => (m.thread_ts !== undefined && m.thread_ts !== ts ? m.thread_ts : undefined);
 
 export class SlackAdapter implements MessengerAdapter {
   readonly source: string;
@@ -657,9 +667,10 @@ export class SlackAdapter implements MessengerAdapter {
       ctx.cursor.channels[channel] = tsBefore(ts);
       ctx.file.save(ctx.cursor);
     }
-    this.track(channel, ev.thread_ts ?? ts, ts, ctx); // seori replies under this message: catch-up reads that thread
-    const thread = dm ? ev.thread_ts : (ev.thread_ts ?? ts);
-    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), ...this.rootOf(ev, channel, dm, ts), from, at: tsMs(ts), text }, key, ctx);
+    // A thread under a message addressed to the bot is a conversation with it (see `involved`): catch-up reads its replies.
+    this.track(channel, ev.thread_ts ?? ts, ts, ctx);
+    const thread = threadOf(ev, ts);
+    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), ...this.rootOf(ev, channel, dm, ts, ctx), from, at: tsMs(ts), text }, key, ctx);
     this.advance(channel, ts, ctx);
   }
 
@@ -676,28 +687,34 @@ export class SlackAdapter implements MessengerAdapter {
     if (ctx.delivered.has(key)) return;
     const text = bodyText(m);
     if (!text || !(await this.addressed(m, channel, dm, m.ts, ctx, true)) || !(await this.accepted(candidate, ctx))) return;
-    const thread = dm ? m.thread_ts : (m.thread_ts ?? m.ts);
+    const thread = threadOf(m, m.ts);
     await this.deliver(
-      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), ...this.rootOf(m, channel, dm, m.ts), from: candidate, at: tsMs(stamp), text: `(edited) ${text}` },
+      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), ...this.rootOf(m, channel, dm, m.ts, ctx), from: candidate, at: tsMs(stamp), text: `(edited) ${text}` },
       key,
       ctx,
     );
   }
 
   /**
-   * When `m` is a reply in a channel thread: the id of the thread's first message, and whether the owner wrote it
-   * (Slack's parent_user_id), for InboundMessage.root/rootByOwner. Nothing for DMs and top-level messages.
+   * When `m` is a reply in a channel thread: the id of the thread's first message, and whether the owner or seori wrote
+   * it (Slack's parent_user_id), for InboundMessage.root/rootByOwner/rootBySeori. Nothing for DMs and top-level messages.
    */
-  private rootOf(m: SlackMessage, channel: string, dm: boolean, ts: string): { root?: string; rootByOwner?: true } {
+  private rootOf(m: SlackMessage, channel: string, dm: boolean, ts: string, ctx: Receiving): { root?: string; rootByOwner?: true; rootBySeori?: true } {
     if (dm || m.thread_ts === undefined || m.thread_ts === ts) return {};
-    return { root: messageId(this.source, channel, m.thread_ts), ...(m.parent_user_id === this.config.owner ? { rootByOwner: true as const } : {}) };
+    const by = m.parent_user_id === this.config.owner ? { rootByOwner: true as const } : ctx.botUser !== "" && m.parent_user_id === ctx.botUser ? { rootBySeori: true as const } : {};
+    return { root: messageId(this.source, channel, m.thread_ts), ...by };
   }
 
+  /**
+   * Slack has no inline reply to a message, so a reply goes where the message was written: in `target.thread` when the
+   * message was a thread reply, else top-level in `target.chat`. An `attached` message (an alert or a progress post
+   * about `replyTo`) without a thread is threaded under `replyTo`, the only way to tie it to that message.
+   */
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {
     const chunks = splitText(escape(text), TEXT_LIMIT);
     if (!chunks.length) throw new Error("slack: refusing to send an empty message");
     const token = this.botToken();
-    const thread = target.thread ?? (target.replyTo ? replyTarget(target.replyTo) : undefined);
+    const thread = target.thread ?? (target.attached && target.replyTo ? replyTarget(target.replyTo) : undefined);
     const post = async (chunk: string): Promise<string> => {
       const body = await this.api(
         "chat.postMessage",

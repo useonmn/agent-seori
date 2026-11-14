@@ -13,17 +13,23 @@ export type InboundMessage = {
   readonly thread?: string;
   /**
    * A reply in a thread outside DMs: the id (`<source>:<chat>:<message id>`) of that thread's first message, and
-   * whether the platform says the owner wrote that first message. The lead channel counts the reply as the owner's
-   * alone only with `rootByOwner`; an unknown author is someone else's.
+   * whether the platform says the owner (`rootByOwner`) or the bot itself (`rootBySeori`) wrote that first message.
+   * The lead channel counts the reply as the owner's alone only with `rootByOwner`, or with `rootBySeori` when that
+   * message was seori's reply to a message of the owner's alone (channel.ts othersOf); an unknown author is someone else's.
    */
   readonly root?: string;
   readonly rootByOwner?: true;
+  readonly rootBySeori?: true;
   readonly from: string;
   readonly at: number;
   readonly text: string;
 };
 
-export type SendTarget = { readonly chat: string; readonly thread?: string; readonly replyTo?: string };
+/**
+ * Where a message goes. `attached`: the message is about `replyTo` rather than part of the conversation (a duty alert,
+ * a progress post), so it stays visibly attached to it even where a reply would not (see MessengerAdapter.send).
+ */
+export type SendTarget = { readonly chat: string; readonly thread?: string; readonly replyTo?: string; readonly attached?: true };
 
 /** seori's reaction on a message it accepted: `read` once it is stored for the lead, `answered` once the lead answered it. */
 export type Reaction = "read" | "answered";
@@ -49,8 +55,11 @@ export interface MessengerAdapter {
    */
   receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void>;
   /**
-   * Resolves with the messenger's message id (the first chunk's, when long text is split). `target.replyTo` is the part
-   * of a stored id after `<source>:<chat>:`; an `:edit:<stamp>` suffix there must be dropped (common.ts replyTarget).
+   * Resolves with the messenger's message id (the first chunk's, when long text is split). The message goes to
+   * `target.chat`, in `target.thread` when set. `target.replyTo` is the part of a stored id after `<source>:<chat>:`
+   * (an `:edit:<stamp>` suffix there must be dropped, common.ts replyTarget); platforms with inline replies (Discord,
+   * Telegram) quote that message. Slack has none: a reply goes where the message was written, and only an `attached`
+   * message without a thread is threaded under `replyTo`.
    * Throws SendUncertain when the request may have reached the platform (also when some chunks of a split reply went
    * out and a later one failed), or any other Error for a definite failure.
    */

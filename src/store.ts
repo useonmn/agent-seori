@@ -37,7 +37,7 @@ export type Lane = {
   final?: { text: string; evidence: string[]; at: number };
   /** The `Done =` line from `seori start --done`: signals seori reads back live before the lane may close (src/signals.ts). */
   done?: string;
-  /** The lead channel id of the owner's message this lane works on (e.g. `telegram:42:5`); progress posts thread under it. */
+  /** The lead channel id of the owner's message this lane works on (e.g. `telegram:42:5`); progress posts attach to it. */
   thread?: string;
   /** The lead's last objection to a READY claim; a new READY clears it. */
   objection?: { at: number; reasons: string[] };
