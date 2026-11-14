@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main, upCheck } from "../src/cli.ts";
+import { main, up, upCheck } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { recordPath } from "../src/down.ts";
 import { AGENT_OMP_CONFIG, agentOmpConfig, ompMemoryDb, Refusal, startLane } from "../src/harness.ts";
@@ -73,15 +73,45 @@ describe("seori up, once per home", () => {
     expect(opened(w)).toBe(before);
   });
 
-  test("a live loop or daemon of this home counts as up even when its lead pane is gone", async () => {
-    const d = new World().deps();
+  test("a live unit set with its lead pane gone reopens the missing lead and duty panes, and touches no unit", async () => {
+    const w = new World();
+    const d = w.deps();
     mkdirSync(join(d.store.root, "run"));
-    writeFileSync(recordPath(d.store.root, "daemon-loop"), JSON.stringify({ pid: 4242 }));
-    writeFileSync(recordPath(d.store.root, "duty"), JSON.stringify({ pid: 4343 }));
+    // The units are really running: their records name this process, which is alive by definition.
+    writeFileSync(recordPath(d.store.root, "daemon-loop"), JSON.stringify({ pid: process.pid }));
+    writeFileSync(recordPath(d.store.root, "duty"), JSON.stringify({ pid: process.pid }));
+    // What a reboot leaves: the units come back, the panes do not (and the remembered ids are from the old core).
     d.store.setRole("lead", paneRef("t1"));
-    const line = await upCheck(d, "seori", (pid) => pid === 4242);
-    expect(line).toStartWith(`ALREADY UP name=seori home=${d.store.root} lead=gone running=daemon-loop; nothing opened`);
-    expect(await upCheck(d, "seori", () => false)).toBeUndefined();
+    d.store.setRole("duty", paneRef("t2"));
+    const plan = await upCheck(d, "seori");
+    expect(plan.kind).toBe("panes");
+    expect(plan.kind === "panes" ? plan.missing : []).toEqual(["lead", "duty"]);
+    const panesBefore = w.panes.size;
+    const line = await captureLog(() => up(d, undefined));
+    expect(line).toStartWith("REOPENED lead,duty lead=hc:t");
+    expect(line).toMatch(/running=[a-z,-]*daemon-loop/);
+    expect(line).toMatch(/running=[a-z,-]*duty/);
+    // Exactly the two missing panes were opened, and the roles now name the new ones.
+    expect(w.panes.size).toBe(panesBefore + 2);
+    expect(d.store.roles().lead!.id).not.toBe("t1");
+    expect(d.store.roles().duty!.id).not.toBe("t2");
+    // With the lead pane live again, the same command opens nothing: no duplicate lead.
+    const panesAfter = w.panes.size;
+    expect(await captureLog(() => up(d, undefined))).toStartWith("ALREADY UP");
+    expect(w.panes.size).toBe(panesAfter);
+  });
+
+  test("a home with a live lead but no live duty reopens only the duty pane", async () => {
+    const w = new World();
+    const d = w.deps();
+    d.store.setRole("lead", paneRef("t1"));
+    d.store.setRole("duty", paneRef("t2"));
+    w.addPane("t1", "idle");
+    const before = opened(w);
+    const line = await captureLog(() => up(d, undefined));
+    expect(line).toStartWith("REOPENED duty lead=hc:t1 duty=hc:t");
+    expect(opened(w)).toBe(before + 1);
+    expect(d.store.roles().lead!.id).toBe("t1");
   });
 
   test("another home's terminals under the same name are refused; a stale lead id in another instance's group is not this home", async () => {
@@ -89,7 +119,7 @@ describe("seori up, once per home", () => {
     const d = w.deps();
     w.addPane("t9", "idle", { "seori.group": "bari" }); // the other instance's lead, whose id this home recorded before an hc restart
     d.store.setRole("lead", paneRef("t9"));
-    expect(await upCheck(d, "seori", () => false)).toBeUndefined();
+    expect((await upCheck(d, "seori", () => false)).kind).toBe("fresh");
     w.addPane("t3", "idle", { "seori.group": "seori" });
     await expect(upCheck(d, "seori", () => false)).rejects.toThrow(Refusal);
     await expect(upCheck(d, "seori", () => false)).rejects.toThrow(/labelled seori\.group="seori" \(seori\).*config\.json/);

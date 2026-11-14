@@ -3,12 +3,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ompProfile, TEST_AGENT_CMD_SWITCH } from "../src/agent/profile.ts";
-import { LEAD_EXTENSION, main, usesSystemdUnits } from "../src/cli.ts";
+import { LEAD_EXTENSION, LEAD_START_LINE, main, usesSystemdUnits } from "../src/cli.ts";
 import type { Deps } from "../src/harness.ts";
 import { Refusal } from "../src/harness.ts";
 import { shq } from "../src/runtime/index.ts";
 import {
-  homeTag, legacyUnitName, removeUnits, UNIT_KINDS, UnitError, unitFile, unitHome, unitInstance, unitName, unitPath, writeUnits,
+  BOOT_KIND, homeTag, legacyUnitName, removeUnits, UNIT_KINDS, UnitError, unitFile, unitHome, unitInstance, unitName, unitPath, writeUnits,
 } from "../src/systemd.ts";
 import { MESSENGER_TOKEN_ENV } from "../src/runtime/hc/sessions.ts";
 import { World } from "./fake.ts";
@@ -257,6 +257,8 @@ describe("seori up on hc", () => {
         "--cwd", root, "--name", "seori-two", "--", "env", ...UNSET, `SEORI_HOME=${root}`, "SEORI_CMD=seori", leadConfig, "sh",
       ],
       ["send", "t1", "--", ["omp", "-e", LEAD_EXTENSION, "--append-system-prompt", join(root, "prompts", "lead.md")].map(shq).join(" ")],
+      // The new lead is told to run `seori boot` and announce itself, so the owner sees it without typing anything.
+      ["send", "t1", "--if", "idle", "--", LEAD_START_LINE],
       [
         "run", "--bg", "--no-parent", "--no-notify",
         "--label", "seori.group=seori-two", "--label", "seori.role=duty", "--label", "seori.name=seori-two-duty", "--label", `seori.home=${homeTag(root)}`,
@@ -329,6 +331,47 @@ describe("seori up on hc", () => {
     expect(ctlCalls()).toEqual([`--user stop ${old.join(" ")}`, `--user disable ${old.join(" ")}`, "--user daemon-reload"]);
     expect(out.split("\n").filter((l) => l.startsWith("STOPPED UNIT"))).toHaveLength(3);
     expect(readdirSync(unitDir)).toEqual([]);
+  });
+
+  test("the logon hook survives a partial down and goes with down all", async () => {
+    const { d } = setup();
+    const boot = unitName("seori-two", d.store.root, BOOT_KIND);
+    await captureLog(() => main(["autostart", "install"], d));
+    expect(readdirSync(unitDir)).toEqual([boot]);
+    // A partial down removes only its own unit: the logon hook is a boot hook, not one of the resident processes.
+    const beforePartial = ctlCalls().length;
+    await captureLog(() => main(["down", "loop"], d));
+    expect(readdirSync(unitDir)).toEqual([boot]);
+    // No hourly unit was installed, so that down had nothing of its own to remove.
+    expect(ctlCalls()).toHaveLength(beforePartial);
+    // The hook never counts as this home being up: up still opens the whole set under it.
+    const out = await captureLog(() => main(["up"], d));
+    expect(out).toStartWith("UP lead=hc:t");
+    // down all is the kill switch, the hook included.
+    await captureLog(() => main(["down"], d));
+    expect(readdirSync(unitDir)).toEqual([]);
+    expect(ctlCalls().some((c) => c.startsWith("--user stop ") && c.includes(boot))).toBe(true);
+  });
+
+  test("autostart install enables the hook without starting it, and status reports it", async () => {
+    const { d } = setup();
+    const boot = unitName("seori-two", d.store.root, BOOT_KIND);
+    const installing = await captureLog(() => main(["autostart", "install"], d));
+    expect(installing).toContain(`AUTOSTART ${boot} enabled in ${unitDir}`);
+    // enable, never `enable --now`: at install time the hook does nothing (seori up opens the panes).
+    expect(ctlCalls()).toEqual(["--user show-environment", "--user daemon-reload", `--user enable ${boot}`]);
+    // No pane opened by the install.
+    const spec = { instance: "seori-two", home: d.store.root, cwd: d.store.root, bun: process.execPath, cli: join(import.meta.dir, "..", "src", "cli.ts"), env: process.env };
+    expect(readFileSync(join(unitDir, boot), "utf8")).toBe(unitFile(spec, BOOT_KIND));
+    const status = await captureLog(() => main(["autostart", "status"], d));
+    expect(status).toContain(`AUTOSTART ${boot} in ${unitDir}`);
+  });
+
+  test("autostart install refuses a home without a reachable user manager, writing nothing", async () => {
+    const { d } = setup();
+    noUserBus();
+    await expect(main(["autostart", "install"], d)).rejects.toThrow(Refusal);
+    expect(existsSync(unitDir) ? readdirSync(unitDir) : []).toEqual([]);
   });
 
   test("up refuses a cwd with a line break before it opens a terminal or writes a unit", async () => {
