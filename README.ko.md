@@ -402,9 +402,13 @@ seori worklog list --open
 
 ## 주인 스레드에 진행 상황 올리기
 
-메신저 메시지 때문에 연 레인에는 그 메시지의 리드 채널 id를 달 수 있습니다: `seori start <key> --brief FILE --thread <id>`. id는 리드가 그 메시지에서 보는 것, 즉 `<source>:<chat>:<message id>`입니다(`seori msg list`에 나오는 것). 그러면 듀티 루프가 레인의 최신 보고를 그 메시지 아래 스레드 답글로 `[<key>] <보고 내용>` 형태로 올립니다. 최대 `progressEveryMin`분(기본 15분, 레인을 연 때나 마지막으로 올린 때부터)마다 한 번이고, 보고가 바뀌었을 때만, 레인이 working이나 waiting일 때만 올립니다. 올리기 전에 홈 폴더는 `~`로, pane id는 `<pane>`으로 바꿉니다.
+메신저 메시지 때문에 연 레인에는 그 메시지의 리드 채널 id를 달 수 있습니다: `seori start <key> --brief FILE --thread <id>`. id는 리드가 그 메시지에서 보는 것, 즉 `<source>:<chat>:<message id>`입니다(`seori msg list`에 나오는 것). 그러면 듀티 루프가 레인의 최신 보고를 그 메시지 아래 스레드 답글로 `Progress (from the lane's last report): <보고 내용>` 형태로 올립니다. 최대 `progressEveryMin`분(레인을 연 때나 마지막으로 올린 때부터)마다 한 번이고, 보고가 바뀌었을 때만, 레인이 working이나 waiting일 때만 올립니다.
 
-갔는지 확실하지 않은 글은 올린 것으로 치고, 두 번 보내지 않습니다. 확실히 실패했거나, 그 source의 메신저가 설정되지 않았거나, 스레드 id가 그 형식이 아니면 `post-failed` 듀티 이벤트가 되고 다음 차례에 다시 시도합니다. 올린 글은 레인 기록에 남습니다.
+**기본은 꺼짐입니다.** config.json에 `progressEveryMin`이 없으면 아무것도 올리지 않습니다. 켜려면 `{"progressEveryMin": 15}`처럼 분 단위 양수를 넣습니다. 끄는 표기는 `null` 하나뿐이고, `0`은 설정 오류로 거절합니다(0분 주기는 주기가 아닙니다). 이 스위치는 게시만 끕니다. `seori report`, 리드가 받는 `[REPORT]` 줄, 넛지는 켜짐과 꺼짐에서 똑같이 동작합니다.
+
+올리기 전에 홈 폴더는 `~`로, `$SEORI_HOME` 아래 경로(`secrets.json`, `messengers.json`, 레인 기록이 사는 곳)는 `(state path)`로, pane id는 `<pane>`으로 바꿉니다. 그 밖의 절대경로는 레인이 쓴 그대로 둡니다. 보고는 증거(테스트 로그, 클론 경로, PR)를 인용하는 것이 규칙이고, 그것까지 가리면 쓸모없는 보고가 되기 때문입니다. `hooks.threadReply`가 설정돼 있으면 그 명령으로([후크](#후크) 참고), 없으면 설정된 메신저로 올립니다.
+
+갔는지 확실하지 않은 글은 올린 것으로 치고, 두 번 보내지 않습니다. 확실히 실패했거나, 그 source의 메신저가 설정되지 않았거나, 스레드 id가 그 형식이 아니면 `post-failed` 듀티 이벤트가 되고 다음 차례에 다시 시도합니다. 올린 글은 레인 기록에 남고, 각 이벤트는 어느 경로로 갔는지(`via hooks.threadReply` 또는 `via messenger`)를 적습니다.
 
 ## 메신저 채널
 
@@ -544,7 +548,7 @@ seori watch stop dev
   "name": "seori",
   "repoIdentities": {},
   "closeAfterMin": 5,
-  "progressEveryMin": 15,
+  "progressEveryMin": null,
   "blockedPromptMin": 10,
   "startupWaitSeconds": 180,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
@@ -560,7 +564,7 @@ seori watch stop dev
 | `name` | `"seori"` | 이 인스턴스의 이름. `seori up`이 여는 hc 터미널의 `seori.group` 라벨이고, systemd 유닛 이름에도 들어갑니다. 1-40자의 글자(어떤 문자든), 숫자, `.`, `_`, `-`이고 글자나 숫자로 시작해야 합니다. 한 PC의 인스턴스마다 다른 이름을 주세요. [한 PC에서 여러 인스턴스 돌리기](#한-pc에서-여러-인스턴스-돌리기) 참고 |
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: 그 저장소 커밋에 있어야 할 Git 신원. verify-pr과 머지 관문이 이메일을 확인합니다. 저장소 이름은 대소문자를 무시하고 맞춥니다. 항목이 없는 저장소는 신원을 확인하지 않습니다 |
 | `closeAfterMin` | `5` | Done 줄이 있는 레인이 READY 뒤 몇 분 지나면 저절로 닫히는지(리드가 반대하지 않으면) |
-| `progressEveryMin` | `15` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지 |
+| `progressEveryMin` | `null` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지. `null`은 끔, `0`은 거절 |
 | `blockedPromptMin` | `10` | 레인 창에 대화 상자(`blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
 | `workflow` | 없음 | `seori start --workflow`로 따로 정하지 않은 모든 레인의 워크플로입니다. `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"`, `"ulw-execute"` 가운데 하나면 레인을 그 omp-ulw 워크플로로 돌립니다. 없으면 omp 기본 목표 모드입니다. [워크플로](#워크플로) 참고 |
 | `startupWaitSeconds` | `180` | `seori start`가 새 레인의 시작 판정을 위해 몇 초까지 지켜보는지(시작 명령 20초 뒤 첫 확인, 그 뒤 10초마다). [레인이 시작되는 방법](#레인이-시작되는-방법) 참고 |
@@ -589,7 +593,7 @@ seori watch stop dev
 
 ### 후크
 
-config.json의 `hooks`는 argv 템플릿을 받습니다(비어 있지 않은 문자열 배열. 0번 요소가 명령이고, 셸 확장은 없습니다). 각 요소 안의 `{key}`, `{text}`, `{evidence}`, `{file}`, `{tokens}`, `{cost}`, `{closeKey}`를 값으로 바꿉니다.
+config.json의 `hooks`는 argv 템플릿을 받습니다(비어 있지 않은 문자열 배열. 0번 요소가 명령이고, 셸 확장은 없습니다). 각 요소 안의 `{key}`, `{text}`, `{evidence}`, `{file}`, `{tokens}`, `{cost}`, `{closeKey}`, `{thread}`를 값으로 바꿉니다.
 
 | 후크 | 언제 도나 | 쓸 수 있는 자리표시자 |
 |---|---|---|
@@ -598,11 +602,12 @@ config.json의 `hooks`는 argv 템플릿을 받습니다(비어 있지 않은 �
 | `onLost` | 듀티나 감독이 레인을 lost로 표시할 때 | `key`, `text` |
 | `recordCost` | 레인이 닫히고 토큰이나 비용을 읽을 수 있을 때 한 번(비용 기록 참고) | `key`, `tokens`, `cost`, `closeKey` |
 | `transcribe` | 오디오 파일을 글로 바꿉니다: `seori transcribe <file>`과 텔레그램 음성 메시지 | `file` |
+| `threadReply` | 레인의 진행 상황을 그 스레드에 올립니다. 내장 메신저 대신 이 명령을 씁니다(진행 상황 올리기 참고) | `thread`, `text`, `key` |
 
-수명 주기 후크는 돌려 놓고 기다리지 않습니다. 실패하면 stderr에 `seori: hook <name> failed (...)` 한 줄을 남길 뿐 명령의 결과는 바뀌지 않고, CLI는 끝날 때 아직 도는 후크를 최대 2초까지만 기다립니다. 리뷰어를 대신하는 후크는 없습니다. `seori review`는 늘 omp를 돌리고, `hooks.reviewCommand` 키는 거절합니다. `transcribe`는 앞에서 돌고, 필사본을 stdout에 출력하고 0으로 끝나야 합니다. 설정하지 않으면 음성 메시지는 그냥 첨부 줄로 남습니다. `hooks` 값이 잘못되면 설정 오류입니다(종료 코드 2).
+수명 주기 후크는 돌려 놓고 기다리지 않습니다. 실패하면 stderr에 `seori: hook <name> failed (...)` 한 줄을 남길 뿐 명령의 결과는 바뀌지 않고, CLI는 끝날 때 아직 도는 후크를 최대 2초까지만 기다립니다. 리뷰어를 대신하는 후크는 없습니다. `seori review`는 늘 omp를 돌리고, `hooks.reviewCommand` 키는 거절합니다. `transcribe`와 `threadReply`는 앞에서 돌고 0으로 끝나야 합니다: `transcribe`는 필사본을 stdout에 출력하고, `threadReply`가 0이 아닌 코드로 끝나면 아무것도 올리지 않으므로 다음 듀티 차례에 같은 보고를 다시 시도하고 이벤트에 `via hooks.threadReply`가 남습니다. `transcribe`를 설정하지 않으면 음성 메시지는 그냥 첨부 줄로 남고, `threadReply`를 설정하지 않으면 진행 상황은 설정된 메신저로 갑니다. `hooks` 값이 잘못되면 설정 오류입니다(종료 코드 2).
 
 ```json
-{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"] } }
+{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"], "threadReply": ["agent-slackbot", "message", "send", "{thread}", "--text", "{text}"] } }
 ```
 
 ## 서리 모드 스킬
