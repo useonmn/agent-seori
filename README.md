@@ -12,7 +12,7 @@ seori's design is based on [dori-superagent](https://github.com/sisyphuslabs/dor
 curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 ```
 
-Then open an hc terminal, run omp in it and say `seori mode` (or `서리 모드`). The seori-mode skill walks you through the rest and stops wherever it needs your choice or your hand: a name for the bot, the install, which messenger (Telegram, Slack or Discord), creating the bot with you in the browser, `secrets.json` and `seori msg check`, pairing you as the owner with `seori msg pair`, a first greeting through the bot, `seori up`, and an onboarding that, with your consent, reads your tools read-only into the agent's memory and into your [owner profile](#owner-profile), a file you can open and edit. Once seori is set up, saying `seori mode` again runs `seori boot` and reports what it lists. See [seori mode skill](#seori-mode-skill).
+Then open an hc terminal, run omp in it and say `seori mode` (or `서리 모드`). The seori-mode skill walks you through the rest and stops wherever it needs your choice or your hand: a name for the bot, the install, which messenger (Telegram, Slack or Discord), creating the bot with you in the browser, `secrets.json` and `seori msg check`, pairing you as the owner with `seori msg pair`, a first greeting through the bot, `seori up`, and an onboarding that, with your consent, reads your tools read-only into the agent's memory. Once seori is set up, saying `seori mode` again runs `seori boot` and reports what it lists. See [seori mode skill](#seori-mode-skill).
 
 ## What it is
 
@@ -398,21 +398,10 @@ seori worklog list --open
 
 The lead's rules: `add` the moment a request arrives, `next` and `note` as it moves, `close --result` with what came of it.
 
-## Owner profile
-
-`$SEORI_HOME/owner.md` (`~/.seori/owner.md` by default) is your profile as the lead knows it: who you are, how you want to be addressed and written to, your work and projects, your tools and accounts (their names and where they live, never a secret), and the standing preferences and rules you gave. It is a short markdown file of plain facts under the sections Who, Addressing and writing, Work and projects, Tools and accounts, and Preferences and rules.
-
-- Onboarding writes its summary into it. After that the lead keeps it current: when it learns a durable fact or preference about you, it updates the file as well as its memory, replacing the line the new fact supersedes so the newest decision is the one written.
-- It is your document: open it and edit it whenever you like. The lead reads it at the start of every session (see [Boot](#boot)), and what the file says wins over memory.
-- Secrets and other people's private messages never go into it, and people other than you never see anything in it.
-
-seori itself never creates or rewrites the file; only the lead and onboarding write it, and `seori boot` only reads it.
-
 ## Boot
 
 `seori boot` is the read-only check the lead runs after a restart, a `/new` or a compaction, before acting on what it remembers. It changes nothing: no lane or role is written, nothing is relaunched, no watch is stopped, no message is closed, and no lane, role, watch or message record is written (an unused home only gets its empty state directories). Its lines, in order:
 
-- `OWNER` with the [owner profile](#owner-profile) below it, each of its lines indented by two spaces so none of them can pass for a boot line. Only the first 8000 characters are shown, cut at a line break, with an `OWNER truncated` line pointing at the file for the rest. A missing file is one line, `OWNER none: no profile at <path> yet`, and not a failure; a file that is there but cannot be read is `OWNER unreadable` and makes the boot incomplete. The profile comes first because it frames everything below it, and the start-up line a new lead gets already runs `seori boot`, so the profile lands in every new lead's context without a separate step;
 - `CONFIG` (ok, defaults or invalid) and `MESSENGERS`;
 - `LEAD` and `DUTY` with their pane and status;
 - `PANES` (a summary), `VANISHED` for an open lane whose pane is gone (its record is kept, nothing is relaunched), `UNREGISTERED` for an agent pane that no role and no open lane owns;
@@ -683,7 +672,7 @@ To uninstall, run `seori down` (it stops the processes, removes the systemd unit
 
 ## State
 
-JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, the host guard state (`duty/guard.json`), the stall history (`duty/supervision.json`) and the pane-health spells (`duty/panes.json`), `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `checkpoints/` for each lane's checkpoint journal (`<key>.jsonl`), `heavy/` for the heavy slot locks (`<n>.lock`), `lessons.jsonl`, `worklog.jsonl` and the `worklog.md` rendered from it, `owner.md` (the [owner profile](#owner-profile), markdown), `config.json`, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
+JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, the host guard state (`duty/guard.json`), the stall history (`duty/supervision.json`) and the pane-health spells (`duty/panes.json`), `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `checkpoints/` for each lane's checkpoint journal (`<key>.jsonl`), `heavy/` for the heavy slot locks (`<n>.lock`), `lessons.jsonl`, `worklog.jsonl` and the `worklog.md` rendered from it, `config.json`, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
 
 ## Several instances on one PC
 
