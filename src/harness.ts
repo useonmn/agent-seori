@@ -19,13 +19,15 @@ import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClai
 import { guardTick } from "./guard.ts";
 import { agentGone, panesTick } from "./panes.ts";
 import { progressTick } from "./progress.ts";
-import { superviseTick } from "./supervision.ts";
+import { recordCloseCost, superviseTick } from "./supervision.ts";
 import { checkSignals, parseDone } from "./signals.ts";
 import { GLOBAL_LESSONS_HEADING, LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
 import { refText, sameSession } from "./refs.ts";
 import { loadHooks, runHook } from "./hooks.ts";
+import { WatchStore } from "./watch/store.ts";
+import { lostText } from "./restart.ts";
 
 export { KEY_RE, reservedKey };
 export { resolveTarget };
@@ -397,7 +399,12 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
   const existing = d.store.lane(key);
-  if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
+  // A ready lane whose pane is gone (a restart closes it) is never marked lost, since its claim stands for merge and
+  // done; starting the key again is how it gets more work, so that key is taken back.
+  if (existing && existing.status !== "done" && existing.status !== "lost" &&
+    !(existing.status === "ready" && (await d.runtime.status(existing.sessionRef)) === "gone")) {
+    throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
+  }
   // Stored without a leading `Done =`, which the footer adds back.
   const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
   if (opts.done !== undefined) parseDone(opts.done);
@@ -424,6 +431,16 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const source = readFileSync(briefFile, "utf8").replace(LESSONS_RE, "").replace(FOOTER_RE, "").trimEnd();
   await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
+  // The ready lane this start takes back is closed by it: what its session spent is recorded, as `seori done` would,
+  // and the watches it armed are noted now, before the new session can arm its own.
+  const watches = existing?.status === "ready" ? new WatchStore(d.store.root) : undefined;
+  const live = (w: { status: string }): boolean => w.status === "active" || w.status === "muted";
+  const oldWatches = (watches?.list() ?? []).filter((w) => live(w) && w.owner.kind === "lane" && w.owner.key === key).map((w) => w.id);
+  if (existing?.status === "ready") {
+    await recordCloseCost(d, existing).catch((e: unknown) => {
+      process.stderr.write(`seori: lane ${key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
+    });
+  }
   const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
   const rt = d.runtime;
   const ref = await rt.create({ name: key, cwd, env, role: "lane", group: loadConfig(d.store.root).name, home: d.store.root });
@@ -439,6 +456,11 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     throw new Refusal(`lane ${key} did not start, pane ${refText(ref)} closed: ${failureDetail(e)}`);
   }
 
+  // The ready claim may have been closed (seori done, the done window) while the new pane opened: never overwrite it.
+  if (existing?.status === "ready" && !sameClaim(d, existing)) {
+    await rt.close(ref).catch(() => undefined);
+    throw new Refusal(`lane ${key} changed while it was being started again (now ${d.store.lane(key)?.status ?? "gone"}); pane ${refText(ref)} closed`);
+  }
   const now = d.now();
   const lane: Lane = {
     key, sessionRef: ref, paneId: ref.id, tabId: "", brief: briefPath, cwd,
@@ -452,6 +474,22 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
+  // Watches the old session armed would wake the new one with events it never asked for. Stopped once the new record
+  // is saved, so a failure here leaves a watch to stop by hand, never a pane without a record.
+  const reason = "owner lane started again";
+  for (const id of oldWatches) {
+    try {
+      let stopped = false;
+      watches!.update(id, (cur) => {
+        if (!live(cur)) return cur;
+        stopped = true;
+        return { ...cur, status: "stopped", reason };
+      });
+      if (stopped) watches!.appendEvent(id, { at: d.now(), ev: "stopped", reason });
+    } catch (e) {
+      process.stderr.write(`seori: lane ${key}: watch ${id} of its old session not stopped (${e instanceof Error ? e.message : String(e)}); stop it with: ${d.seoriCmd} watch stop ${id}\n`);
+    }
+  }
   await tellLead(d, `[START ${key}] lane opened in ${refText(ref)}`, key);
   return { lane, kickedAt, took };
 }
@@ -609,7 +647,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
         });
         if (!lost) continue;
         void runHook(d, "onLost", { key: lane.key, text: "pane disappeared without READY", evidence: "" });
-        await tellLead(d, `[LOST ${lane.key}] pane ${refText(lane.sessionRef)} closed without a final answer`, "duty");
+        await tellLead(d, lostText(lane, refText(lane.sessionRef), d.seoriCmd), "duty");
         events.push({ lane: lane.key, action: "lost" });
         continue;
       }

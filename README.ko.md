@@ -81,15 +81,16 @@ seori restart --follow
 # RESTART_EXIT=0
 ```
 
-`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. `setsid --fork`, 그다음 `systemd-run --user`(transient 유닛은 사용자 매니저의 환경을 받으므로 `PATH`와 호출한 쪽의 `SEORI_*`, `HC_*` 변수를 넘겨 줍니다. 메신저 토큰은 절대 넘기지 않습니다), 그다음 SIGHUP을 무시하는 `nohup` 순서로 시도해서 처음 시작되는 방법을 씁니다. `setsid`가 없는 macOS에서는 `nohup`이 쓰이는데, 이때 워커는 패널의 세션과 프로세스 그룹에 그대로 남습니다. 그래서 패널을 닫을 때 hang-up(SIGHUP)만 보내면 살아남지만 프로세스 그룹 전체를 죽이면 함께 끝납니다. 실제 hc 패널을 닫아 보는 테스트는 없으니, macOS 패널에서 실행한 재시작이 패널과 함께 죽으면 그룹 바깥의 셸에서 `seori restart`를 실행하세요. 한 홈의 재시작은 한 번에 하나만 돕니다: 워커가 `$SEORI_HOME/run/restart.pid`를 잡고 있고, 그동안 두 번째 `seori restart`는 거절됩니다. 워커는 hc가 답하는지 확인하고, `seori down all --keep-autostart`를 실행하고(재시작은 로그온 훅을 남깁니다), down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--cwd`가 없으면 up은 그 홈의 유닛이 도는 폴더(마지막 `seori up`이나 `autostart install`에 준 cwd)에서, 그것도 없으면 `$SEORI_HOME`에서 에이전트를 엽니다. `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 `nohup`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이면 거절하고, `--force`를 주면 끝낸 레인 키를 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
+`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. `setsid --fork`, 그다음 `systemd-run --user`(transient 유닛은 사용자 매니저의 환경을 받으므로 `PATH`와 호출한 쪽의 `SEORI_*`, `HC_*` 변수를 넘겨 줍니다. 메신저 토큰은 절대 넘기지 않습니다), 그다음 SIGHUP을 무시하는 `nohup` 순서로 시도해서 처음 시작되는 방법을 씁니다. `setsid`가 없는 macOS에서는 `nohup`이 쓰이는데, 이때 워커는 패널의 세션과 프로세스 그룹에 그대로 남습니다. 그래서 패널을 닫을 때 hang-up(SIGHUP)만 보내면 살아남지만 프로세스 그룹 전체를 죽이면 함께 끝납니다. 실제 hc 패널을 닫아 보는 테스트는 없으니, macOS 패널에서 실행한 재시작이 패널과 함께 죽으면 그룹 바깥의 셸에서 `seori restart`를 실행하세요. 한 홈의 재시작은 한 번에 하나만 돕니다: 워커가 `$SEORI_HOME/run/restart.pid`를 잡고 있고, 그동안 두 번째 `seori restart`는 거절됩니다. 워커는 hc가 답하는지 확인하고, `seori down all --keep-autostart`를 실행하고(재시작은 로그온 훅을 남깁니다), down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--cwd`가 없으면 up은 그 홈의 유닛이 도는 폴더(마지막 `seori up`이나 `autostart install`에 준 cwd)에서, 그것도 없으면 `$SEORI_HOME`에서 에이전트를 엽니다. `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 `nohup`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이나 `waiting`이면 거절하고, `--force`를 주면 끝낸 레인을 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
 
-멈춘(paused) 레인은 재시작을 막지 않지만, `down all`은 그 패널도 다른 패널처럼 닫습니다. 그래서 재시작은 닫게 되는 멈춘 레인마다 그 레인을 다시 시작하는 명령을 붙여 이름을 알려 주고, 같은 줄을 `restart.log`에도 남깁니다(working 레인 때문에 거절할 때도 멈춘 레인 이름을 함께 알려 줍니다):
+`down all`은 모든 레인 패널을 닫으므로, 재시작은 패널을 닫게 되는 레인(working, waiting, ready, paused)마다 그 레인을 다시 시작하는 명령을 붙여 이름을 알려 주고, 같은 줄을 `restart.log`에도 남깁니다. working이나 waiting 레인은 아직 할 일이 남은 레인입니다: waiting 레인은 패널 밖의 일(CI, 리뷰)에 막혀 있을 뿐 살아 있는 작업이고, 그 레인이 걸어 둔 watch는 레인이 lost가 되면 끝납니다. 그래서 둘 다 `--force` 없이는 재시작을 거절하고, `--force`를 주면 `ENDED`로 알려 줍니다. ready와 paused 레인은 재시작을 막지 않고 `CLOSED`로 알려 줍니다. 거절할 때도 두 종류를 모두 알려 줍니다:
 
 ```
-PAUSED-CLOSED docs: paused, and the down closes its pane (record and brief stay); to resume it later: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs' --workflow none
+ENDED api status=waiting: the down closes its pane (record and brief stay); it was waiting on something outside its pane (CI, a review), and the watches it armed end once it is lost; once duty marks it lost, resume it with: seori start api --brief '/home/you/.seori/briefs/api.md' --cwd '/home/you/src/api' --workflow none
+CLOSED docs status=paused: the down closes its pane (record and brief stay); it was paused, not failed; once duty marks it lost, resume it with: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs' --workflow none
 ```
 
-up 뒤 첫 듀티 차례가 사라진 패널을 보고 레인을 사라진(lost) 레인으로 기록하면, 새 리드는 `[LOST <key>] pane hc:t5 closed while the lane was paused ...`를 받습니다. 이 줄은 같은 `seori start` 명령으로 끝나므로, 리드는 그 레인이 실패한 것이 아니라 기다리던 중이었다는 것을 알고, 기다리던 일이 풀리면 다시 시작할 수 있습니다. 그 차례보다 먼저 `seori boot`을 실행하면 그 레인은 같은 명령과 함께 `VANISHED <key> ... status=paused`로 나옵니다. 이 명령은 레인 기록에 있는 시작 설정을 모두 담습니다(`--thread`, `--done`, 한도, `--activity-path`, `--model`, `--workflow`; 워크플로가 없었으면 `none`). 그래서 레인은 지금의 설정 기본값이 아니라 처음 시작한 그대로 돌아옵니다.
+up 뒤 첫 듀티 차례가 working, waiting, paused 레인의 사라진 패널을 보고 레인을 사라진(lost) 레인으로 기록하면, 새 리드는 `[LOST <key>] pane hc:t5 closed without a final answer while the lane was waiting ...`(또는 paused, working)를 받습니다. 이 줄은 그것이 무슨 뜻이었는지 말하고 같은 `seori start` 명령으로 끝나므로, 리드는 그 레인이 무엇을 하던 중이었는지 알고 다시 시작할 수 있습니다. ready 레인은 lost가 되지 않습니다: 최종 답과 증거가 남고, `seori merge`와 `seori done`은 패널이 없어도 됩니다. 일이 더 필요하면 그 명령으로 바로 다시 시작할 수 있습니다. `seori start`는 패널이 사라진 ready 레인의 키를 다시 받아 주기 때문입니다(그 세션이 쓴 비용을 기록하고, 그 세션이 걸어 둔 watch는 멈춥니다). Done 줄이 있는 ready 레인의 신호가 아직 살아 있지 않아도, 패널이 사라졌으면 이의를 걸지 않습니다(이의가 레인에 닿을 수 없으니까요). 레인은 ready로 남고, 리드는 시작 명령이 붙은 `[NOT-DONE <key>]`를 한 번 받으며, 모든 신호가 살아 있다고 읽히면 마감 차례가 레인을 닫습니다. 그 차례보다 먼저 `seori boot`을 실행하면 그런 레인은 같은 설명과 명령과 함께 `VANISHED <key> ... status=<status>`로 나옵니다. 이 명령은 레인 기록에 있는 시작 설정을 모두 담습니다(`--thread`, `--done`, 한도, `--activity-path`, `--model`, `--workflow`; 워크플로가 없었으면 `none`). 그래서 레인은 지금의 설정 기본값이 아니라 처음 시작한 그대로 돌아옵니다.
 
 `seori up`이나 `seori restart`가 새 리드를 열면 seori가 시작 안내 한 줄을 전달합니다: `seori boot`을 실행하고, 주인에게 짧은 한 줄(가장 오래된 열린 worklog 항목의 스레드, 없으면 주인 DM)로 seori가 돌아왔다는 것과 열린 항목 수, 아직 열린 레인을 알리라는 내용입니다. 이 한 줄은 맨 마지막에, 듀티 패널이 기록되고 데몬과 루프가 돌기 시작한 뒤에 갑니다. 그래야 `seori boot`이 아직 뜨는 중인 듀티 패널이나 데몬을 문제로 보고하지 않고 다 갖춰진 홈을 봅니다. 리드를 연 뒤에 up이 실패해도 이 한 줄은 전달되므로, `seori boot`이 빠진 것을 보고합니다. 그래서 재시작 뒤에 주인이 아무것도 입력하지 않아도 소식이 갑니다. `prompts/lead.md`도 같은 규칙을 담고 있어서 손으로 띄운 리드도 그렇게 합니다.
 
@@ -106,7 +107,7 @@ seori status
 
 브리프에는 목표, 입력, 결과물, 끝나는 조건, 제약을 씁니다. 예시는 [examples/brief.md](examples/brief.md)에 있습니다. 끝나는 조건은 누가 봐도 확인할 수 있게 씁니다(예: PR이 열려 있고 체크가 모두 통과함). 브리프에 "목표를 완료하라(complete the goal)" 같은 말은 쓰지 마세요. 목표 모드에서는 이 말 때문에 모델이 일을 일찍 끝내 버립니다.
 
-레인 이름(key)은 `^[a-z][a-z0-9-]{1,40}$` 형식이어야 하고, 이미 열려 있는 이름은 쓸 수 없습니다.
+레인 이름(key)은 `^[a-z][a-z0-9-]{1,40}$` 형식이어야 하고, 이미 열려 있는 이름은 쓸 수 없습니다. 다만 패널이 사라진(재시작이 닫은) ready 레인의 이름은 다시 시작하면 그대로 다시 씁니다.
 
 레인 안에서 에이전트는 레인 규칙에 적힌 명령으로 진행 상황을 알리고 일을 마칩니다:
 
@@ -143,9 +144,9 @@ seori up [--cwd DIR] [--wait-hc]             이 홈의 리드, 듀티, 듀티 �
 seori restart [--cwd DIR] [--force] [--follow]
                                             이 홈을 down 뒤 up 합니다. 리드나 듀티 패널 안에서 실행해도 안전합니다:
                                             down이 그 패널을 닫으므로 분리된 자식(setsid/systemd-run/nohup)이 일합니다.
-                                            레인이 working이면 --force 없이는 거절하고, --force면 끝낸 키를 알려 줍니다;
-                                            이 홈의 다른 재시작이 도는 중이면 거절합니다; 멈춘(paused) 레인은 막지 않고,
-                                            각각을 다시 시작하는 명령과 함께 알려 줍니다(PAUSED-CLOSED); 로그온 훅은 남깁니다; DIR
+                                            레인이 working이나 waiting이면 --force 없이는 거절합니다; 이 홈의 다른
+                                            재시작이 도는 중이면 거절합니다; 패널을 닫는 레인(working, waiting, ready,
+                                            paused)마다 다시 시작하는 명령과 함께 알려 줍니다(ENDED, CLOSED); 로그온 훅은 남깁니다; DIR
                                             기본값은 이 홈의 유닛이 도는 폴더, 없으면 $SEORI_HOME; 새 ref와 모든 단계는
                                             $SEORI_HOME/restart.log에 남고 --follow가 출력합니다
 seori autostart install [--cwd DIR]          로그온 훅(systemd --user oneshot, `seori up --wait-hc --cwd DIR`)을 쓰고

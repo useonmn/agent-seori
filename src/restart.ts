@@ -31,24 +31,19 @@ export function runningRestart(root: string, alive: (pid: number) => boolean = p
   }
 }
 
-export type LaneBlock = { readonly key: string };
+/** Whether closing this lane's pane ends work its agent still owes (it is working or waiting), so a restart without --force refuses it. */
+export const endsWork = (lane: { readonly status: string }): boolean => lane.status === "working" || lane.status === "waiting";
 
 /**
- * The lanes a restart would end. `down all` closes every terminal of the home's group, lane panes included, so a restart
- * quietly kills running work: only a lane that is working is counted (ready, paused, done and lost lanes have no agent
- * still producing), and only that blocks. The record stays either way, so the key can be started again.
+ * The lanes a restart closes: every lane that still has a pane of its own (working, waiting, ready, paused), since
+ * `down all` closes every terminal of the home's group, lane panes included. Each is named with the command that brings
+ * it back, because the record stays but the pane does not. Of these, a working or waiting lane (endsWork) blocks the
+ * restart unless --force: a waiting lane is live work blocked outside its pane, and the watches it armed for that end
+ * once its lost pane makes it lost. A ready lane has sent its final answer and a paused one was told to stop, so
+ * neither blocks.
  */
-export function lanesARestartEnds(lanes: readonly { readonly key: string; readonly status: string }[]): LaneBlock[] {
-  return lanes.filter((l) => l.status === "working").map((l) => ({ key: l.key }));
-}
-
-/**
- * The paused lanes a restart closes. They do not block it (a paused lane has no agent producing), but the down closes
- * their panes like any other and the duty pass after the up marks each one lost, so a restart names every one of them
- * with the command that brings it back: the pause meant "resume later", and that intent must outlive the pane.
- */
-export function pausedLanesARestartCloses<L extends { readonly status: string }>(lanes: readonly L[]): L[] {
-  return lanes.filter((l) => l.status === "paused");
+export function lanesARestartCloses<L extends { readonly status: string }>(lanes: readonly L[]): L[] {
+  return lanes.filter((l) => endsWork(l) || l.status === "ready" || l.status === "paused");
 }
 
 /** What a lane's way back is read from: the record's launch settings. */
@@ -76,26 +71,57 @@ export function startAgain(lane: RestartableLane, seoriCmd: string): string {
   ].join(" ");
 }
 
-/** The line a restart prints, and writes to its log, for each paused lane it closes. */
-export function pausedClosedLine(lane: RestartableLane, seoriCmd: string): string {
-  return `PAUSED-CLOSED ${lane.key}: paused, and the down closes its pane (record and brief stay); to resume it later: ${startAgain(lane, seoriCmd)}`;
+/** What a closed pane meant for a lane of each status: said by the restart, the duty's [LOST] and boot's VANISHED. */
+const CLOSED_MEANT: Readonly<Record<string, string>> = {
+  working: "its work in progress stopped with the pane",
+  waiting: "it was waiting on something outside its pane (CI, a review), and the watches it armed end once it is lost",
+  ready: "it had sent READY: its final answer and evidence stay, and seori merge and seori done need no pane",
+  paused: "it was paused, not failed",
+};
+const closedMeant = (status: string): string => CLOSED_MEANT[status] ?? `it was ${status}`;
+
+/** A lane whose pane closed, as the restart, duty and boot read it: its status and its way back. */
+export type ClosedLane = RestartableLane & { readonly status: string };
+
+/**
+ * What closing the lane's pane meant, and how it comes back: once the next duty pass marks it lost, `seori start` takes
+ * the key again. Duty never marks a ready lane lost (its claim stands for merge and done), and `seori start` takes back a
+ * ready key whose pane is gone, so its command works at once.
+ */
+export function closedNote(lane: ClosedLane, seoriCmd: string): string {
+  const back = lane.status === "ready" ? "if it needs more work, resume it with: " : "once duty marks it lost, resume it with: ";
+  return `${closedMeant(lane.status)}; ${back}${startAgain(lane, seoriCmd)}`;
 }
 
 /**
- * The refusal for a restart that would end running lanes: the keys, both ways on (`--force`, or wait for them), and the
- * paused lanes it would also close, which do not block.
+ * The line a restart prints, and writes to its log, for each lane it closes: ENDED for one whose work it ends (only
+ * with --force), CLOSED for the rest.
  */
-export function lanesRefusal(blocks: readonly LaneBlock[], paused: readonly LaneBlock[], seoriCmd: string): string {
-  const keys = blocks.map((b) => b.key).join(", ");
+export function closedLaneLine(lane: ClosedLane, seoriCmd: string): string {
+  return `${endsWork(lane) ? "ENDED" : "CLOSED"} ${lane.key} status=${lane.status}: the down closes its pane (record and brief stay); ` +
+    closedNote(lane, seoriCmd);
+}
+
+/** The duty's [LOST] message for a lane whose pane is gone, whatever its status was and whatever closed the pane. */
+export function lostText(lane: ClosedLane, pane: string, seoriCmd: string): string {
+  return `[LOST ${lane.key}] pane ${pane} closed without a final answer while the lane was ${lane.status}; ` +
+    `${closedMeant(lane.status)}; its record and brief stay; to resume it: ${startAgain(lane, seoriCmd)}`;
+}
+
+/**
+ * The refusal for a restart that would end lanes still owed work: those keys, both ways on (`--force`, or wait for
+ * them), and the lanes it would also close, which do not block.
+ */
+export function lanesRefusal(closed: readonly { readonly key: string; readonly status: string }[]): string {
+  const list = (ls: readonly { readonly key: string; readonly status: string }[]): string => ls.map((l) => `${l.key} (${l.status})`).join(", ");
+  const ending = closed.filter(endsWork);
+  const others = closed.filter((l) => !endsWork(l));
   return (
-    `seori restart would end ${blocks.length} working lane(s): ${keys}. ` +
-    `down closes every terminal of this home, lane panes included, and their records stay but their work stops. ` +
-    `Wait for them, or pass --force to end them (the restart names each key it ended); a closed lane starts again with: ` +
-    `${seoriCmd} start <key> --brief <SEORI_HOME>/briefs/<key>.md --cwd <its cwd>` +
-    (paused.length > 0
-      ? `. It would also close ${paused.length} paused lane(s), which do not block: ${paused.map((b) => b.key).join(", ")} ` +
-        `(the restart prints each one's start command)`
-      : "")
+    `seori restart would end ${ending.length} lane(s) still owed work: ${list(ending)}. ` +
+    `down closes every terminal of this home, lane panes included: their records stay, but their work stops, and a waiting ` +
+    `lane's watches end once it is lost. Wait for them, or pass --force to end them; the restart names every lane it closes with ` +
+    `the command that resumes it` +
+    (others.length > 0 ? `. It would also close ${others.length} lane(s) that do not block: ${list(others)}` : "")
   );
 }
 
@@ -108,7 +134,7 @@ export type ScriptOptions = {
   readonly seoriCmd: string;
   /** The log the child writes to; restartLogPath(home) in use. */
   readonly log: string;
-  /** Lines logged right after RESTART_BEGIN: the lanes this restart ends or closes (ENDED, PAUSED-CLOSED). */
+  /** Lines logged right after RESTART_BEGIN: the lanes this restart ends or closes (ENDED, CLOSED; see closedLaneLine). */
   readonly notes?: readonly string[];
 };
 

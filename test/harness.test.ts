@@ -7,6 +7,9 @@ import { ConfigError, loadConfig } from "../src/config.ts";
 import { defaultSeoriCmd, done, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { backlogAdd } from "../src/loop.ts";
 import { deliverOrThrow } from "../src/runtime/index.ts";
+import { refText } from "../src/refs.ts";
+import { startAgain } from "../src/restart.ts";
+import { WatchStore } from "../src/watch/store.ts";
 import { Channel } from "../src/channel.ts";
 import { ompJson, World, paneRef } from "./fake.ts";
 
@@ -497,6 +500,71 @@ describe("duty loop", () => {
     w.panes.delete(lane.paneId);
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
     expect(lead.received.at(-1)).toContain("[LOST busy]");
+  });
+
+  test("a waiting lane whose pane is gone (a restart closed it) is LOST with what it waited on and the command that resumes it", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "busy", brief, {});
+    await report(d, "busy", "waiting on CI", "waiting");
+    w.panes.delete(lane.paneId);
+    expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
+    expect(d.store.lane("busy")!.status).toBe("lost");
+    const told = lead.received.at(-1)!;
+    expect(told).toStartWith(`[LOST busy] pane ${refText(lane.sessionRef)} closed without a final answer while the lane was waiting`);
+    expect(told).toContain("the watches it armed end once it is lost");
+    expect(told).toEndWith(`to resume it: ${startAgain(d.store.lane("busy")!, d.seoriCmd)}`);
+  });
+
+  test("start takes back a ready lane's key once its pane is gone (a restart closed it), and only then, recording its spend", async () => {
+    const { w, d, brief } = setup();
+    const first = await startLane(d, "busy", brief, {});
+    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
+    const old = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/x" } }, w.clock);
+    const ended = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/z" } }, w.clock);
+    await expect(startLane(d, "busy", brief, {})).rejects.toThrow(`lane busy is already open in ${refText(first.sessionRef)}`);
+    w.panes.delete(first.paneId);
+    // The new session arms a watch of its own while it starts up: that one must survive the take-back.
+    const rt = d.runtime;
+    const create = rt.create.bind(rt);
+    let fresh = "";
+    rt.create = async (spec) => {
+      const ref = await create(spec);
+      fresh = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/y" } }, w.clock).id;
+      // An old watch that ends on its own meanwhile is left as it ended, with no stop logged for it.
+      new WatchStore(d.store.root).update(ended.id, (cur) => ({ ...cur, status: "done", reason: "file changed" }));
+      return ref;
+    };
+    const again = await startLane(d, "busy", brief, {});
+    expect(again.paneId).not.toBe(first.paneId);
+    expect(d.store.lane("busy")).toMatchObject({ status: "working", paneId: again.paneId });
+    // The ready session is closed by the take-back, so its spend goes to the ledger as `seori done` would record it.
+    const ledger = readFileSync(join(d.store.root, "cost.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { closeKey: string });
+    expect(ledger.map((r) => r.closeKey)).toEqual([`busy@${first.createdAt}`]);
+    // The old session's watches end: they would wake the new session with events it never armed.
+    expect(new WatchStore(d.store.root).list().find((x) => x.id === old.id)).toMatchObject({ status: "stopped", reason: "owner lane started again" });
+    expect(new WatchStore(d.store.root).list().find((x) => x.id === fresh)).toMatchObject({ status: "active" });
+    expect(new WatchStore(d.store.root).list().find((x) => x.id === ended.id)).toMatchObject({ status: "done", reason: "file changed" });
+    expect(existsSync(new WatchStore(d.store.root).eventsPath(ended.id))).toBe(false);
+  });
+
+  test("a take-back whose ready claim is closed while the new pane opens closes that pane and leaves the record done", async () => {
+    const { w, d, brief } = setup();
+    const first = await startLane(d, "busy", brief, {});
+    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
+    w.panes.delete(first.paneId);
+    const rt = d.runtime;
+    const create = rt.create.bind(rt);
+    let opened = "";
+    rt.create = async (spec) => {
+      const ref = await create(spec);
+      opened = ref.id;
+      // seori done (or the done window) closes the claim from another process meanwhile.
+      d.store.saveLane({ ...d.store.lane("busy")!, status: "done" });
+      return ref;
+    };
+    await expect(startLane(d, "busy", brief, {})).rejects.toThrow("lane busy changed while it was being started again (now done)");
+    expect(d.store.lane("busy")!.status).toBe("done");
+    expect(w.panes.has(opened)).toBe(false);
   });
 
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */

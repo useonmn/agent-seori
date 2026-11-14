@@ -361,7 +361,7 @@ describe("paused lanes", () => {
     expect(lane().pausedFrom).toBeUndefined();
     expect(lane().log.at(-1)).toEqual({ at: 5 * MIN, kind: "lost", text: "pane disappeared while paused" });
     expect(lead.received).toHaveLength(1);
-    expect(lead.received[0]).toStartWith("[LOST fix-a] pane hc:t5 closed while the lane was paused");
+    expect(lead.received[0]).toStartWith("[LOST fix-a] pane hc:t5 closed without a final answer while the lane was paused; it was paused, not failed");
     expect(lead.received[0]).toEndWith(`to resume it: ${startAgain(lane(), d.seoriCmd)}`);
     expect(startAgain(lane(), d.seoriCmd)).toBe("seori start fix-a --brief '/dev/null' --cwd '/repo' --workflow none");
     expect(await superviseTick(d)).toEqual([]);
