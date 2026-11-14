@@ -520,6 +520,7 @@ describe("duty loop", () => {
     const first = await startLane(d, "busy", brief, {});
     d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
     const old = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/x" } }, w.clock);
+    const ended = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/z" } }, w.clock);
     await expect(startLane(d, "busy", brief, {})).rejects.toThrow(`lane busy is already open in ${refText(first.sessionRef)}`);
     w.panes.delete(first.paneId);
     // The new session arms a watch of its own while it starts up: that one must survive the take-back.
@@ -529,6 +530,8 @@ describe("duty loop", () => {
     rt.create = async (spec) => {
       const ref = await create(spec);
       fresh = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/y" } }, w.clock).id;
+      // An old watch that ends on its own meanwhile is left as it ended, with no stop logged for it.
+      new WatchStore(d.store.root).update(ended.id, (cur) => ({ ...cur, status: "done", reason: "file changed" }));
       return ref;
     };
     const again = await startLane(d, "busy", brief, {});
@@ -540,6 +543,8 @@ describe("duty loop", () => {
     // The old session's watches end: they would wake the new session with events it never armed.
     expect(new WatchStore(d.store.root).list().find((x) => x.id === old.id)).toMatchObject({ status: "stopped", reason: "owner lane started again" });
     expect(new WatchStore(d.store.root).list().find((x) => x.id === fresh)).toMatchObject({ status: "active" });
+    expect(new WatchStore(d.store.root).list().find((x) => x.id === ended.id)).toMatchObject({ status: "done", reason: "file changed" });
+    expect(existsSync(new WatchStore(d.store.root).eventsPath(ended.id))).toBe(false);
   });
 
   test("a take-back whose ready claim is closed while the new pane opens closes that pane and leaves the record done", async () => {

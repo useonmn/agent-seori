@@ -456,18 +456,10 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     throw new Refusal(`lane ${key} did not start, pane ${refText(ref)} closed: ${failureDetail(e)}`);
   }
 
-  if (existing?.status === "ready") {
-    // The ready claim may have been closed (seori done, the done window) while the new pane opened: never overwrite it.
-    if (!sameClaim(d, existing)) {
-      await rt.close(ref).catch(() => undefined);
-      throw new Refusal(`lane ${key} changed while it was being started again (now ${d.store.lane(key)?.status ?? "gone"}); pane ${refText(ref)} closed`);
-    }
-    // Watches the old session armed would wake the new one with events it never asked for.
-    const reason = "owner lane started again";
-    for (const id of oldWatches) {
-      watches!.update(id, (cur) => (live(cur) ? { ...cur, status: "stopped", reason } : cur));
-      watches!.appendEvent(id, { at: d.now(), ev: "stopped", reason });
-    }
+  // The ready claim may have been closed (seori done, the done window) while the new pane opened: never overwrite it.
+  if (existing?.status === "ready" && !sameClaim(d, existing)) {
+    await rt.close(ref).catch(() => undefined);
+    throw new Refusal(`lane ${key} changed while it was being started again (now ${d.store.lane(key)?.status ?? "gone"}); pane ${refText(ref)} closed`);
   }
   const now = d.now();
   const lane: Lane = {
@@ -482,6 +474,22 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
+  // Watches the old session armed would wake the new one with events it never asked for. Stopped once the new record
+  // is saved, so a failure here leaves a watch to stop by hand, never a pane without a record.
+  const reason = "owner lane started again";
+  for (const id of oldWatches) {
+    try {
+      let stopped = false;
+      watches!.update(id, (cur) => {
+        if (!live(cur)) return cur;
+        stopped = true;
+        return { ...cur, status: "stopped", reason };
+      });
+      if (stopped) watches!.appendEvent(id, { at: d.now(), ev: "stopped", reason });
+    } catch (e) {
+      process.stderr.write(`seori: lane ${key}: watch ${id} of its old session not stopped (${e instanceof Error ? e.message : String(e)}); stop it with: ${d.seoriCmd} watch stop ${id}\n`);
+    }
+  }
   await tellLead(d, `[START ${key}] lane opened in ${refText(ref)}`, key);
   return { lane, kickedAt, took };
 }
