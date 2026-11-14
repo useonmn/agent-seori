@@ -25,14 +25,16 @@ describe("boot drift on hc", () => {
   const agent = (group: string) => terminal({ argv: ["omp"], labels: { "seori.group": group } });
 
   test("an open lane whose terminal is gone, and a terminal labelled seori.group without a record, fail the boot", async () => {
-    const { d } = hcSetup({ t1: agent("seori"), t2: agent("seori"), t3: agent("seori"), t4: agent("elsewhere") });
+    // t5 is a plain shell in the group (a loop terminal on macOS): hc names its program as agent, but it is no agent session.
+    const shell = terminal({ argv: ["sh"], status: null, labels: { "seori.group": "seori" } });
+    const { d } = hcSetup({ t1: agent("seori"), t2: agent("seori"), t3: agent("seori"), t4: agent("elsewhere"), t5: shell });
     d.store.setRole("lead", { runtime: "hc", id: "t1" });
     d.store.saveLane(lane("api", { runtime: "hc", id: "t3" }, "working"));
     d.store.saveLane(lane("lost-one", { runtime: "hc", id: "t7" }, "waiting"));
     const r = await bootReport(d);
     expect(drift(r.lines)).toEqual([
       "DRIFT lane lost-one has no session hc:t7 (status=waiting); lane record kept, nothing relaunched",
-      "DRIFT session hc:t2 is in group seori but has no lane or role record (agent=omp status=unknown); nothing closed",
+      "DRIFT session hc:t2 is in group seori but has no lane or role record (agent=omp status=idle); nothing closed",
     ]);
     expect(r.complete).toBe(false);
   });

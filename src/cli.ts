@@ -96,7 +96,8 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
   seori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
   seori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
   seori duty [--once] [--interval SECONDS]     flush inboxes, nudge silent lanes, escalate, detect lost lanes, close Done lanes,
-                                              ceilings and stalls, host guard, progress posts to the owner's thread
+                                              ceilings and stalls, host guard, progress posts to the owner's thread,
+                                              dead agents and agent sessions nothing owns
   seori duty stop [--text WHY] | resume | status   kill switch
   seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                               hourly: sync backlog, audit missed work, start the next item, ask decisions

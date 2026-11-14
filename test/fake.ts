@@ -148,10 +148,11 @@ export class World {
     if (verb === "ls") {
       const want = args.flatMap((a, i) => (a === "--label" ? [String(args[i + 1])] : []));
       const rows = [...this.panes].filter(([, p]) => want.every((kv) => `${kv.split("=")[0]}=${p.labels[kv.split("=")[0]!]}` === kv));
+      // Real hc (0.1.21) lists the terminal's own command as the `agent` of a terminal no agent reports from (`"agent":"sh"`,
+      // status absent), so a listed agent alone does not mean an agent session; only a reported status does.
+      const agent = (p: Pane) => (p.status === "shell" ? (typeof p.foreground === "string" ? p.foreground : "bash") : (p.agent ?? "omp"));
       return ok({
-        terminals: rows.map(([address, p]) => ({
-          address, state: "live", status: status(p), ...(p.status === "shell" ? {} : { agent: p.agent ?? "omp" }),
-        })),
+        terminals: rows.map(([address, p]) => ({ address, state: "live", status: status(p), agent: agent(p) })),
       });
     }
     const pane = id ? this.panes.get(id) : undefined;

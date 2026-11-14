@@ -492,11 +492,11 @@ describe("duty loop", () => {
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */
   const duringStatusRead = (d: ReturnType<World["deps"]>, paneId: string, during: () => void): void => {
     const rt = d.runtime;
-    const status = rt.status.bind(rt);
-    rt.status = async (ref) => {
-      const st = await status(ref);
+    const probe = rt.probe.bind(rt);
+    rt.probe = async (ref) => {
+      const read = await probe(ref);
       if (ref.id === paneId) during();
-      return st;
+      return read;
     };
   };
 
