@@ -58,7 +58,7 @@ seori up
 
 `seori up`은 언제 다시 실행해도 안전하고, 남아 있는 것에 따라 하는 일이 다릅니다. 리드 패널이 살아 있으면 `ALREADY UP ... nothing opened`를 출력하고 아무것도 열지 않습니다(다른 것이 얼마나 돌고 있든 마찬가지). 유닛이나 듀티 패널은 살아 있는데 리드 패널만 사라진 상태(재부팅, hc 코어 재시작, 창을 닫은 경우)에서는 사라진 리드·듀티 패널만 다시 열고 `REOPENED lead,duty lead=hc:t9 duty=hc:t10 running=...`를 출력합니다. 이때 유닛은 손대지 않고, 절대 다시 시작하지 않습니다. 예전에는 이 경우 `nothing opened`만 출력해서 리드가 없는데도 `seori down` 뒤 `seori up`을 손으로 해야 했습니다.
 
-패널은 `keep` 없이 만든 hc 터미널이라 재부팅이나 hc 재시작에서 끝납니다. 유닛(macOS에서는 루프 패널)은 돌아오지만 에이전트 패널은 로그온 때 무언가가 `seori up`을 실행하지 않으면 돌아오지 않습니다. 그 역할이 `seori autostart install`입니다:
+모든 패널은 `keep` 없이 만든 hc 터미널이라 재부팅이나 hc 재시작에서 끝납니다: Linux에서는 systemd 유닛만 돌아오고, macOS에서는 아무것도 돌아오지 않습니다. 패널은 로그온 때 무언가가 `seori up`을 실행해야만 돌아옵니다. 그 역할이 `seori autostart install`입니다:
 
 ```sh
 seori autostart install

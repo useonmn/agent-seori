@@ -59,7 +59,7 @@ seori up
 
 `seori up` is safe to run again at any time, and what it does depends on what is missing. With a live lead pane it prints `ALREADY UP ... nothing opened` and opens nothing, however much else is running. When the units or the duty pane are up but the lead pane is gone (after a reboot, an hc core restart, or a closed pane), it reopens exactly the missing lead and duty panes and prints `REOPENED lead,duty lead=hc:t9 duty=hc:t10 running=...`; the units are left alone, never restarted. That is the case that used to print `nothing opened` and leave you with no lead until you ran `seori down` and then `seori up`.
 
-The panes are hc terminals without `keep`, so a reboot or an hc restart ends them; the units (and on macOS the loop panes) come back, the agent panes do not come back by themselves unless something runs `seori up` at logon. `seori autostart install` is that something:
+Every pane is an hc terminal without `keep`, so a reboot or an hc restart ends it: on Linux only the systemd units come back, and on macOS nothing does. The panes come back only when something runs `seori up` at logon. `seori autostart install` is that something:
 
 ```sh
 seori autostart install
