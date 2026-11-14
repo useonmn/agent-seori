@@ -96,6 +96,15 @@ describe("install.sh and a checkout you develop in", () => {
    */
   const remedyField = (line: string, name: string) =>
     line.match(new RegExp(`${name}=(?:"([^"]+)"|(\\S+))`))?.slice(1).find((v) => v !== undefined);
+
+  /**
+   * The value a shell would see for `NAME` in a printed remedy. `printf %q` escapes metacharacters (`dev\$\(touch\ …`),
+   * so a path containing `$`, a backtick, a quote or a space can only be compared after the shell has read it back.
+   */
+  const shellValue = (line: string, name: string) => {
+    const r = Bun.spawnSync(["bash", "-c", `set -- ${line.match(new RegExp(`${name}=((?:\\\\.|[^\\s\\\\])*)`))?.[1] ?? ""}; printf '%s' "$1"`], { stdout: "pipe", stderr: "pipe" });
+    return r.stdout.toString();
+  };
   const gitEnv = {
     GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
@@ -457,19 +466,33 @@ describe("install.sh and a checkout you develop in", () => {
     // Whatever it decides, nothing in the path may have executed.
     expect(existsSync(canary)).toBe(false);
     expect(r.code).toBe(1);
-    const line = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
-    expect(line).toBeDefined();
-    const command = line!.slice(line!.indexOf("SEORI_NO_PULL=1"));
-    // The line names the checkout that printed it — read the way a shell would, since `printf %q` escapes the metacharacters
-    // (`dev\$\(touch\ …`) rather than hiding the path.
-    expect(shellValue(command, "SEORI_SRC")).toBe(nasty);
     const env: Record<string, string | undefined> = { ...process.env };
     for (const k of Object.keys(env)) if (k.startsWith("SEORI_")) delete env[k];
     Object.assign(env, { HOME: join(c.root, "home"), BUN_INSTALL: join(c.root, "bun"), XDG_CONFIG_HOME: join(c.root, "config"), XDG_DATA_HOME: join(c.root, "data"), XDG_CACHE_HOME: join(c.root, "cache") }, gitEnv);
+
+    // Each of the three printed remedies, on its own. Remedy 1 is read first because pasting it installs the checkout;
+    // the two git remedies are pasted too, since a hand-quoted `"$src"` in *any* of them runs the name on paste.
+    const line = (what: string) => r.err.split("\n").find((l) => l.includes(what));
+    const asIs = line("install this checkout as it is:")!;
+    expect(asIs).toBeDefined();
+    const command = asIs.slice(asIs.indexOf("SEORI_NO_PULL=1"));
+    // The line names the checkout that printed it, read the way a shell would: `printf %q` escapes the metacharacters
+    // (`dev\$\(touch\ …`) rather than hiding the path. Compared with the resolved-prefix rule, because install.sh prints
+    // `pwd -P` output while this path may still carry a symlinked prefix (`/var` vs `/private/var` on macOS).
+    expect(samePath(shellValue(command, "SEORI_SRC"), nasty)).toBe(true);
     const pasted = Bun.spawnSync(["bash", "-c", command], { env, stdout: "pipe", stderr: "pipe" });
     expect(existsSync(canary)).toBe(false);
-    // It installed that checkout, and the temp global link points there.
-    expect(pasted.stdout.toString()).toContain(`Installed seori from ${nasty}`);
-    expect(realpathSync(join(c.root, "bun", "install", "global", "node_modules", "seori"))).toBe(realpathSync(nasty));
+    expect(pasted.stdout.toString()).toContain("Installed seori from");
+    expect(existsSync(join(c.root, "bun", "install", "global", "node_modules", "seori"))).toBe(true);
+    expect(samePath(realpathSync(join(c.root, "bun", "install", "global", "node_modules", "seori")), nasty)).toBe(true);
+    for (const what of ["update it and keep the work:", "update it and drop the work:"]) {
+      const text = line(what)!;
+      expect(text).toBeDefined();
+      const cmd = text.slice(text.indexOf("git -C "));
+      // Pasting the git half of the remedy must not run anything out of the name either. It may fail (a rebase with a
+      // dirty tree, a reset that moves the branch) — what matters is that it never creates the canary.
+      Bun.spawnSync(["bash", "-c", cmd], { env, stdout: "pipe", stderr: "pipe" });
+      expect(existsSync(canary)).toBe(false);
+    }
   });
 });

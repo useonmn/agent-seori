@@ -116,6 +116,9 @@ elif local_work && update_waits; then
   # would still expand `$(…)`, a backtick or a quote from a directory name the moment the line is pasted.
   echo "  update it and keep the work:     $(cat_words "git -C $(q "$src") pull --rebase --autostash &&" "$self")" >&2
   echo "  update it and drop the work:     $(cat_words "git -C $(q "$src") reset --hard '@{u}' &&" "$self")" >&2
+  # `git pull --rebase --autostash` can stop on a conflict and still exit 0, leaving unmerged paths, so `&& $self` is not
+  # a success check; the line below says what to do when that happens. The chained install is still the right advice: it
+  # would refuse on the unmerged index rather than install a conflicted tree.
   echo "If the autostash stops on a conflict, resolve it and commit before installing again." >&2
   exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
