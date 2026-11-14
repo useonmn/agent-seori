@@ -4,10 +4,12 @@
 # Uninstall: bash install.sh --uninstall [--purge]   (or: seori uninstall [--purge]); --purge also deletes SEORI_HOME
 # Needs: git, bun 1.3+. Checks (never installs): hc (herdr-core) and its notes = false setting, omp, systemctl (Linux).
 # Optional env:
-#   SEORI_SRC     where the checkout lives (default ~/.seori/src)
+#   SEORI_SRC     where the checkout lives (default ~/.seori/src). Point it at the clone you develop in, e.g.
+#                 ~/src/agent-seori, and keep that clone outside SEORI_HOME; see "Working on seori itself" in README.md
 #   SEORI_HOME    seori's state directory (default ~/.seori)
 #   SKILLS_DIR    where omp loads user skills (default ~/.omp/agent/skills)
-#   SEORI_NO_PULL 1, true or yes: install the existing checkout as it is, without pulling
+#   SEORI_NO_PULL 1, true or yes: install the existing checkout as it is, without pulling (what you want while
+#                 developing: a checkout with local work is never pulled, and this says so instead of asking you)
 set -euo pipefail
 
 repo="https://github.com/useonmn/agent-seori.git"
@@ -32,6 +34,21 @@ chmod 700 "$home"
 mkdir -p "$src"
 src="$(cd "$src" && pwd -P)"
 
+# Local work: edits to tracked files, or commits upstream does not have. Untracked files never count (a test log, or
+# anything else `bun test` leaves behind, does not block a fast-forward), so they are filtered out here.
+local_work() {
+  [ -n "$(git -C "$src" status --porcelain --untracked-files=no)" ] && return 0
+  git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null || return 1
+  [ -n "$(git -C "$src" rev-list '@{u}..HEAD')" ]
+}
+
+# An update is waiting: upstream has commits this checkout does not. Read after the fetch. Both helpers are only
+# meaningful with an upstream branch; without one they say nothing and git's own message from the merge explains it.
+update_waits() {
+  git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null || return 1
+  [ -n "$(git -C "$src" rev-list 'HEAD..@{u}')" ]
+}
+
 # -e, not -d: a git worktree has a .git file.
 if [ ! -e "$src/.git" ]; then
   if [ -e "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ]; then
@@ -44,18 +61,23 @@ elif [[ "${SEORI_NO_PULL:-}" =~ ^(1|true|yes)$ ]]; then
 elif ! git -C "$src" fetch --quiet; then
   echo "Could not fetch updates for $src; git's message above says why." >&2
   exit 1
-elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
-  # Only local work (edits, or commits upstream lacks) is ours to explain; anything else is git's message above.
-  if git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null &&
-    [ -n "$(git -C "$src" status --porcelain)$(git -C "$src" rev-list '@{u}..HEAD')" ]; then
-    echo "Could not update $src. Local work in that checkout:" >&2
-    git -C "$src" status --short --branch >&2
-    git -C "$src" log --oneline '@{u}..HEAD' >&2
-    echo "To keep it and install the checkout as it is, run install.sh again with SEORI_NO_PULL=1." >&2
-    echo "To drop it and update: git -C \"$src\" reset --hard '@{u}', then run install.sh again." >&2
-  else
-    echo "Could not update $src; git's message above says why." >&2
+elif local_work && update_waits; then
+  # Refuse only when a pull would actually move this tree: with nothing upstream to take, local work changes nothing and
+  # a reinstall stays idempotent. The check is before the merge, not after it fails, so a clean fast-forward over edits
+  # meant to be run as they are never happens silently.
+  echo "$src has local work and upstream has commits it does not, so install.sh did not pull:" >&2
+  git -C "$src" status --short --branch --untracked-files=no >&2
+  if ahead="$(git -C "$src" log --oneline '@{u}..HEAD')" && [ -n "$ahead" ]; then
+    echo "Commits upstream does not have:" >&2
+    printf '%s\n' "$ahead" >&2
   fi
+  echo "This is a checkout you develop in; see \"Working on seori itself\" in README.md." >&2
+  echo "  install this checkout as it is:  SEORI_NO_PULL=1 bash install.sh" >&2
+  echo "  update it and keep the work:     git -C \"$src\" pull --rebase" >&2
+  echo "  update it and drop the work:     git -C \"$src\" reset --hard '@{u}' && bash install.sh" >&2
+  exit 1
+elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
+  echo "Could not update $src; git's message above says why." >&2
   exit 1
 fi
 
