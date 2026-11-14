@@ -43,7 +43,9 @@ import {
   BOOT_KIND, bootUnitInstalled, homeTag, installBootUnit, removeUnits, systemctl, unitCwd, unitDir, unitName, writeUnits, type UnitKind,
   type UnitSpecKind,
 } from "./systemd.ts";
-import { detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript } from "./restart.ts";
+import {
+  detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript, runningRestart,
+} from "./restart.ts";
 import { hcReason } from "./runtime/hc/exec.ts";
 
 const USAGE = `seori - a proactive multi-session harness for omp on hc
@@ -60,11 +62,12 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               down then up for this home, safe from inside the lead or duty pane: the
                                               work runs in a detached child (setsid/systemd-run/nohup), because down closes the
                                               caller's pane. Refused while a lane is working unless --force (which names
-                                              the keys it ended); keeps the logon hook; DIR defaults to the cwd this home's
-                                              units run in, else $SEORI_HOME; new refs go to $SEORI_HOME/restart.log,
-                                              --follow prints them
+                                              the keys it ended), and while another restart of this home runs; keeps the
+                                              logon hook; DIR defaults to the cwd this home's units run in, else
+                                              $SEORI_HOME; new refs go to $SEORI_HOME/restart.log, --follow prints them
   seori autostart install [--cwd DIR]          write and enable the logon hook (a systemd --user oneshot running
-                                              seori up --wait-hc --cwd DIR), so the lead and duty panes come back after a reboot
+                                              seori up --wait-hc --cwd DIR), so the lead and duty panes come back after a
+                                              reboot; DIR defaults to the cwd this home's units run in, else $SEORI_HOME
   seori autostart status                       whether that hook is installed
   seori role <lead|duty> [REF]                 register a session (hc:t7) as lead or duty (default: this one)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal, agent session, lessons + brief + lane rules
@@ -733,6 +736,9 @@ export async function restart(
   const log = restartLogPath(home);
   const lanes = lanesARestartEnds(d.store.lanes());
   if (lanes.length > 0 && !force) throw new Refusal(lanesRefusal(lanes, d.seoriCmd));
+  // One worker per home: a second would down the first's half-opened set (and the worker refuses itself as well).
+  const worker = runningRestart(home);
+  if (worker !== undefined) throw new Refusal(`a restart of this home is already running (pid ${worker}); its steps are in ${log}`);
   const script = restartScript({ home, cwd, seoriCmd: d.seoriCmd, log });
   const ways = detachWays(script, deps.has ?? ((bin) => Bun.which(bin) !== null), `seori-restart-${homeTag(home)}`, process.env);
   if (ways.length === 0) throw new Refusal(noDetachRefusal());
@@ -803,7 +809,10 @@ export async function followRestartLog(
 export const RESTART_FOLLOW_MS = 180_000;
 const RESTART_FOLLOW_POLL_MS = 500;
 
-/** `seori autostart install`: the logon hook's unit (Linux), enabled but not started. Returns its name. */
+/**
+ * `seori autostart install`: the logon hook's unit (Linux), enabled but not started. Returns its name. Without --cwd the
+ * hook opens the agents where this home's units already run (as a restart does), else in $SEORI_HOME.
+ */
 async function autostartInstall(d: Deps, cwdFlag: string | undefined, out: (line: string) => void = console.log): Promise<string> {
   const name = loadConfig(d.store.root).name;
   if (!usesSystemdUnits(d)) {
@@ -812,7 +821,7 @@ async function autostartInstall(d: Deps, cwdFlag: string | undefined, out: (line
         `\`${d.seoriCmd} up --wait-hc\` to a login item instead`,
     );
   }
-  const cwd = cwdFlag === undefined ? d.store.root : resolve(cwdFlag);
+  const cwd = cwdFlag === undefined ? (unitCwd(unitDir(), name, d.store.root) ?? d.store.root) : resolve(cwdFlag);
   const ctl = systemctl();
   await ctl(["show-environment"]).catch((e: unknown) => {
     const why = (e instanceof Error ? e.message : String(e)).split("\n")[0];

@@ -65,7 +65,7 @@ seori autostart install
 # AUTOSTART seori-seori-1a2b3c4d-boot.service enabled in ~/.config/systemd/user: it runs `seori up --wait-hc` once at logon
 ```
 
-로그온마다 한 번 `seori up --wait-hc --cwd DIR`을 실행하는 `systemd --user` oneshot(`Type=oneshot`, `Restart=` 없음, enable만 하고 시작하지는 않음)을 씁니다. DIR은 설치할 때 준 `--cwd`(기본 `$SEORI_HOME`)라서 에이전트가 시작했던 폴더에서 다시 뜹니다. `--wait-hc`는 `hc server status`를 폴링해서 코어가 답할 때까지 기다립니다(고정 sleep 없음, 최대 10분). hc 0.1.20은 `status`만 불러도 코어를 필요할 때 띄우므로 보통은 이 폴링만으로 코어가 뜹니다. 그래도 코어가 없으면 훅이 `hc server start`를 한 번 실행한 뒤 계속 기다립니다. 이는 hc의 즉석 기동을 쓸 수 없을 때(그 하위 명령이 없는 옛 hc, 상태 디렉터리에 쓸 수 없을 때)를 덮습니다. 이미 답하는 코어는 시작하지 않고, 한 번만 시작합니다. 코어가 끝내 답하지 않으면 무엇을 얼마나 기다렸고 무엇을 시도했는지(`hc server status` exit 5와 hc가 준 이유, `hc server start`의 성공 또는 실패 이유)를 한 줄 `HC UNAVAILABLE`로 남기고 0으로 끝나므로, 부팅 실패가 보고될 뿐 루프로 재시도하지 않습니다. 데몬과 루프는 어느 경우든 계속 돕니다. 이 줄은 seori가 멀쩡한지 hc가 안 뜬 것인지도 구분해 줍니다. `hc server start`로도 코어가 돌아오지 않으면 그 줄에 hc 자신의 메시지(예: `cannot start core: Permission denied (os error 13)`)가 그대로 실리므로, 그것이 다음에 고칠 것입니다. 설치를 다시 실행해도 무해하고, `seori autostart status`로 훅이 있는지 보고, `seori down all`이 훅을 지우며, `seori restart`는 훅을 그대로 둡니다. 레인 에이전트는 로그온 때 되살리지 않습니다: 기록이 남으므로 닫힌 레인은 키로 `seori start` 하면 됩니다.
+로그온마다 한 번 `seori up --wait-hc --cwd DIR`을 실행하는 `systemd --user` oneshot(`Type=oneshot`, `Restart=` 없음, enable만 하고 시작하지는 않음)을 씁니다. DIR은 설치할 때 준 `--cwd`이고, 주지 않으면 이 홈의 유닛이 이미 도는 폴더, 그것도 없으면 `$SEORI_HOME`입니다. 그래서 에이전트가 시작했던 폴더에서 다시 뜹니다. `--wait-hc`는 `hc server status`를 폴링해서 코어가 답할 때까지 기다립니다(고정 sleep 없음, 최대 10분). hc 0.1.20은 `status`만 불러도 코어를 필요할 때 띄우므로 보통은 이 폴링만으로 코어가 뜹니다. 그래도 코어가 없으면 훅이 `hc server start`를 한 번 실행한 뒤 계속 기다립니다. 이는 hc의 즉석 기동을 쓸 수 없을 때(그 하위 명령이 없는 옛 hc, 상태 디렉터리에 쓸 수 없을 때)를 덮습니다. 이미 답하는 코어는 시작하지 않고, 한 번만 시작합니다. 코어가 끝내 답하지 않으면 무엇을 얼마나 기다렸고 무엇을 시도했는지(`hc server status` exit 5와 hc가 준 이유, `hc server start`의 성공 또는 실패 이유)를 한 줄 `HC UNAVAILABLE`로 남기고 0으로 끝나므로, 부팅 실패가 보고될 뿐 루프로 재시도하지 않습니다. 데몬과 루프는 어느 경우든 계속 돕니다. 이 줄은 seori가 멀쩡한지 hc가 안 뜬 것인지도 구분해 줍니다. `hc server start`로도 코어가 돌아오지 않으면 그 줄에 hc 자신의 메시지(예: `cannot start core: Permission denied (os error 13)`)가 그대로 실리므로, 그것이 다음에 고칠 것입니다. 설치를 다시 실행해도 무해하고, `seori autostart status`로 훅이 있는지 보고, `seori down all`이 훅을 지우며, `seori restart`는 훅을 그대로 둡니다. 레인 에이전트는 로그온 때 되살리지 않습니다: 기록이 남으므로 닫힌 레인은 키로 `seori start` 하면 됩니다.
 
 `seori restart`는 리드나 듀티 세션이 자기 패널 안에서 홈을 재시작하는 방법입니다:
 
@@ -81,7 +81,7 @@ seori restart --follow
 # RESTART_EXIT=0
 ```
 
-`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. `setsid --fork`, 그다음 `systemd-run --user`(transient 유닛은 사용자 매니저의 환경을 받으므로 `PATH`와 호출한 쪽의 `SEORI_*`, `HC_*` 변수를 넘겨 줍니다), 그다음 SIGHUP을 무시하는 `nohup` 순서로 시도해서 처음 시작되는 방법을 씁니다. 워커는 hc가 답하는지 확인하고, `seori down all --keep-autostart`를 실행하고(재시작은 로그온 훅을 남깁니다), down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--cwd`가 없으면 up은 그 홈의 유닛이 도는 폴더(마지막 `seori up`이나 `autostart install`에 준 cwd)에서, 그것도 없으면 `$SEORI_HOME`에서 에이전트를 엽니다. `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 `nohup`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이면 거절하고, `--force`를 주면 끝낸 레인 키를 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
+`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. `setsid --fork`, 그다음 `systemd-run --user`(transient 유닛은 사용자 매니저의 환경을 받으므로 `PATH`와 호출한 쪽의 `SEORI_*`, `HC_*` 변수를 넘겨 줍니다. 메신저 토큰은 절대 넘기지 않습니다), 그다음 SIGHUP을 무시하는 `nohup` 순서로 시도해서 처음 시작되는 방법을 씁니다. `setsid`가 없는 macOS에서는 `nohup`이 쓰이는데, 이때 워커는 패널의 세션과 프로세스 그룹에 그대로 남습니다. 그래서 패널을 닫을 때 hang-up(SIGHUP)만 보내면 살아남지만 프로세스 그룹 전체를 죽이면 함께 끝납니다. 실제 hc 패널을 닫아 보는 테스트는 없으니, macOS 패널에서 실행한 재시작이 패널과 함께 죽으면 그룹 바깥의 셸에서 `seori restart`를 실행하세요. 한 홈의 재시작은 한 번에 하나만 돕니다: 워커가 `$SEORI_HOME/run/restart.pid`를 잡고 있고, 그동안 두 번째 `seori restart`는 거절됩니다. 워커는 hc가 답하는지 확인하고, `seori down all --keep-autostart`를 실행하고(재시작은 로그온 훅을 남깁니다), down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--cwd`가 없으면 up은 그 홈의 유닛이 도는 폴더(마지막 `seori up`이나 `autostart install`에 준 cwd)에서, 그것도 없으면 `$SEORI_HOME`에서 에이전트를 엽니다. `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 `nohup`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이면 거절하고, `--force`를 주면 끝낸 레인 키를 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
 
 `seori up`이나 `seori restart`가 새 리드를 열면 seori가 시작 안내 한 줄을 전달합니다: `seori boot`을 실행하고, 주인에게 짧은 한 줄(가장 오래된 열린 worklog 항목의 스레드, 없으면 주인 DM)로 seori가 돌아왔다는 것과 열린 항목 수, 아직 열린 레인을 알리라는 내용입니다. 그래서 재시작 뒤에 주인이 아무것도 입력하지 않아도 소식이 갑니다. `prompts/lead.md`도 같은 규칙을 담고 있어서 손으로 띄운 리드도 그렇게 합니다.
 
@@ -136,11 +136,12 @@ seori restart [--cwd DIR] [--force] [--follow]
                                             이 홈을 down 뒤 up 합니다. 리드나 듀티 패널 안에서 실행해도 안전합니다:
                                             down이 그 패널을 닫으므로 분리된 자식(setsid/systemd-run/nohup)이 일합니다.
                                             레인이 working이면 --force 없이는 거절하고, --force면 끝낸 키를 알려 줍니다;
-                                            로그온 훅은 남깁니다; DIR 기본값은 이 홈의 유닛이 도는 폴더, 없으면
-                                            $SEORI_HOME; 새 ref와 모든 단계는 $SEORI_HOME/restart.log에 남고 --follow가
-                                            출력합니다
+                                            이 홈의 다른 재시작이 도는 중이면 거절합니다; 로그온 훅은 남깁니다; DIR
+                                            기본값은 이 홈의 유닛이 도는 폴더, 없으면 $SEORI_HOME; 새 ref와 모든 단계는
+                                            $SEORI_HOME/restart.log에 남고 --follow가 출력합니다
 seori autostart install [--cwd DIR]          로그온 훅(systemd --user oneshot, `seori up --wait-hc --cwd DIR`)을 쓰고
-                                            enable 합니다. 재부팅 뒤 리드·듀티 패널이 저절로 다시 뜹니다
+                                            enable 합니다. 재부팅 뒤 리드·듀티 패널이 저절로 다시 뜹니다; DIR 기본값은
+                                            이 홈의 유닛이 도는 폴더, 없으면 $SEORI_HOME
 seori autostart status                       그 훅이 설치되어 있는지 봅니다
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널, 에이전트 세션, 교훈 + 브리프 + 레인 규칙

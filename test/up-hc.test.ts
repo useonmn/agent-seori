@@ -380,6 +380,15 @@ describe("seori up on hc", () => {
     expect(text).toContain(`"up" "--wait-hc" "--cwd" "${cwd}"\n`);
   });
 
+  test("autostart install without --cwd takes the cwd this home's units run in", async () => {
+    const { d } = setup();
+    const boot = unitName("seori-two", d.store.root, BOOT_KIND);
+    const cwd = mkdtempSync(join(tmpdir(), "seori-upcwd-"));
+    await captureLog(() => main(["up", "--cwd", cwd], d));
+    await captureLog(() => main(["autostart", "install"], d));
+    expect(readFileSync(join(unitDir, boot), "utf8")).toContain(`"up" "--wait-hc" "--cwd" "${cwd}"\n`);
+  });
+
   test("autostart install enables the hook without starting it, and status reports it", async () => {
     const { d } = setup();
     const boot = unitName("seori-two", d.store.root, BOOT_KIND);

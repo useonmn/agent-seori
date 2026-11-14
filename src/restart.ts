@@ -1,5 +1,8 @@
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { shq } from "./runtime/index.ts";
+import { MESSENGER_TOKEN_ENV } from "./runtime/hc/sessions.ts";
+import { bootCutoff, pidAlive } from "./store.ts";
 
 // `seori restart`: down then up, from inside a pane whose own down closes it. The command that does the work cannot be
 // the pane's process (down closes that pane, killing it mid-restart: the trap the hand-rolled /tmp/seori-restart.sh hit
@@ -10,6 +13,23 @@ import { shq } from "./runtime/index.ts";
 
 /** Where a restart says what it did: `$SEORI_HOME/restart.log`. The pane that asked is closed by the down, so the log is where the new lead and duty refs are read back. */
 export const restartLogPath = (root: string): string => join(root, "restart.log");
+
+/** The running worker's pid file, `$SEORI_HOME/run/restart.pid`: one restart of a home at a time. */
+export const restartPidPath = (root: string): string => join(root, "run", "restart.pid");
+
+/**
+ * The pid of a restart worker of this home that is still running, or undefined (no pid file, a dead pid, or a file
+ * written before this boot, whose pid may name someone else now). The worker removes its own file when it ends.
+ */
+export function runningRestart(root: string, alive: (pid: number) => boolean = pidAlive): number | undefined {
+  const path = restartPidPath(root);
+  try {
+    const pid = Number(readFileSync(path, "utf8").trim());
+    return Number.isInteger(pid) && pid > 0 && alive(pid) && statSync(path).mtimeMs >= bootCutoff() ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export type LaneBlock = { readonly key: string };
 
@@ -52,6 +72,10 @@ export type ScriptOptions = {
  *
  * The down is `down all --keep-autostart`: a restart is not an uninstall, so the home's logon hook (if installed) stays.
  *
+ * One worker per home: it creates restartPidPath(home) exclusively (`set -C`) before it touches anything, and a second
+ * worker that finds a live pid there ends with RESTART_FAILED, stopping nothing. A file left by a worker that was killed
+ * is taken over. `seori restart` refuses up front on the same file (runningRestart); this closes the race between two.
+ *
  * The last line is always `RESTART_EXIT=<code>`: the caller's pane is closed by the down, so the log is the only place
  * the outcome of a detached restart can be read (`seori restart --follow` reads it there).
  *
@@ -61,15 +85,28 @@ export type ScriptOptions = {
  */
 export function restartScript(o: ScriptOptions): string {
   const seori = o.seoriCmd;
+  const take = `(set -C; echo "$$" > "$lock") 2>/dev/null`;
   return [
     `exec >>${shq(o.log)} 2>&1`,
-    // One exit path, so the code is logged whatever happened.
-    `finish() { echo "RESTART_EXIT=$1"; exit "$1"; }`,
+    `lock=${shq(restartPidPath(o.home))}`,
+    // One exit path, so the code is logged whatever happened; the pid file goes only when it is this worker's.
+    `finish() { if [ "$(cat "$lock" 2>/dev/null)" = "$$" ]; then rm -f "$lock"; fi; echo "RESTART_EXIT=$1"; exit "$1"; }`,
     `trap '' HUP`,
     // The worker's own pid, so an operator can watch or kill it: a detached worker has no other handle.
     `echo "RESTART_PID $$"`,
     // Quoted like any other argument: a home or cwd with `$VAR`, backticks or `$(cmd)` in it is printed, not expanded.
     `echo ${shq(`RESTART_BEGIN home=${o.home} cwd=${o.cwd}`)}`,
+    `mkdir -p ${shq(join(o.home, "run"))}`,
+    `if ! ${take}; then`,
+    `  other=$(cat "$lock" 2>/dev/null)`,
+    `  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then`,
+    `    echo "RESTART_FAILED another restart of this home is running (pid $other); nothing stopped, nothing opened"; finish 1`,
+    `  fi`,
+    `  rm -f "$lock"`,
+    `  if ! ${take}; then`,
+    `    echo "RESTART_FAILED another restart of this home took over; nothing stopped, nothing opened"; finish 1`,
+    `  fi`,
+    `fi`,
     // hc may be down after a crash or a core restart: no up could open a pane, so nothing is stopped either.
     `if ! hc --json server status >/dev/null 2>&1; then`,
     `  echo "RESTART_FAILED hc (herdr-core) does not answer; nothing stopped, nothing opened"; finish 1`,
@@ -89,23 +126,31 @@ export function restartScript(o: ScriptOptions): string {
  * - `setsid --fork`: a new session; the intermediate process exits at once, so the worker is reparented to init. A
  *   setsid without --fork (busybox) exits non-zero having started nothing, and the next way is tried.
  * - `systemd-run --user`: a transient unit of the user manager. That unit gets the manager's environment, not this
- *   one, so PATH (where hc and bun are) and the caller's SEORI_* and HC_* variables are passed on with --setenv.
- * - `nohup ... &`: portable (macOS has no setsid); the worker keeps this session but ignores SIGHUP, the signal a
- *   closed pane sends. It always exits 0, so it is last.
+ *   one, so PATH (where hc and bun are) and the caller's SEORI_* and HC_* variables are passed on with --setenv; the
+ *   messenger tokens are not (an argv is readable in /proc and a unit's environment in `systemctl show`, and no unit
+ *   ever gets a token). The manager expands `$` in a transient unit's command, so the script's `$` is written `$$`.
+ * - `nohup ... &`: portable (macOS has no setsid); the worker stays in this session and process group but ignores
+ *   SIGHUP, the signal a closed pane sends. It always exits 0, so it is last.
  * Empty only when none of them is on PATH. Every way reports through the log, not its exit code: 0 means started.
  */
 export type Detach = { readonly via: string; readonly argv: readonly string[] };
+
+const TOKENS: ReadonlySet<string> = new Set(MESSENGER_TOKEN_ENV);
 
 export function detachWays(
   script: string, has: (bin: string) => boolean, unit: string, env: Readonly<Record<string, string | undefined>>,
 ): Detach[] {
   const passed = Object.entries(env)
     .filter((e): e is [string, string] => e[1] !== undefined && (e[0] === "PATH" || e[0].startsWith("SEORI_") || e[0].startsWith("HC_")))
+    .filter(([k]) => !TOKENS.has(k))
     .map(([k, v]) => `--setenv=${k}=${v}`);
   return [
     ...(has("setsid") ? [{ via: "setsid", argv: ["setsid", "--fork", "/bin/sh", "-c", script] }] : []),
     ...(has("systemd-run")
-      ? [{ via: "systemd-run", argv: ["systemd-run", "--user", "--collect", "--quiet", `--unit=${unit}`, ...passed, "/bin/sh", "-c", script] }]
+      ? [{
+          via: "systemd-run",
+          argv: ["systemd-run", "--user", "--collect", "--quiet", `--unit=${unit}`, ...passed, "/bin/sh", "-c", script.split("$").join("$$")],
+        }]
       : []),
     ...(has("nohup") ? [{ via: "nohup", argv: ["/bin/sh", "-c", `nohup /bin/sh -c ${shq(script)} >/dev/null 2>&1 &`] }] : []),
   ];

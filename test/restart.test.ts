@@ -7,7 +7,10 @@ import {
   up, upCheck, upLockPath, waitForHc, waitForHcResult, hcUnavailableLine, HC_POLL_MS, restart, main, followRestartLog, wakeNewLead,
   LEAD_START_LINE, LEAD_START_WAIT_MS,
 } from "../src/cli.ts";
-import { detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript } from "../src/restart.ts";
+import {
+  detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartPidPath, restartScript, runningRestart,
+} from "../src/restart.ts";
+import { MESSENGER_TOKEN_ENV } from "../src/runtime/hc/sessions.ts";
 import { BOOT_KIND, bootUnitInstalled, installBootUnit, unitCwd, unitDir, unitFile, unitName, writeUnits } from "../src/systemd.ts";
 import { liveRunners, recordPath } from "../src/down.ts";
 import { DeliveryUncertain } from "../src/runtime/delivery.ts";
@@ -223,8 +226,9 @@ describe("the detached restart script", () => {
     expect(text).toContain("RESTART_BEGIN");
     expect(text).toContain("UP lead=hc:t9 duty=hc:t10");
     expect(LINE(text.split("\n").find((l) => l.startsWith("RESTART_DONE"))!)).toBe("RESTART_DONE");
-    // The exit code was its last word: the worker ends after it.
+    // The exit code was its last word: the worker ends after it, and its pid file went with it.
     await waitUntil(`worker ${worker} to end`, () => !alive(worker));
+    expect(existsSync(restartPidPath(dir))).toBe(false);
   });
 
   test("a down that does not finish leaves the up out, and says so", async () => {
@@ -235,6 +239,31 @@ describe("the detached restart script", () => {
     expect(await paneEnded(pane)).toBe("SIGTERM");
     expect(readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n")).toEqual(["CALLED down all --keep-autostart"]);
     expect(readFileSync(join(dir, "restart.log"), "utf8")).toContain("RESTART_FAILED seori down did not finish; nothing opened");
+  });
+
+  test("a second worker while one is running stops nothing and says so; the first's pid file stays", async () => {
+    const seori = fakeSeori();
+    // The first worker, as far as the second can tell: a live pid in the home's restart pid file.
+    const first = openPane();
+    mkdirSync(join(dir, "run"), { recursive: true });
+    writeFileSync(restartPidPath(dir), `${first.pid}\n`);
+    const code = await runDetached(seori, { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir });
+    expect(code).toBe(1);
+    expect(existsSync(join(dir, "calls.log"))).toBe(false);
+    expect(readFileSync(join(dir, "restart.log"), "utf8")).toContain(
+      `RESTART_FAILED another restart of this home is running (pid ${first.pid}); nothing stopped, nothing opened`,
+    );
+    expect(readFileSync(restartPidPath(dir), "utf8").trim()).toBe(String(first.pid));
+  });
+
+  test("a pid file left by a worker that died is taken over", async () => {
+    const seori = fakeSeori();
+    const gone = Bun.spawn(["true"], { stdio: ["ignore", "ignore", "ignore"] });
+    await gone.exited;
+    mkdirSync(join(dir, "run"), { recursive: true });
+    writeFileSync(restartPidPath(dir), `${gone.pid}\n`);
+    expect(await runDetached(seori, { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir })).toBe(0);
+    expect(readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n")).toEqual(["CALLED down all --keep-autostart", `CALLED up --cwd ${dir}`]);
   });
 
   test("no hc core means nothing is stopped and nothing opened", async () => {
@@ -289,6 +318,25 @@ describe("how a restart detaches", () => {
     expect(detachWays("x", (b) => b === "nohup", "u", {}).map((w) => w.via)).toEqual(["nohup"]);
     expect(detachWays("x", () => false, "u", {})).toEqual([]);
     expect(noDetachRefusal()).toContain("setsid, systemd-run or nohup");
+  });
+
+  test("systemd-run never carries a messenger token, and its command keeps every $ literal", () => {
+    const env: Record<string, string> = { PATH: "/usr/bin", SEORI_HOME: "/h" };
+    for (const k of MESSENGER_TOKEN_ENV) env[k] = `secret-${k}`;
+    const script = `echo "RESTART_PID $$"; x=\${HOME}; echo $x`;
+    const way = detachWays(script, (b) => b === "systemd-run", "u", env)[0]!;
+    expect(way.via).toBe("systemd-run");
+    const argv = way.argv.join("\n");
+    for (const k of MESSENGER_TOKEN_ENV) expect(argv).not.toContain(k);
+    expect(argv).not.toContain("secret-");
+    expect(way.argv).toContain("--setenv=SEORI_HOME=/h");
+    // The manager expands $VAR and ${VAR} and turns $$ into $ in a transient unit's command: every $ is doubled, so what
+    // the shell finally runs is the script as written.
+    const command = way.argv.at(-1)!;
+    expect(command).toBe(`echo "RESTART_PID $$$$"; x=$\${HOME}; echo $$x`);
+    expect(command.split("$$").join("$")).toBe(script);
+    // The other ways run the script as it is.
+    expect(detachWays(script, (b) => b === "setsid", "u", env)[0]!.argv.at(-1)).toBe(script);
   });
 
   test("the log is inside the home, so the new refs can be read after the pane closed", () => {
@@ -634,6 +682,26 @@ describe("seori restart as a command", () => {
     const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
     await expect(restart(d, undefined, false, () => {}, { spawn, has: () => false })).rejects.toThrow(/setsid, systemd-run or nohup/);
     expect(started).toEqual([]);
+  });
+
+  test("a restart while another of this home is running is refused before anything starts", async () => {
+    const { d, started } = home();
+    const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
+    mkdirSync(join(d.store.root, "run"), { recursive: true });
+    // This test process is alive: what a worker's pid file looks like while it runs.
+    writeFileSync(restartPidPath(d.store.root), `${process.pid}\n`);
+    expect(runningRestart(d.store.root)).toBe(process.pid);
+    await expect(restart(d, undefined, false, () => {}, { spawn, has: () => true })).rejects.toThrow(
+      `a restart of this home is already running (pid ${process.pid}); its steps are in ${join(d.store.root, "restart.log")}`,
+    );
+    expect(started).toEqual([]);
+    // A pid that ended, or a file from before this boot, is no running restart.
+    expect(runningRestart(d.store.root, () => false)).toBeUndefined();
+    const longAgo = new Date(Date.now() - 10 * 365 * 24 * 3_600_000);
+    utimesSync(restartPidPath(d.store.root), longAgo, longAgo);
+    expect(runningRestart(d.store.root)).toBeUndefined();
+    expect(await restart(d, undefined, false, () => {}, { spawn, has: (b) => b === "setsid" })).toBe(0);
+    expect(started).toHaveLength(1);
   });
 
   test("a way that fails to start falls through to the next, and only when every way fails is it a failure", async () => {
