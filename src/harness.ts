@@ -431,7 +431,11 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const source = readFileSync(briefFile, "utf8").replace(LESSONS_RE, "").replace(FOOTER_RE, "").trimEnd();
   await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
-  // The ready lane this start takes back is closed by it: what its session spent is recorded, as `seori done` would.
+  // The ready lane this start takes back is closed by it: what its session spent is recorded, as `seori done` would,
+  // and the watches it armed are noted now, before the new session can arm its own.
+  const watches = existing?.status === "ready" ? new WatchStore(d.store.root) : undefined;
+  const live = (w: { status: string }): boolean => w.status === "active" || w.status === "muted";
+  const oldWatches = (watches?.list() ?? []).filter((w) => live(w) && w.owner.kind === "lane" && w.owner.key === key).map((w) => w.id);
   if (existing?.status === "ready") {
     await recordCloseCost(d, existing).catch((e: unknown) => {
       process.stderr.write(`seori: lane ${key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
@@ -459,12 +463,10 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
       throw new Refusal(`lane ${key} changed while it was being started again (now ${d.store.lane(key)?.status ?? "gone"}); pane ${refText(ref)} closed`);
     }
     // Watches the old session armed would wake the new one with events it never asked for.
-    const watches = new WatchStore(d.store.root);
-    for (const w of watches.list()) {
-      if ((w.status !== "active" && w.status !== "muted") || w.owner.kind !== "lane" || w.owner.key !== key) continue;
-      const reason = "owner lane started again";
-      watches.update(w.id, (cur) => (cur.status === "active" || cur.status === "muted" ? { ...cur, status: "stopped", reason } : cur));
-      watches.appendEvent(w.id, { at: d.now(), ev: "stopped", reason });
+    const reason = "owner lane started again";
+    for (const id of oldWatches) {
+      watches!.update(id, (cur) => (live(cur) ? { ...cur, status: "stopped", reason } : cur));
+      watches!.appendEvent(id, { at: d.now(), ev: "stopped", reason });
     }
   }
   const now = d.now();

@@ -127,14 +127,15 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
         const mark = `not-done-gone:${fresh.final!.at}`;
         events.push({ lane: lane.key, action: "close-deferred", detail: `pane is gone; ${failures.join("; ")}` });
         if (fresh.alerts?.[mark] !== undefined) continue;
-        fresh.alerts = { ...fresh.alerts, [mark]: d.now() };
-        d.store.saveLane(fresh);
         await tellLead(
           d,
           `[NOT-DONE ${lane.key}] ${failures.join("; ")}. Its pane is gone, so it stays ready and closes once every Done ` +
             `signal reads back live; if it needs more work, resume it with: ${startAgain(fresh, d.seoriCmd)}`,
           "duty",
         );
+        // Marked only once told, so a failed delivery is told again next pass; re-read, so a change meanwhile is kept.
+        const told = sameClaim(d, fresh);
+        if (told) d.store.saveLane({ ...told, alerts: { ...told.alerts, [mark]: d.now() } });
         continue;
       }
       if (failures.length) {

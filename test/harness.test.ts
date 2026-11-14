@@ -522,6 +522,15 @@ describe("duty loop", () => {
     const old = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/x" } }, w.clock);
     await expect(startLane(d, "busy", brief, {})).rejects.toThrow(`lane busy is already open in ${refText(first.sessionRef)}`);
     w.panes.delete(first.paneId);
+    // The new session arms a watch of its own while it starts up: that one must survive the take-back.
+    const rt = d.runtime;
+    const create = rt.create.bind(rt);
+    let fresh = "";
+    rt.create = async (spec) => {
+      const ref = await create(spec);
+      fresh = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/y" } }, w.clock).id;
+      return ref;
+    };
     const again = await startLane(d, "busy", brief, {});
     expect(again.paneId).not.toBe(first.paneId);
     expect(d.store.lane("busy")).toMatchObject({ status: "working", paneId: again.paneId });
@@ -530,6 +539,7 @@ describe("duty loop", () => {
     expect(ledger.map((r) => r.closeKey)).toEqual([`busy@${first.createdAt}`]);
     // The old session's watches end: they would wake the new session with events it never armed.
     expect(new WatchStore(d.store.root).list().find((x) => x.id === old.id)).toMatchObject({ status: "stopped", reason: "owner lane started again" });
+    expect(new WatchStore(d.store.root).list().find((x) => x.id === fresh)).toMatchObject({ status: "active" });
   });
 
   test("a take-back whose ready claim is closed while the new pane opens closes that pane and leaves the record done", async () => {
