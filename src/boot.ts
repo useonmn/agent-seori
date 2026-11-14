@@ -22,6 +22,14 @@ import { closedNote } from "./restart.ts";
 const OPEN_STATUSES: ReadonlySet<string> = new Set(["working", "waiting", "ready", "paused"]);
 /** Longest text shown from a report, a final answer or a channel message. */
 const PREVIEW_CHARS = 80;
+/**
+ * Most of owner.md that boot prints. A profile is a page of short facts; the bound keeps a file grown far past that
+ * from crowding the lead's context, and the truncation line points at the file for the rest.
+ */
+export const OWNER_PROFILE_MAX_CHARS = 8_000;
+
+/** The owner's profile: who they are, how to address them, their work, tools and standing rules. The owner may edit it. */
+export const ownerProfilePath = (root: string): string => join(root, "owner.md");
 
 /** One session from the runtime's list: its id and, when the runtime detects one, the agent and its status. */
 type ListedPane = { readonly paneId: string; readonly agent?: string; readonly status: string };
@@ -82,8 +90,33 @@ function readJson(path: string): unknown {
 }
 
 /**
+ * The owner profile for the top of the boot: an `OWNER` header, then the file's text with each line indented by two
+ * spaces, so nothing in the owner's text can pass for a boot line (`DRIFT`, `BOOT checked`). A missing file is one line;
+ * only a file that is there and cannot be read is a failure.
+ */
+function ownerProfileLines(root: string): { lines: string[]; readable: boolean } {
+  const path = ownerProfilePath(root);
+  if (!existsSync(path)) return { lines: [`OWNER none: no profile at ${path} yet; write it when you learn something durable about the owner`], readable: true };
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    return { lines: [`OWNER unreadable ${path} (${e instanceof Error ? e.message : String(e)})`], readable: false };
+  }
+  const body = text.trimEnd();
+  if (!body) return { lines: [`OWNER ${path} empty`], readable: true };
+  // Cut at the last line break inside the bound, so the shown part ends on a whole line.
+  const lastBreak = body.lastIndexOf("\n", OWNER_PROFILE_MAX_CHARS);
+  const shown = body.length > OWNER_PROFILE_MAX_CHARS ? body.slice(0, lastBreak > 0 ? lastBreak : OWNER_PROFILE_MAX_CHARS) : body;
+  const lines = [`OWNER ${path} (the owner's profile; their edits win over memory)`, ...shown.split(/\r?\n/).map((line) => `  ${line}`)];
+  if (shown.length < body.length) lines.push(`OWNER truncated: showed ${shown.length} of ${body.length} characters; read the rest in ${path}`);
+  return { lines, readable: true };
+}
+
+/**
  * Read-only recovery check after a restart or compaction. Lines, in order:
- * `CONFIG`, `MESSENGERS`; `LEAD`/`DUTY` pane and status; `PANES` summary, `VANISHED` (an open lane whose pane is gone),
+ * `OWNER` and the owner profile (owner.md) indented below it; `CONFIG`, `MESSENGERS`; `LEAD`/`DUTY` pane and status;
+ * `PANES` summary, `VANISHED` (an open lane whose pane is gone),
  * `UNREGISTERED` (agent panes no role and no open lane owns); per open lane `READY`, `PAUSED`, then `REPORT`/`NO-REPORT`
  * (its last report); `WORKLOG`/`OPEN` items; `CHANNEL`/`MSG` open lead channel messages; `WATCHES`/`ORPHAN-WATCH` live
  * watches whose owner lane is closed; `DAEMON` heartbeat age and `MESSENGER` health; then `BOOT checked` or
@@ -102,6 +135,12 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
     complete = false;
     lines.push(line);
   };
+
+  // The owner profile first: who the lead works for frames everything below it, and it lands in a new lead's context
+  // with the boot the [START] line already asks for, with no separate step.
+  const owner = ownerProfileLines(root);
+  if (owner.readable) lines.push(...owner.lines);
+  else for (const line of owner.lines) failed(line);
 
   let group: string | undefined;
   try {
