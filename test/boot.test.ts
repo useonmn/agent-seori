@@ -194,11 +194,11 @@ describe("bootReport", () => {
       "VANISHED docs pane=hc:t4 status=paused; lane record kept, nothing relaunched; it was paused, not failed; once duty " +
         "marks it lost, resume it with: seori start docs --brief '/b/docs.md' --cwd '/repo' --thread 'slack:C1:2' --workflow none",
     );
-    // Duty never marks a ready lane lost: its claim stands, and more work goes through an objection first.
+    // Duty never marks a ready lane lost (its claim stands), and start takes back its key while its pane is gone.
     expect(r.lines).toContain(
       "VANISHED ui pane=hc:t5 status=ready; lane record kept, nothing relaunched; it had sent READY: its final answer and " +
-        "evidence stay, and seori merge and seori done need no pane; if it needs more work: seori object ui --reason '<why>', " +
-        "and once duty then marks it lost, resume it with: seori start ui --brief '/b/ui.md' --cwd '/repo' --done 'pr:merged' --workflow none",
+        "evidence stay, and seori merge and seori done need no pane; if it needs more work, resume it with: " +
+        "seori start ui --brief '/b/ui.md' --cwd '/repo' --done 'pr:merged' --workflow none",
     );
   });
 

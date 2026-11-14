@@ -90,7 +90,7 @@ ENDED api status=waiting: the down closes its pane (record and brief stay); it w
 CLOSED docs status=paused: the down closes its pane (record and brief stay); it was paused, not failed; once duty marks it lost, resume it with: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs' --workflow none
 ```
 
-up 뒤 첫 듀티 차례가 working, waiting, paused 레인의 사라진 패널을 보고 레인을 사라진(lost) 레인으로 기록하면, 새 리드는 `[LOST <key>] pane hc:t5 closed while the lane was waiting ...`(또는 paused, working)를 받습니다. 이 줄은 그것이 무슨 뜻이었는지 말하고 같은 `seori start` 명령으로 끝나므로, 리드는 그 레인이 실패한 것이 아니라는 것을 알고 다시 시작할 수 있습니다. ready 레인은 lost가 되지 않습니다: 최종 답과 증거가 남고, `seori merge`와 `seori done`은 패널이 없어도 됩니다. 일이 더 필요하면 그 줄이 말하는 대로 먼저 `seori object`를 하면, 듀티가 레인을 lost로 기록하고 그 명령으로 다시 시작할 수 있습니다. 그 차례보다 먼저 `seori boot`을 실행하면 그런 레인은 같은 설명과 명령과 함께 `VANISHED <key> ... status=<status>`로 나옵니다. 이 명령은 레인 기록에 있는 시작 설정을 모두 담습니다(`--thread`, `--done`, 한도, `--activity-path`, `--model`, `--workflow`; 워크플로가 없었으면 `none`). 그래서 레인은 지금의 설정 기본값이 아니라 처음 시작한 그대로 돌아옵니다.
+up 뒤 첫 듀티 차례가 working, waiting, paused 레인의 사라진 패널을 보고 레인을 사라진(lost) 레인으로 기록하면, 새 리드는 `[LOST <key>] pane hc:t5 closed without a final answer while the lane was waiting ...`(또는 paused, working)를 받습니다. 이 줄은 그것이 무슨 뜻이었는지 말하고 같은 `seori start` 명령으로 끝나므로, 리드는 그 레인이 무엇을 하던 중이었는지 알고 다시 시작할 수 있습니다. ready 레인은 lost가 되지 않습니다: 최종 답과 증거가 남고, `seori merge`와 `seori done`은 패널이 없어도 됩니다. 일이 더 필요하면 그 명령으로 바로 다시 시작할 수 있습니다. `seori start`는 패널이 사라진 ready 레인의 키를 다시 받아 주기 때문입니다. 그 차례보다 먼저 `seori boot`을 실행하면 그런 레인은 같은 설명과 명령과 함께 `VANISHED <key> ... status=<status>`로 나옵니다. 이 명령은 레인 기록에 있는 시작 설정을 모두 담습니다(`--thread`, `--done`, 한도, `--activity-path`, `--model`, `--workflow`; 워크플로가 없었으면 `none`). 그래서 레인은 지금의 설정 기본값이 아니라 처음 시작한 그대로 돌아옵니다.
 
 `seori up`이나 `seori restart`가 새 리드를 열면 seori가 시작 안내 한 줄을 전달합니다: `seori boot`을 실행하고, 주인에게 짧은 한 줄(가장 오래된 열린 worklog 항목의 스레드, 없으면 주인 DM)로 seori가 돌아왔다는 것과 열린 항목 수, 아직 열린 레인을 알리라는 내용입니다. 이 한 줄은 맨 마지막에, 듀티 패널이 기록되고 데몬과 루프가 돌기 시작한 뒤에 갑니다. 그래야 `seori boot`이 아직 뜨는 중인 듀티 패널이나 데몬을 문제로 보고하지 않고 다 갖춰진 홈을 봅니다. 리드를 연 뒤에 up이 실패해도 이 한 줄은 전달되므로, `seori boot`이 빠진 것을 보고합니다. 그래서 재시작 뒤에 주인이 아무것도 입력하지 않아도 소식이 갑니다. `prompts/lead.md`도 같은 규칙을 담고 있어서 손으로 띄운 리드도 그렇게 합니다.
 
@@ -107,7 +107,7 @@ seori status
 
 브리프에는 목표, 입력, 결과물, 끝나는 조건, 제약을 씁니다. 예시는 [examples/brief.md](examples/brief.md)에 있습니다. 끝나는 조건은 누가 봐도 확인할 수 있게 씁니다(예: PR이 열려 있고 체크가 모두 통과함). 브리프에 "목표를 완료하라(complete the goal)" 같은 말은 쓰지 마세요. 목표 모드에서는 이 말 때문에 모델이 일을 일찍 끝내 버립니다.
 
-레인 이름(key)은 `^[a-z][a-z0-9-]{1,40}$` 형식이어야 하고, 이미 열려 있는 이름은 쓸 수 없습니다.
+레인 이름(key)은 `^[a-z][a-z0-9-]{1,40}$` 형식이어야 하고, 이미 열려 있는 이름은 쓸 수 없습니다. 다만 패널이 사라진(재시작이 닫은) ready 레인의 이름은 다시 시작하면 그대로 다시 씁니다.
 
 레인 안에서 에이전트는 레인 규칙에 적힌 명령으로 진행 상황을 알리고 일을 마칩니다:
 

@@ -509,9 +509,20 @@ describe("duty loop", () => {
     expect(await dutyTick(d)).toContainEqual({ lane: "busy", action: "lost" });
     expect(d.store.lane("busy")!.status).toBe("lost");
     const told = lead.received.at(-1)!;
-    expect(told).toStartWith(`[LOST busy] pane ${refText(lane.sessionRef)} closed while the lane was waiting`);
+    expect(told).toStartWith(`[LOST busy] pane ${refText(lane.sessionRef)} closed without a final answer while the lane was waiting`);
     expect(told).toContain("the watches it armed end once it is lost");
     expect(told).toEndWith(`to resume it: ${startAgain(d.store.lane("busy")!, d.seoriCmd)}`);
+  });
+
+  test("start takes back a ready lane's key once its pane is gone (a restart closed it), and only then", async () => {
+    const { w, d, brief } = setup();
+    const first = await startLane(d, "busy", brief, {});
+    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready" });
+    await expect(startLane(d, "busy", brief, {})).rejects.toThrow(`lane busy is already open in ${refText(first.sessionRef)}`);
+    w.panes.delete(first.paneId);
+    const again = await startLane(d, "busy", brief, {});
+    expect(again.paneId).not.toBe(first.paneId);
+    expect(d.store.lane("busy")).toMatchObject({ status: "working", paneId: again.paneId });
   });
 
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */

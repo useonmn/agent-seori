@@ -84,14 +84,12 @@ const closedMeant = (status: string): string => CLOSED_MEANT[status] ?? `it was 
 export type ClosedLane = RestartableLane & { readonly status: string };
 
 /**
- * What closing the lane's pane meant, and how it comes back once the next duty pass marks it lost (only then does
- * `seori start` take the key again). Duty never marks a ready lane lost: its claim stands, so more work goes through an
- * objection, which makes it working again and so lost.
+ * What closing the lane's pane meant, and how it comes back: once the next duty pass marks it lost, `seori start` takes
+ * the key again. Duty never marks a ready lane lost (its claim stands for merge and done), and `seori start` takes back a
+ * ready key whose pane is gone, so its command works at once.
  */
 export function closedNote(lane: ClosedLane, seoriCmd: string): string {
-  const back = lane.status === "ready"
-    ? `if it needs more work: ${seoriCmd} object ${lane.key} --reason '<why>', and once duty then marks it lost, resume it with: `
-    : "once duty marks it lost, resume it with: ";
+  const back = lane.status === "ready" ? "if it needs more work, resume it with: " : "once duty marks it lost, resume it with: ";
   return `${closedMeant(lane.status)}; ${back}${startAgain(lane, seoriCmd)}`;
 }
 
@@ -104,9 +102,9 @@ export function closedLaneLine(lane: ClosedLane, seoriCmd: string): string {
     closedNote(lane, seoriCmd);
 }
 
-/** The duty's [LOST] message for a lane whose pane is gone, whatever its status was. */
+/** The duty's [LOST] message for a lane whose pane is gone, whatever its status was and whatever closed the pane. */
 export function lostText(lane: ClosedLane, pane: string, seoriCmd: string): string {
-  return `[LOST ${lane.key}] pane ${pane} closed while the lane was ${lane.status} (a seori restart or down closes lane panes too); ` +
+  return `[LOST ${lane.key}] pane ${pane} closed without a final answer while the lane was ${lane.status}; ` +
     `${closedMeant(lane.status)}; its record and brief stay; to resume it: ${startAgain(lane, seoriCmd)}`;
 }
 

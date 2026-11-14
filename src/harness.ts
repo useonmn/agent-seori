@@ -398,7 +398,12 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
   const existing = d.store.lane(key);
-  if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
+  // A ready lane whose pane is gone (a restart closes it) is never marked lost, since its claim stands for merge and
+  // done; starting the key again is how it gets more work, so that key is taken back.
+  if (existing && existing.status !== "done" && existing.status !== "lost" &&
+    !(existing.status === "ready" && (await d.runtime.status(existing.sessionRef)) === "gone")) {
+    throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
+  }
   // Stored without a leading `Done =`, which the footer adds back.
   const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
   if (opts.done !== undefined) parseDone(opts.done);

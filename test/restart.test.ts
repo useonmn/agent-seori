@@ -134,8 +134,8 @@ describe("lanes a restart closes", () => {
       expect(line).toEndWith(`resume it with: ${startAgain(full, "seori")}`);
     }
     expect(closedLaneLine({ ...lane, status: "waiting" }, "seori")).toContain("the watches it armed end once it is lost");
-    // A ready lane is never marked lost by duty: more work goes through an objection first.
-    expect(closedLaneLine({ ...lane, status: "ready" }, "seori")).toContain("if it needs more work: seori object docs --reason '<why>'");
+    // Duty never marks a ready lane lost, and start takes back its key while its pane is gone: no wait for duty.
+    expect(closedLaneLine({ ...lane, status: "ready" }, "seori")).toContain(`if it needs more work, resume it with: ${startAgain(lane, "seori")}`);
   });
 });
 
