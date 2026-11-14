@@ -43,6 +43,8 @@ class MockDiscord {
   historyCalls: string[] = [];
   /** Server (guild text) channels; every other channel id answers GET /channels/{id} as a DM. */
   guildChannels = new Set<string>();
+  /** GET /channels/{id} answers this HTTP status instead (403 no access, 404 gone). */
+  channelStatus: Record<string, number> = {};
   posts: { channel: string; body: Record<string, unknown> }[] = [];
   postPlan: PostMode[] = [];
   gatewayStatus = 200;
@@ -119,7 +121,11 @@ class MockDiscord {
     if (path === "/gateway/bot") return Response.json({ url: this.ws }, { status: this.gatewayStatus });
     if (path === "/users/@me") return Response.json({ id: "BOT", username: "seori" });
     const ch = /^\/channels\/([^/]+)$/.exec(path);
-    if (ch && req.method === "GET") return Response.json({ id: ch[1], type: this.guildChannels.has(ch[1]!) ? 0 : 1 });
+    if (ch && req.method === "GET") {
+      const status = this.channelStatus[ch[1]!];
+      if (status) return Response.json({ message: "nope", code: status === 404 ? 10003 : 50001 }, { status });
+      return Response.json({ id: ch[1], type: this.guildChannels.has(ch[1]!) ? 0 : 1 });
+    }
     const m = /^\/channels\/([^/]+)\/messages$/.exec(path);
     if (m && req.method === "GET") {
       const after = BigInt(url.searchParams.get("after") ?? "0");
@@ -309,6 +315,17 @@ describe("DiscordAdapter receive", () => {
       [`discord:C1:502:edit:${Date.parse(edited)}`, "(edited) <@BOT> hello"],
       ["discord:C1:505", "in a DM"],
     ]);
+  });
+
+  test("catch-up skips a channel it may not see (kept) or that is gone (forgotten); the others are still caught up", async () => {
+    const m = mock();
+    const root = home();
+    CursorFile.for<DiscordCursor>(root, "discord").save({ channels: { C3: "1000", C4: "1000", C1: "1000" } });
+    m.channelStatus = { C3: 403, C4: 404 };
+    m.history["C1"] = [msg("1001")];
+    const got = await collect(adapter(m, root), 1);
+    expect(got.map((x) => x.id)).toEqual(["discord:C1:1001"]);
+    expect(cursorOf(root)!.channels).toEqual({ C3: "1000", C1: "1001" });
   });
 
   test("catch-up of a server channel delivers only what mentions the bot; a resumed session asks /users/@me who the bot is", async () => {

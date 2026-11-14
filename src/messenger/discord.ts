@@ -393,10 +393,10 @@ export class DiscordAdapter implements MessengerAdapter {
       case "MESSAGE_CREATE": {
         const m = p.d as Message;
         if (typeof m?.channel_id === "string") this.dms.set(m.channel_id, m.guild_id === undefined);
-        return this.created(m, onMessage, m?.guild_id === undefined);
+        return this.created(m, onMessage, m?.guild_id === undefined, signal);
       }
       case "MESSAGE_UPDATE":
-        return this.edited(p.d as Message, onMessage);
+        return this.edited(p.d as Message, onMessage, signal);
     }
   }
 
@@ -425,17 +425,17 @@ export class DiscordAdapter implements MessengerAdapter {
    * Whether `m` is meant for the bot. A DM always is; in a server channel (threads included) only a mention of the bot or
    * a reply to one of its messages: seori answers with a reply, so answering that reply continues the conversation.
    */
-  private async addressed(m: Message, dm: boolean): Promise<boolean> {
+  private async addressed(m: Message, dm: boolean, signal: AbortSignal): Promise<boolean> {
     if (dm) return true;
-    const bot = await this.bot();
+    const bot = await this.bot(signal);
     return m.mentions?.some((u) => u.id === bot) === true || m.referenced_message?.author?.id === bot;
   }
 
-  private async bot(): Promise<string> {
+  private async bot(signal: AbortSignal): Promise<string> {
     if (this.botId !== undefined) return this.botId;
     let body: unknown;
     try {
-      body = (await httpJson(`${this.api}/users/@me`, { headers: this.headers(this.token()) }, { mutating: false, sleep: this.sleepFn, timeoutMs: this.timeoutMs })).body;
+      body = (await httpJson(`${this.api}/users/@me`, { headers: this.headers(this.token()), signal }, { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs })).body;
     } catch (e) {
       if (e instanceof HttpError && e.status === 401) throw this.tokenRejected("401 on GET /users/@me");
       throw e;
@@ -449,7 +449,7 @@ export class DiscordAdapter implements MessengerAdapter {
    * A new message, from the gateway or catch-up (`dm`: it is in a direct message channel). A message from an accepted
    * sender that is addressed to the bot is delivered; the channel cursor moves past every message.
    */
-  private async created(m: Message, onMessage: (m: InboundMessage) => Promise<void>, dm: boolean): Promise<void> {
+  private async created(m: Message, onMessage: (m: InboundMessage) => Promise<void>, dm: boolean, signal: AbortSignal): Promise<void> {
     if (typeof m?.id !== "string" || typeof m.channel_id !== "string") return;
     const chat = m.channel_id;
     const committed = this.state.channels[chat];
@@ -460,7 +460,7 @@ export class DiscordAdapter implements MessengerAdapter {
     let delivered = false;
     if (from !== undefined && (m.type === undefined || m.type === 0 || m.type === 19)) {
       const text = this.body(m);
-      if (text && (await this.addressed(m, dm))) {
+      if (text && (await this.addressed(m, dm, signal))) {
         const at = Date.parse(m.timestamp ?? "");
         await onMessage({ id, source: this.source, chat, from, at: Number.isFinite(at) ? at : this.now(), text });
         this.remember(id);
@@ -474,7 +474,7 @@ export class DiscordAdapter implements MessengerAdapter {
     }
   }
 
-  private async edited(m: Message, onMessage: (m: InboundMessage) => Promise<void>): Promise<void> {
+  private async edited(m: Message, onMessage: (m: InboundMessage) => Promise<void>, signal: AbortSignal): Promise<void> {
     if (this.pairing || typeof m?.id !== "string" || typeof m.channel_id !== "string" || !m.edited_timestamp) return;
     const from = this.sender(m);
     if (from === undefined) return;
@@ -483,12 +483,15 @@ export class DiscordAdapter implements MessengerAdapter {
     const id = editId(this.source, m.channel_id, m.id, stamp);
     if (this.delivered.has(id)) return;
     const text = this.body(m);
-    if (!text || !(await this.addressed(m, m.guild_id === undefined))) return;
+    if (!text || !(await this.addressed(m, m.guild_id === undefined, signal))) return;
     await onMessage({ id, source: this.source, chat: m.channel_id, from, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
     this.remember(id);
   }
 
-  /** Whether `chat` is a direct message channel; undefined when it is gone or the bot may not see it. */
+  /**
+   * Whether `chat` is a direct message channel; undefined when the bot may not see it (403: kept, so catch-up resumes
+   * once access is back) or it is gone (404: forgotten, like a channel Slack reports gone).
+   */
   private async isDm(chat: string, token: string, signal: AbortSignal): Promise<boolean | undefined> {
     const known = this.dms.get(chat);
     if (known !== undefined) return known;
@@ -499,7 +502,12 @@ export class DiscordAdapter implements MessengerAdapter {
       return dm;
     } catch (e) {
       if (e instanceof HttpError && e.status === 401) throw this.tokenRejected("401 on GET /channels/{id}");
-      if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
+      if (e instanceof HttpError && e.status === 404) {
+        delete this.state.channels[chat];
+        this.save();
+        return undefined;
+      }
+      if (e instanceof HttpError && e.status === 403) return undefined;
       throw e;
     }
   }
@@ -528,7 +536,7 @@ export class DiscordAdapter implements MessengerAdapter {
           throw e;
         }
         page.sort((a, b) => snowflakeCmp(a.id, b.id));
-        for (const m of page) await this.created(m, onMessage, dm);
+        for (const m of page) await this.created(m, onMessage, dm, signal);
         if (page.length < PAGE) break;
         const last = page[page.length - 1]!.id;
         if (snowflakeCmp(this.state.channels[chat] ?? after, last) < 0) this.state.channels[chat] = last;

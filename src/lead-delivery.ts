@@ -154,6 +154,12 @@ const HEADERS: Record<Header, string> = {
 };
 
 /**
+ * Text as it goes under its `[<id>]` line: every further line is indented, so only seori's own lines start at column 0
+ * and no text (a non-owner's message, a watch's command output) can pose as another message's header.
+ */
+const indented = (text: string): string => text.split(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/).join("\n  ");
+
+/**
  * The one custom message the lead sees for a decision: how to answer, then each messenger message grouped by header,
  * then the watch events, which need no answer (the extension closes them once seen).
  */
@@ -162,7 +168,7 @@ export function renderDelivery(deliver: Decision["deliver"], cmd: string): strin
   const messages = deliver.filter((d) => d.row.kind === "messenger");
   if (messages.length) {
     lines.push(
-      "seori lead channel: messages from your owner's messenger. Answer each one exactly once:",
+      "seori lead channel: messages from your messengers (a line marked (not owner) is from someone other than your owner). Answer each one exactly once:",
       `  ${cmd} msg send --reply-to <id> --text '...'`,
       `  or, when no reply is needed: ${cmd} msg close <id> --why '...'`,
     );
@@ -170,13 +176,13 @@ export function renderDelivery(deliver: Decision["deliver"], cmd: string): strin
       const group = messages.filter((d) => d.header === header);
       if (!group.length) continue;
       lines.push("", HEADERS[header]);
-      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}${row.notOwner ? " (not owner)" : ""}: ${row.text}`);
+      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}${row.notOwner ? " (not owner)" : ""}: ${indented(row.text)}`);
     }
   } else lines.push("seori lead channel: events from your watches.");
   const events = deliver.filter((d) => d.row.kind === "watch");
   if (events.length) {
     lines.push("", "Watch events (no reply needed):");
-    for (const { row } of events) lines.push(`[${row.id}] ${row.text}`);
+    for (const { row } of events) lines.push(`[${row.id}] ${indented(row.text)}`);
   }
   lines.push("", messages.length ? "Answer these, then continue your current task." : "Act on these if needed, then continue your current task.");
   return lines.join("\n");

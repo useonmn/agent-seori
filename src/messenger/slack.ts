@@ -402,14 +402,16 @@ export class SlackAdapter implements MessengerAdapter {
     }
   }
 
-  /** Every page of a conversations.history/replies answer after `oldest` (exclusive). */
-  private async pages(method: string, params: Record<string, string>, ctx: Receiving): Promise<SlackMessage[]> {
+  /** Every page of a conversations.history/replies answer after `oldest` (exclusive); `enough` ends paging early once a page satisfies it. */
+  private async pages(method: string, params: Record<string, string>, ctx: Receiving, enough?: (page: SlackMessage[]) => boolean): Promise<SlackMessage[]> {
     const messages: SlackMessage[] = [];
     let next: string | undefined;
     do {
       const query: Record<string, string> = { ...params, inclusive: "false", limit: "200", ...(next ? { cursor: next } : {}) };
       const body = await this.api(method, ctx.botToken, query, "GET", ctx.signal);
-      if (Array.isArray(body.messages)) messages.push(...(body.messages as SlackMessage[]));
+      const page = Array.isArray(body.messages) ? (body.messages as SlackMessage[]) : [];
+      messages.push(...page);
+      if (enough?.(page)) break;
       const meta = body.response_metadata;
       const cursor = typeof meta === "object" && meta !== null && "next_cursor" in meta ? meta.next_cursor : undefined;
       next = body.has_more === true && typeof cursor === "string" && cursor ? cursor : undefined;
@@ -534,14 +536,15 @@ export class SlackAdapter implements MessengerAdapter {
   private async involved(channel: string, root: string, ctx: Receiving): Promise<boolean> {
     const key = `${channel}:${root}`;
     if (ctx.untracked.has(key) || ctx.botUser === "") return false;
+    const ours = (r: SlackMessage) => r.user === ctx.botUser || mentions(r.text ?? "", ctx.botUser);
     let messages: SlackMessage[];
     try {
-      messages = await this.pages("conversations.replies", { channel, ts: root }, ctx);
+      messages = await this.pages("conversations.replies", { channel, ts: root }, ctx, (page) => page.some(ours));
     } catch (e) {
       if (!(e instanceof SlackApiError) || !(e.error === "thread_not_found" || UNREADABLE_ERRORS.has(e.error) || GONE_ERRORS.has(e.error))) throw e;
       messages = [];
     }
-    if (messages.some((r) => r.user === ctx.botUser || mentions(r.text ?? "", ctx.botUser))) return true;
+    if (messages.some(ours)) return true;
     ctx.untracked.add(key);
     if (ctx.untracked.size > UNTRACKED_LIMIT) ctx.untracked.delete(ctx.untracked.values().next().value as string);
     return false;

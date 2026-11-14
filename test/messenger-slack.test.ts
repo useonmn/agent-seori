@@ -28,6 +28,10 @@ type Mock = {
   repliesCalls: URLSearchParams[];
   /** `<channel>:<thread ts>` → replies, oldest first, without the parent (the mock puts it first like Slack). */
   replies: Record<string, Record<string, unknown>[]>;
+  /** Error answer of conversations.replies for `<channel>:<thread ts>`, when set. */
+  repliesError: Record<string, Record<string, unknown>>;
+  /** Answer one reply per page (has_more until the last), to see paging stop early. */
+  repliesPaged: boolean;
   /** Called after hello on each new socket (1-based connection number). */
   onConnect: (ws: ServerWebSocket<unknown>, n: number) => void;
   sendHello: boolean;
@@ -56,6 +60,8 @@ function startMock(): Mock {
     historyError: {},
     repliesCalls: [],
     replies: {},
+    repliesError: {},
+    repliesPaged: false,
     onConnect: () => {},
     sendHello: true,
     authAnswer: () => json({ ok: true, user: "seori", user_id: "UBOT", team: "Acme", team_id: "T1" }),
@@ -92,8 +98,15 @@ function startMock(): Mock {
         const channel = q.get("channel") ?? "";
         const root = q.get("ts") ?? "";
         const oldest = q.get("oldest") ?? "0";
+        const error = mock.repliesError[`${channel}:${root}`];
+        if (error) return json(error);
         const parent = mock.history[channel]?.find((m) => m["ts"] === root) ?? { type: "message", ts: root, thread_ts: root };
         const replies = (mock.replies[`${channel}:${root}`] ?? []).filter((m) => compareTs(String(m["ts"]), oldest) > 0);
+        if (mock.repliesPaged) {
+          const all = [parent, ...replies];
+          const i = Number(q.get("cursor") ?? "0");
+          return json({ ok: true, messages: all.slice(i, i + 1), has_more: i + 1 < all.length, response_metadata: { next_cursor: String(i + 1) } });
+        }
         return json({ ok: true, messages: [parent, ...replies], has_more: false });
       }
       if (url.pathname === "/api/chat.postMessage") {
@@ -466,6 +479,29 @@ describe("SlackAdapter receive", () => {
     ]);
     // The thread found not to be seori's is looked up once; tracked threads never.
     expect(mock.repliesCalls.map((q) => q.get("ts"))).toEqual(["1700000000.000050", "1700000000.000060"]);
+  });
+
+  test("a thread lookup Slack refuses drops that reply and keeps the session; a lookup stops paging once seori shows up", async () => {
+    const mock = startMock();
+    mock.repliesError["C1:1700000000.000050"] = { ok: false, error: "thread_not_found" };
+    mock.repliesError["C1:1700000000.000055"] = { ok: false, error: "missing_scope", needed: "groups:history" };
+    mock.repliesPaged = true;
+    mock.replies["C1:1700000000.000060"] = [
+      { type: "message", user: "UBOT", bot_id: "B1", text: "done", ts: "1700000000.000070", thread_ts: "1700000000.000060" },
+      { type: "message", user: "UX", text: "later", ts: "1700000000.000080", thread_ts: "1700000000.000060" },
+      { type: "message", user: "UX", text: "later still", ts: "1700000000.000090", thread_ts: "1700000000.000060" },
+    ];
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", chan("1700000000.000100", "gone thread", { thread_ts: "1700000000.000050" })));
+      ws.send(envelope("e2", chan("1700000000.000200", "unreadable", { thread_ts: "1700000000.000055" })));
+      ws.send(envelope("e3", chan("1700000000.000300", "seori's thread", { thread_ts: "1700000000.000060" })));
+      ws.send(envelope("e4", dm("1700000000.000400")));
+    };
+    const got = await collect(adapter(mock, home()), () => mock.acks.length >= 4);
+    expect(got.map((m) => m.id)).toEqual(["slack:C1:1700000000.000300", "slack:D1:1700000000.000400"]);
+    expect(mock.opens).toBe(1);
+    // Parent page, then seori's message on the second page: the two later pages are never read.
+    expect(mock.repliesCalls.filter((q) => q.get("ts") === "1700000000.000060").length).toBe(2);
   });
 
   test("catch-up applies the same rule: channel chatter is dropped, a mention and a reply in a tracked thread arrive", async () => {
