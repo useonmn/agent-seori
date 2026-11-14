@@ -1,10 +1,11 @@
 import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type Reaction, type SendTarget, SendUncertain } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, secret, splitText } from "./common.ts";
 
-// Discord: inbound over the gateway websocket (DMs to the bot, and server channel messages that mention the bot or reply
-// to it), catch-up and sends over REST. The gateway session (id, resume url, last committed sequence) is persisted so a
-// restart RESUMEs and Discord replays what was missed instead of the bot burning one of its 1000 daily identifies; a lost
-// session falls back to a fresh identify plus a REST catch-up of every tracked channel, from the last committed message id.
+// Discord: inbound over the gateway websocket (DMs to the bot, the owner's server channel messages, and other people's
+// server channel messages that mention the bot or reply to it), catch-up and sends over REST. The gateway session (id,
+// resume url, last committed sequence) is persisted so a restart RESUMEs and Discord replays what was missed instead of
+// the bot burning one of its 1000 daily identifies; a lost session falls back to a fresh identify plus a REST catch-up of
+// every tracked channel, from the last committed message id.
 // With "others" on, people other than the owner are delivered only from the servers in the config's `guilds`, or in a DM
 // when they are a member of one of them: anyone may add a public bot to a server of their own.
 
@@ -100,6 +101,8 @@ export class DiscordAdapter implements MessengerAdapter {
   private readonly others: boolean;
   /** The servers whose members `others` covers (MessengerConfig.guilds). */
   private readonly guilds: ReadonlySet<string>;
+  /** MessengerConfig.ownerNeedsMention: the owner's server channel messages need a mention or a reply too. */
+  private readonly ownerNeedsMention: boolean;
   private readonly api: string;
   private readonly wsUrl: string | undefined;
   private readonly intents: number;
@@ -136,6 +139,7 @@ export class DiscordAdapter implements MessengerAdapter {
     this.owner = config.owner;
     this.others = config.others === true;
     this.guilds = new Set(config.guilds ?? []);
+    this.ownerNeedsMention = config.ownerNeedsMention === true;
     const o = config.options ?? {};
     this.api = (typeof o["apiBase"] === "string" ? o["apiBase"] : DEFAULT_API).replace(/\/+$/, "");
     this.wsUrl = typeof o["wsUrl"] === "string" ? o["wsUrl"] : undefined;
@@ -491,11 +495,12 @@ export class DiscordAdapter implements MessengerAdapter {
   }
 
   /**
-   * Whether `m` is meant for the bot. A DM always is; in a server channel (threads included) only a mention of the bot or
-   * a reply to one of its messages: seori answers with a reply, so answering that reply continues the conversation.
+   * Whether `m` from `from` is meant for the bot. A DM always is, and so is every message of the owner's unless
+   * ownerNeedsMention is on; otherwise, in a server channel (threads included), only a mention of the bot or a reply to
+   * one of its messages: seori answers with a reply, so answering that reply continues the conversation.
    */
-  private async addressed(m: Message, dm: boolean, signal: AbortSignal): Promise<boolean> {
-    if (dm) return true;
+  private async addressed(m: Message, from: string, dm: boolean, signal: AbortSignal): Promise<boolean> {
+    if (dm || (from === this.owner && !this.ownerNeedsMention)) return true;
     const bot = await this.bot(signal);
     return m.mentions?.some((u) => u.id === bot) === true || m.referenced_message?.author?.id === bot;
   }
@@ -530,7 +535,7 @@ export class DiscordAdapter implements MessengerAdapter {
     if (from !== undefined && (m.type === undefined || m.type === 0 || m.type === 19)) {
       const text = this.body(m);
       // A non-owner in a DM must also be a member of a server in `guilds`.
-      if (text && (await this.addressed(m, place.dm, signal)) && (this.pairing || from === this.owner || !place.dm || (await this.member(from, signal)))) {
+      if (text && (await this.addressed(m, from, place.dm, signal)) && (this.pairing || from === this.owner || !place.dm || (await this.member(from, signal)))) {
         const at = Date.parse(m.timestamp ?? "");
         await onMessage({ id, source: this.source, chat, ...(await this.rootOf(chat, place, signal)), from, at: Number.isFinite(at) ? at : this.now(), text });
         this.remember(id);
@@ -553,7 +558,7 @@ export class DiscordAdapter implements MessengerAdapter {
     const id = editId(this.source, m.channel_id, m.id, stamp);
     if (this.delivered.has(id)) return;
     const text = this.body(m);
-    if (!text || !(await this.addressed(m, place.dm, signal)) || (from !== this.owner && place.dm && !(await this.member(from, signal)))) return;
+    if (!text || !(await this.addressed(m, from, place.dm, signal)) || (from !== this.owner && place.dm && !(await this.member(from, signal)))) return;
     await onMessage({ id, source: this.source, chat: m.channel_id, ...(await this.rootOf(m.channel_id, place, signal)), from, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
     this.remember(id);
   }
