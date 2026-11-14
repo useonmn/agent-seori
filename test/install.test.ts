@@ -431,36 +431,45 @@ describe("install.sh and a checkout you develop in", () => {
     expect(remedyField(line!, "SEORI_SRC")).not.toBe(link);
   });
 
-  // A directory name with shell syntax in it is the sharpest test of "safe to paste": every path in a remedy has to be
-  // `printf %q`-escaped, or pasting the line runs `$(…)` out of the path instead of installing it. This checkout sits in
-  // a directory literally named `dev$(touch …)`, and the pasted remedy must install it and run nothing from the name.
+  // A directory name with shell syntax in it is the sharpest test of "safe to paste": every path in a remedy must be
+  // `printf %q`-escaped, or pasting the line runs `$(…)` out of the path instead of installing from it. This checkout is
+  // a real clone (so the guard fires exactly as for any other) that happens to live at a path containing `$(touch …)`,
+  // and the pasted remedy must install it while never creating the canary file.
   test("a checkout at a path containing shell syntax: the printed remedy installs it and runs nothing from the name", () => {
-    const { root, upstream, dev } = seoriCheckout();
-    const canary = join(root, "PWNED");
-    const nasty = `${dev}$(touch ${canary})`;
-    mkdirSync(nasty, { recursive: true });
-    writeFileSync(join(nasty, "tracked.txt"), "one\n");
-    writeFileSync(join(nasty, "package.json"), readFileSync(join(dev, "package.json")));
-    mkdirSync(join(nasty, "skills", "seori-mode"), { recursive: true });
-    writeFileSync(join(nasty, "skills", "seori-mode", "SKILL.md"), "skill\n");
-    mkdirSync(join(nasty, "src"), { recursive: true });
-    writeFileSync(join(nasty, "src", "cli.ts"), "#!/usr/bin/env bun\n", { mode: 0o755 });
-    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    const c = seoriCheckout();
+    const canary = join(c.root, "PWNED");
+    // A sibling clone of the same origin, named with shell syntax. Being a clone is what makes the guard fire; a plain
+    // copy would have no upstream, so no remedy would be printed and the test would prove nothing.
+    const nasty = join(c.root, `dev$(touch ${canary})`);
+    const nastyGit = (cwd: string, ...args: string[]) => {
+      const r = Bun.spawnSync(["git", "-C", cwd, ...args], { env: { ...process.env, ...gitEnv }, stdout: "pipe", stderr: "pipe" });
+      if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr.toString()}`);
+      return r.stdout.toString().trim();
+    };
+    expect(Bun.spawnSync(["git", "clone", "--quiet", c.upstream, nasty], { env: { ...process.env, ...gitEnv } }).exitCode).toBe(0);
+    nastyGit(nasty, "branch", "--set-upstream-to=origin/main");
+    writeFileSync(join(nasty, "tracked.txt"), "edited locally\n");
+    // Upstream moves on, so the guard has a waiting update to refuse.
+    writeFileSync(join(c.upstream, "tracked.txt"), "two\n");
+    c.git(c.upstream, "commit", "--quiet", "-am", "two");
 
-    const r = install(nasty, root);
+    const r = install(nasty, c.root);
     // Whatever it decides, nothing in the path may have executed.
     expect(existsSync(canary)).toBe(false);
+    expect(r.code).toBe(1);
     const line = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
     expect(line).toBeDefined();
     const command = line!.slice(line!.indexOf("SEORI_NO_PULL=1"));
+    // The line names the checkout that printed it — read the way a shell would, since `printf %q` escapes the metacharacters
+    // (`dev\$\(touch\ …`) rather than hiding the path.
+    expect(shellValue(command, "SEORI_SRC")).toBe(nasty);
     const env: Record<string, string | undefined> = { ...process.env };
     for (const k of Object.keys(env)) if (k.startsWith("SEORI_")) delete env[k];
-    Object.assign(env, { HOME: join(root, "home"), BUN_INSTALL: join(root, "bun"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache") }, gitEnv);
-    // Pasting it, as a user would, must not execute the name and must reach the install.
+    Object.assign(env, { HOME: join(c.root, "home"), BUN_INSTALL: join(c.root, "bun"), XDG_CONFIG_HOME: join(c.root, "config"), XDG_DATA_HOME: join(c.root, "data"), XDG_CACHE_HOME: join(c.root, "cache") }, gitEnv);
     const pasted = Bun.spawnSync(["bash", "-c", command], { env, stdout: "pipe", stderr: "pipe" });
     expect(existsSync(canary)).toBe(false);
-    // The install itself may fail for reasons unrelated to escaping (no origin for this copy), but the path it names
-    // must be the one that printed the line, and the canary must still not exist.
-    expect(pasted.stdout.toString() + pasted.stderr.toString()).toContain(nasty);
+    // It installed that checkout, and the temp global link points there.
+    expect(pasted.stdout.toString()).toContain(`Installed seori from ${nasty}`);
+    expect(realpathSync(join(c.root, "bun", "install", "global", "node_modules", "seori"))).toBe(realpathSync(nasty));
   });
 });
