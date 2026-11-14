@@ -185,6 +185,23 @@ describe("the detached restart script", () => {
     expect(code).not.toBe(0);
     expect(readFileSync(join(dir, "restart.log"), "utf8")).toContain("RESTART_FAILED seori up failed");
   });
+
+  test("a home or cwd with shell syntax in it is printed and passed as a path, never expanded or run", async () => {
+    // A directory name may legally contain $, backticks and quotes; if any of these were expanded, the echo would run
+    // them (the log is built by a shell). The marker files prove nothing ran.
+    const pwned = [join(dir, "pwned-tick"), join(dir, "pwned-subst")];
+    const evil = join(dir, "it's a $HOME `touch ${pwned[0]}`/$(touch ${pwned[1]})");
+    mkdirSync(evil, { recursive: true });
+    const seori = fakeSeori();
+    const script = restartScript({ home: evil, cwd: evil, seoriCmd: seori, log: join(dir, "restart.log") });
+    const detach = detachArgv(script, (b) => Bun.which(b) !== null, "seori-restart-test");
+    const p = Bun.spawn([...detach!.argv], { env: { ...process.env, PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir }, stdio: ["ignore", "ignore", "ignore"] });
+    await p.exited;
+    expect(await restartExit(join(dir, "restart.log"))).toBe(0);
+    // The path reached seori as one literal argument, and both markers are missing.
+    expect(readFileSync(join(dir, "calls.log"), "utf8")).toContain(`CALLED up --cwd ${evil}`);
+    for (const marker of pwned) expect(existsSync(marker)).toBe(false);
+  });
 });
 
 describe("how a restart detaches", () => {

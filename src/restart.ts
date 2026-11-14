@@ -66,7 +66,8 @@ export function restartScript(o: ScriptOptions): string {
     `trap '' HUP`,
     // The worker's own pid, so an operator can watch or kill it: a detached worker has no other handle.
     `echo "RESTART_PID $$"`,
-    `echo "RESTART_BEGIN home=${o.home} cwd=${o.cwd}"`,
+    // Quoted like any other argument: a home or cwd with `$VAR`, backticks or `$(cmd)` in it is printed, not expanded.
+    `echo ${shq(`RESTART_BEGIN home=${o.home} cwd=${o.cwd}`)}`,
     // hc may be down after a crash or a core restart: no up could open a pane, so nothing is stopped either.
     `if ! hc --json server status >/dev/null 2>&1; then`,
     `  echo "RESTART_FAILED hc (herdr-core) does not answer; nothing stopped, nothing opened"; finish 1`,
