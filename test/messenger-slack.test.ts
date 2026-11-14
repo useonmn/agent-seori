@@ -584,22 +584,31 @@ describe("SlackAdapter receive", () => {
     ]);
     expect(mock.usersCalls.sort()).toEqual(["UGUEST", "UOTHER", "USINGLE"]);
 
-    const noScope = startMock();
-    noScope.usersError = { ok: false, error: "missing_scope", needed: "users:read" };
-    noScope.onConnect = (ws) => {
-      ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> member", { user: "UOTHER", ...t1 })));
-      ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> owner", t1)));
-    };
+    // An app installed without users:read: with others off, users.info is never called; with others on, a
+    // missing_scope drops that person's message (fail closed), keeps the session, and logs one line naming the scope.
     const errors: string[] = [];
     const error = console.error;
     console.error = (...a: unknown[]) => void errors.push(a.join(" "));
     try {
-      const only = await collect(adapter(noScope, home(), { others: true }), () => noScope.acks.length >= 2);
-      expect(only.map((m) => m.from)).toEqual([OWNER]);
+      for (const others of [false, true]) {
+        const noScope = startMock();
+        noScope.usersError = { ok: false, error: "missing_scope", needed: "users:read" };
+        noScope.onConnect = (ws) => {
+          ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> member", { user: "UOTHER", ...t1 })));
+          ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> member again", { user: "UOTHER", ...t1 })));
+          ws.send(envelope("e3", chan("1700000000.000300", "<@UBOT> owner", t1)));
+        };
+        const only = await collect(adapter(noScope, home(), { others }), () => noScope.acks.length >= 3);
+        expect(only.map((m) => m.from)).toEqual([OWNER]);
+        expect(noScope.opens).toBe(1);
+        expect(noScope.usersCalls).toEqual(others ? ["UOTHER", "UOTHER"] : []);
+      }
     } finally {
       console.error = error;
     }
-    expect(errors.filter((l) => l.includes("users:read"))).toHaveLength(1);
+    expect(errors.filter((l) => l.includes("users:read"))).toEqual([
+      'slack slack: "others" needs the bot scope users:read to tell members from guests; add it in the Slack app settings (OAuth & Permissions) and reinstall the app. Until then only the owner is answered',
+    ]);
   });
 
   test("a reply in a channel thread carries its thread's first message as root; top-level messages and DMs carry none", async () => {
