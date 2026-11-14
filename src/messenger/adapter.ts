@@ -70,6 +70,11 @@ export type MessengerConfig = {
    * in a channel, or a reply in a thread the bot follows. Their messages reach the lead with their own sender id.
    */
   readonly others?: boolean;
+  /**
+   * Discord only: the ids of the servers (guilds) whose members `others` covers, required with it. A non-owner is
+   * delivered from a channel of one of these servers, or in a DM when they are a member of one of them.
+   */
+  readonly guilds?: readonly string[];
   readonly options?: Readonly<Record<string, unknown>>;
 };
 
@@ -88,11 +93,25 @@ export function loadMessengers(root: string): MessengerConfig[] {
     const c = m as Partial<MessengerConfig>;
     if (typeof c.source !== "string" || typeof c.owner !== "string") throw new ConfigError(`${path}: messengers[${i}] needs string "source" and "owner"`);
     if (c.others !== undefined && typeof c.others !== "boolean") throw new ConfigError(`${path}: messengers[${i}].others must be true or false, got ${JSON.stringify(c.others)}`);
-    // Telegram: anyone can message a bot, and the adapter cannot see whether group privacy mode limits it to mentions.
-    // Discord: anyone may share a server with a public bot; others there wait for a guild allowlist.
-    if (c.others === true && (c.source === "telegram" || c.source === "discord")) {
-      throw new ConfigError(`${path}: messengers[${i}].others is not supported for ${c.source}; only the owner is answered there`);
+    if (c.guilds !== undefined) {
+      if (c.source !== "discord") throw new ConfigError(`${path}: messengers[${i}].guilds is only for discord`);
+      // Strings: a server id is above 2^53, so a JSON number would already have lost digits.
+      if (!Array.isArray(c.guilds) || c.guilds.length === 0 || !c.guilds.every((g: unknown) => typeof g === "string" && /^\d+$/.test(g))) {
+        throw new ConfigError(`${path}: messengers[${i}].guilds must be a non-empty array of Discord server ids as strings of digits, got ${JSON.stringify(c.guilds)}`);
+      }
     }
-    return { source: c.source, owner: c.owner, ...(c.others !== undefined ? { others: c.others } : {}), ...(c.options ? { options: c.options } : {}) };
+    // Telegram: anyone can message a bot, and the adapter cannot see whether group privacy mode limits it to mentions.
+    if (c.others === true && c.source === "telegram") throw new ConfigError(`${path}: messengers[${i}].others is not supported for telegram; only the owner is answered there`);
+    // Discord: anyone may add a public bot to their server, so others are limited to servers the owner names.
+    if (c.others === true && c.source === "discord" && c.guilds === undefined) {
+      throw new ConfigError(`${path}: messengers[${i}].others on discord needs "guilds": the ids of the servers whose members may talk to seori`);
+    }
+    return {
+      source: c.source,
+      owner: c.owner,
+      ...(c.others !== undefined ? { others: c.others } : {}),
+      ...(c.guilds !== undefined ? { guilds: c.guilds } : {}),
+      ...(c.options ? { options: c.options } : {}),
+    };
   });
 }

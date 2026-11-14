@@ -5,6 +5,8 @@ import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, rep
 // to it), catch-up and sends over REST. The gateway session (id, resume url, last committed sequence) is persisted so a
 // restart RESUMEs and Discord replays what was missed instead of the bot burning one of its 1000 daily identifies; a lost
 // session falls back to a fresh identify plus a REST catch-up of every tracked channel, from the last committed message id.
+// With "others" on, people other than the owner are delivered only from the servers in the config's `guilds`, or in a DM
+// when they are a member of one of them: anyone may add a public bot to a server of their own.
 
 const DEFAULT_API = "https://discord.com/api/v10";
 /** DIRECT_MESSAGES | GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT. */
@@ -22,6 +24,10 @@ const PAGE = 100;
 const RESUMABLE_CLOSE = 4000;
 /** On abort, how long receive() waits for an onMessage in flight to finish so its commit lands. */
 const ABORT_GRACE_MS = 1_000;
+/** Thread channel types: announcement, public and private thread. */
+const THREAD_TYPES: ReadonlySet<unknown> = new Set([10, 11, 12]);
+/** How long a server membership answer for a DM sender stands before it is asked again (they may join or leave). */
+const MEMBER_RECHECK_MS = 10 * 60_000;
 
 type Session = { sessionId: string; resumeUrl: string; seq: number | null };
 /**
@@ -41,12 +47,20 @@ type Message = {
   timestamp?: string;
   edited_timestamp?: string | null;
   author?: { id?: string; bot?: boolean };
+  /** Set when a webhook posted it: the author is then the webhook, not a person. */
+  webhook_id?: string;
   mentions?: { id?: string }[];
   /** The message this one replies to (type 19). */
   referenced_message?: { author?: { id?: string } } | null;
   attachments?: Attachment[];
 };
 type Payload = { op: number; d?: unknown; s?: number | null; t?: string | null };
+/**
+ * What GET /channels/{id} says about a channel: a direct message, or a server channel with its server and, for a
+ * thread, its InboundMessage root (the starter message's id: a thread started from a message has that message's id)
+ * and whether the owner started it.
+ */
+type Place = { dm: boolean; guild?: string; thread?: { root: string; byOwner: boolean } };
 /**
  * How one gateway connection ended: `healthy` means it got as far as handling events; `delayMs` overrides the backoff;
  * `error` says why an unhealthy one ended.
@@ -83,6 +97,9 @@ function withGatewayQuery(url: string): string {
 export class DiscordAdapter implements MessengerAdapter {
   readonly source: string;
   private readonly owner: string;
+  private readonly others: boolean;
+  /** The servers whose members `others` covers (MessengerConfig.guilds). */
+  private readonly guilds: ReadonlySet<string>;
   private readonly api: string;
   private readonly wsUrl: string | undefined;
   private readonly intents: number;
@@ -100,8 +117,10 @@ export class DiscordAdapter implements MessengerAdapter {
   private readonly pairing: boolean;
   /** The bot's own user id (READY, or /users/@me after a resume): what a mention or a reply must point at. */
   private botId: string | undefined;
-  /** Per channel id, whether it is a direct message channel; REST messages carry no guild_id to tell. */
-  private readonly dms = new Map<string, boolean>();
+  /** Per channel id, what GET /channels/{id} said (a DM seen on the gateway is known without asking). */
+  private readonly places = new Map<string, Place>();
+  /** Per non-owner DM sender, whether they are a member of an allowlisted server, and when that was asked. */
+  private readonly members = new Map<string, { member: boolean; at: number }>();
 
   constructor(
     config: MessengerConfig,
@@ -115,6 +134,8 @@ export class DiscordAdapter implements MessengerAdapter {
   ) {
     this.source = config.source;
     this.owner = config.owner;
+    this.others = config.others === true;
+    this.guilds = new Set(config.guilds ?? []);
     const o = config.options ?? {};
     this.api = (typeof o["apiBase"] === "string" ? o["apiBase"] : DEFAULT_API).replace(/\/+$/, "");
     this.wsUrl = typeof o["wsUrl"] === "string" ? o["wsUrl"] : undefined;
@@ -388,13 +409,15 @@ export class DiscordAdapter implements MessengerAdapter {
       }
       case "RESUMED":
         return this.catchup(onMessage, signal);
-      case "MESSAGE_CREATE": {
+      case "MESSAGE_CREATE":
+      case "MESSAGE_UPDATE": {
         const m = p.d as Message;
-        if (typeof m?.channel_id === "string") this.dms.set(m.channel_id, m.guild_id === undefined);
-        return this.created(m, onMessage, m?.guild_id === undefined, signal);
+        // A server message on the gateway carries its guild_id (a thread it is in is not said); a DM has none.
+        const place: Place = m?.guild_id === undefined ? { dm: true } : { dm: false, guild: m.guild_id };
+        if (p.t === "MESSAGE_UPDATE") return this.edited(m, onMessage, place, signal);
+        if (place.dm && typeof m?.channel_id === "string") this.places.set(m.channel_id, place);
+        return this.created(m, onMessage, place, signal);
       }
-      case "MESSAGE_UPDATE":
-        return this.edited(p.d as Message, onMessage, signal);
     }
   }
 
@@ -412,10 +435,59 @@ export class DiscordAdapter implements MessengerAdapter {
     if (this.delivered.size > 10_000) this.delivered.delete(this.delivered.values().next().value as string);
   }
 
-  /** The sender of `m` when it may reach the lead: the owner, never a bot ("others" is refused for Discord). */
-  private sender(m: Message): string | undefined {
+  /**
+   * Who `m` is from when it may reach the lead, before the DM membership check (`member`): the owner, or with "others"
+   * on another person in a DM or in a channel of a server in `guilds`. Never a bot or a webhook.
+   */
+  private candidate(m: Message, place: Place): string | undefined {
     const id = m.author?.id;
-    return typeof id === "string" && id === this.owner && m.author?.bot !== true ? id : undefined;
+    if (typeof id !== "string" || id === "" || m.author?.bot === true || m.webhook_id !== undefined) return undefined;
+    if (id === this.owner) return id;
+    return this.others && (place.dm || (place.guild !== undefined && this.guilds.has(place.guild))) ? id : undefined;
+  }
+
+  /**
+   * Whether `user` is a member of a server in `guilds` (GET /guilds/{id}/members/{user}, no privileged intent needed) who
+   * has passed its membership screening. 403 (the bot is not in that server) and 404 (not a member) count as no. An
+   * answer is asked again after MEMBER_RECHECK_MS; any other failure throws, so the connection ends and Discord
+   * replays the message instead of it being skipped.
+   */
+  private async member(user: string, signal: AbortSignal): Promise<boolean> {
+    const known = this.members.get(user);
+    if (known !== undefined && this.now() - known.at < MEMBER_RECHECK_MS) return known.member;
+    let member = false;
+    for (const guild of this.guilds) {
+      try {
+        const res = await httpJson(
+          `${this.api}/guilds/${seg(guild)}/members/${seg(user)}`,
+          { headers: this.headers(this.token()), signal },
+          { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs },
+        );
+        member = (res.body as { pending?: unknown } | undefined)?.pending !== true;
+      } catch (e) {
+        if (e instanceof HttpError && e.status === 401) throw this.tokenRejected("401 on GET /guilds/{id}/members/{id}");
+        if (e instanceof HttpError && (e.status === 403 || e.status === 404)) continue;
+        throw e;
+      }
+      if (member) break;
+    }
+    this.members.delete(user); // set again below, so the oldest answer is the first one evicted
+    this.members.set(user, { member, at: this.now() });
+    if (this.members.size > 10_000) this.members.delete(this.members.keys().next().value as string);
+    return member;
+  }
+
+  /**
+   * InboundMessage root of a message in `chat`: a thread's root, with rootByOwner when the owner started the thread.
+   * Nothing for a DM or a plain server channel. A channel the bot may not look up counts as a thread of unknown author,
+   * so the owner's message there is never the owner's alone.
+   */
+  private async rootOf(chat: string, place: Place, signal: AbortSignal): Promise<{ root?: string; rootByOwner?: true }> {
+    if (place.dm) return {};
+    const known = await this.place(chat, signal);
+    if (known === undefined) return { root: messageId(this.source, chat, chat) };
+    if (known.thread === undefined) return {};
+    return { root: known.thread.root, ...(known.thread.byOwner ? { rootByOwner: true as const } : {}) };
   }
 
   /**
@@ -443,23 +515,24 @@ export class DiscordAdapter implements MessengerAdapter {
   }
 
   /**
-   * A new message, from the gateway or catch-up (`dm`: it is in a direct message channel). A message from an accepted
-   * sender that is addressed to the bot is delivered; the channel cursor moves past every message.
+   * A new message, from the gateway or catch-up (`place`: where it is). A message from an accepted sender that is
+   * addressed to the bot is delivered; the channel cursor moves past every message.
    */
-  private async created(m: Message, onMessage: (m: InboundMessage) => Promise<void>, dm: boolean, signal: AbortSignal): Promise<void> {
+  private async created(m: Message, onMessage: (m: InboundMessage) => Promise<void>, place: Place, signal: AbortSignal): Promise<void> {
     if (typeof m?.id !== "string" || typeof m.channel_id !== "string") return;
     const chat = m.channel_id;
     const committed = this.state.channels[chat];
     if (committed !== undefined && snowflakeCmp(m.id, committed) <= 0) return;
     const id = messageId(this.source, chat, m.id);
     if (this.delivered.has(id)) return;
-    const from = this.pairing ? (dm && typeof m.author?.id === "string" && m.author.id !== "" && m.author.bot !== true ? m.author.id : undefined) : this.sender(m);
+    const from = this.pairing ? (place.dm && typeof m.author?.id === "string" && m.author.id !== "" && m.author.bot !== true ? m.author.id : undefined) : this.candidate(m, place);
     let delivered = false;
     if (from !== undefined && (m.type === undefined || m.type === 0 || m.type === 19)) {
       const text = this.body(m);
-      if (text && (await this.addressed(m, dm, signal))) {
+      // A non-owner in a DM must also be a member of a server in `guilds`.
+      if (text && (await this.addressed(m, place.dm, signal)) && (this.pairing || from === this.owner || !place.dm || (await this.member(from, signal)))) {
         const at = Date.parse(m.timestamp ?? "");
-        await onMessage({ id, source: this.source, chat, from, at: Number.isFinite(at) ? at : this.now(), text });
+        await onMessage({ id, source: this.source, chat, ...(await this.rootOf(chat, place, signal)), from, at: Number.isFinite(at) ? at : this.now(), text });
         this.remember(id);
         delivered = true;
       }
@@ -471,32 +544,31 @@ export class DiscordAdapter implements MessengerAdapter {
     }
   }
 
-  private async edited(m: Message, onMessage: (m: InboundMessage) => Promise<void>, signal: AbortSignal): Promise<void> {
+  private async edited(m: Message, onMessage: (m: InboundMessage) => Promise<void>, place: Place, signal: AbortSignal): Promise<void> {
     if (this.pairing || typeof m?.id !== "string" || typeof m.channel_id !== "string" || !m.edited_timestamp) return;
-    const from = this.sender(m);
+    const from = this.candidate(m, place);
     if (from === undefined) return;
     const editedAt = Date.parse(m.edited_timestamp);
     const stamp = Number.isFinite(editedAt) ? String(editedAt) : m.edited_timestamp;
     const id = editId(this.source, m.channel_id, m.id, stamp);
     if (this.delivered.has(id)) return;
     const text = this.body(m);
-    if (!text || !(await this.addressed(m, m.guild_id === undefined, signal))) return;
-    await onMessage({ id, source: this.source, chat: m.channel_id, from, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
+    if (!text || !(await this.addressed(m, place.dm, signal)) || (from !== this.owner && place.dm && !(await this.member(from, signal)))) return;
+    await onMessage({ id, source: this.source, chat: m.channel_id, ...(await this.rootOf(m.channel_id, place, signal)), from, at: Number.isFinite(editedAt) ? editedAt : this.now(), text: `(edited) ${text}` });
     this.remember(id);
   }
 
   /**
-   * Whether `chat` is a direct message channel; undefined when the bot may not see it (403: kept, so catch-up resumes
-   * once access is back) or it is gone (404: forgotten, like a channel Slack reports gone).
+   * What `chat` is (Place); undefined when the bot may not see it (403: kept, so catch-up resumes once access is back) or
+   * it is gone (404: forgotten, like a channel Slack reports gone).
    */
-  private async isDm(chat: string, token: string, signal: AbortSignal): Promise<boolean | undefined> {
-    const known = this.dms.get(chat);
+  private async place(chat: string, signal: AbortSignal): Promise<Place | undefined> {
+    const known = this.places.get(chat);
     if (known !== undefined) return known;
+    let c: { type?: unknown; guild_id?: unknown; parent_id?: unknown; owner_id?: unknown } | undefined;
     try {
-      const res = await httpJson(`${this.api}/channels/${seg(chat)}`, { headers: this.headers(token), signal }, { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs });
-      const dm = (res.body as { type?: unknown } | undefined)?.type === 1;
-      this.dms.set(chat, dm);
-      return dm;
+      const res = await httpJson(`${this.api}/channels/${seg(chat)}`, { headers: this.headers(this.token()), signal }, { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs });
+      c = res.body as typeof c;
     } catch (e) {
       if (e instanceof HttpError && e.status === 401) throw this.tokenRejected("401 on GET /channels/{id}");
       if (e instanceof HttpError && e.status === 404) {
@@ -507,6 +579,18 @@ export class DiscordAdapter implements MessengerAdapter {
       if (e instanceof HttpError && e.status === 403) return undefined;
       throw e;
     }
+    const place: Place =
+      c?.type === 1
+        ? { dm: true }
+        : {
+            dm: false,
+            ...(typeof c?.guild_id === "string" ? { guild: c.guild_id } : {}),
+            ...(THREAD_TYPES.has(c?.type)
+              ? { thread: { root: messageId(this.source, typeof c?.parent_id === "string" ? c.parent_id : chat, chat), byOwner: c?.owner_id === this.owner } }
+              : {}),
+          };
+    this.places.set(chat, place);
+    return place;
   }
 
   /** Every tracked channel from its committed message id, oldest first, a page of 100 at a time. */
@@ -514,8 +598,8 @@ export class DiscordAdapter implements MessengerAdapter {
     if (!this.catchupPending || this.pairing) return;
     const token = this.token();
     for (const chat of Object.keys(this.state.channels)) {
-      const dm = await this.isDm(chat, token, signal);
-      if (dm === undefined) continue; // channel gone or no access: nothing to catch up
+      const place = await this.place(chat, signal);
+      if (place === undefined) continue; // channel gone or no access: nothing to catch up
       for (;;) {
         const after = this.state.channels[chat];
         if (after === undefined) break;
@@ -533,7 +617,7 @@ export class DiscordAdapter implements MessengerAdapter {
           throw e;
         }
         page.sort((a, b) => snowflakeCmp(a.id, b.id));
-        for (const m of page) await this.created(m, onMessage, dm, signal);
+        for (const m of page) await this.created(m, onMessage, place, signal);
         if (page.length < PAGE) break;
         const last = page[page.length - 1]!.id;
         if (snowflakeCmp(this.state.channels[chat] ?? after, last) < 0) this.state.channels[chat] = last;
