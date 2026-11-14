@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh
 - 데몬: `seori daemon`입니다. 메신저로 온 메시지를 받아 리드에게 전할 수 있게 저장하고, 에이전트가 걸어 둔 감시(watch)를 돌립니다. 자세한 내용은 [메신저 채널](#메신저-채널)과 [감시](#감시)에 있습니다.
 - 리뷰와 머지 관문: PR은 정확히 지금 헤드(head) 커밋에 대한 CLEAR 리뷰 기록이 있고, 체크가 모두 통과하고, verify-pr도 통과해야만 머지됩니다.
 
-리드가 말하는 방식: 내 메시지마다 눈 리액션을 달고 처리합니다. 답장이면 원래 메시지부터 읽습니다(텔레그램 봇은 지난 메시지를 가져올 수 없어 답장의 글만 봅니다). 일 하나에는 스레드 하나가 생기고, 그 안의 상태 메시지 하나를 계속 고쳐 씁니다(일하는 중 ⏳, 끝나면 ✅). 스레드 이름 앞에는 상태 이모지가 붙습니다(🔄 진행 중, ⏸ 기다리는 중, ✅ 완료). 일이 끝나면 리액션을 떼고 스레드를 닫습니다. 닫힌 스레드에 다시 쓰면 스레드와 그 일의 레인을 다시 엽니다. 답은 메시지를 여러 개 보내는 대신 한 메시지를 고쳐 가며 늘립니다. seori 자체는 메시지를 보내고 고치기만 합니다. 리액션, 답장한 원래 메시지 읽기, 스레드 이름과 닫기, 완성된 파일 올리기는 선택 설치인 agent-messenger의 봇 명령으로 합니다(없으면 리드가 건너뛰고, 파일은 경로나 링크를 보냅니다). 이 상태 표시 말고는 이모지를 쓰지 않고, 봇으로 보냅니다.
+리드가 말하는 방식: 내 메시지가 리드에게 닿는 즉시 seori가 눈 리액션을 달고, 리드가 답하면 체크 표시로 바꿉니다([리액션](#리액션) 참고). 답장이면 리드가 원래 메시지부터 읽습니다(텔레그램 봇은 지난 메시지를 가져올 수 없어 답장의 글만 봅니다). 일 하나에는 스레드 하나가 생기고, 그 안의 상태 메시지 하나를 계속 고쳐 씁니다(일하는 중 ⏳, 끝나면 ✅). 스레드 이름 앞에는 상태 이모지가 붙습니다(🔄 진행 중, ⏸ 기다리는 중, ✅ 완료). 일이 끝나면 결과 답이 체크 표시를 달고, 리드가 스레드를 닫습니다. 닫힌 스레드에 다시 쓰면 스레드와 그 일의 레인을 다시 엽니다. 답은 메시지를 여러 개 보내는 대신 한 메시지를 고쳐 가며 늘립니다. seori 자체는 메시지를 보내고 고치고 이 두 리액션을 답니다. 답장한 원래 메시지 읽기, 스레드 이름과 닫기, 완성된 파일 올리기는 선택 설치인 agent-messenger의 봇 명령으로 합니다(없으면 리드가 건너뛰고, 파일은 경로나 링크를 보냅니다). 이 상태 표시 말고는 이모지를 쓰지 않고, 봇으로 보냅니다.
 
 런타임이 세션마다 터미널을 만들어 주고, 그 안의 에이전트가 지금 쉬는 중(idle)인지, 일하는 중(working)인지, 막혀 있는지(blocked) 알려 줍니다. seori는 세션에 무언가를 하기 전에 항상 이 상태부터 확인합니다. 런타임은 hc이고 에이전트는 언제나 omp입니다. [docs/runtime.md](docs/runtime.md)에 seori가 hc에서 하는 일이 나와 있습니다. 예전에 herdr로 쓰던 홈이라면, 남은 기록 가운데 무엇을 건너뛰고 무엇을 그 파일을 지울 때까지 듀티 루프가 매번 `DUTY ERROR` 한 줄로 알리는지도 거기에 나와 있습니다.
 
@@ -203,14 +203,16 @@ seori down [duty|loop|daemon|all] [--keep-autostart]
                                             seori.group 터미널을 닫습니다. 30초 뒤에도 남은 프로세스가 있으면 종료 코드 1
 seori install-skill [--skills-dir DIR]       seori-mode 스킬을 에이전트의 스킬 폴더에 링크합니다. install.sh가 실행합니다
 seori uninstall [--skills-dir DIR] [--purge] 스킬 링크와 seori 명령을 지웁니다. --purge는 $SEORI_HOME도 지웁니다
-seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack]
                                             메신저 메시지에 답합니다 (id 하나에 답 하나). --to는 알림을 보냅니다.
                                             쓴 즉시 바로 나가므로, 다 쓴 답을 곧바로 보냅니다. --again은 이미 답한
-                                            id에 또 답합니다 (정정)
+                                            id에 또 답합니다 (정정, 일의 결과). seori가 그 메시지에 단 눈은 체크
+                                            표시로 바뀝니다. --ack(일의 접수 확인이자 상태 메시지)만 눈을 그대로 둡니다
 seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                             seori가 보낸 메시지를 고칩니다. --reply-of는 그 리드 채널 메시지에 seori가
                                             처음 보낸 답을 고칩니다. MID는 msg send가 출력한 message= 값
-seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다
+seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다.
+                                            메신저 메시지에는 체크 표시를 답니다
 seori msg list [--all]                       아직 열린 리드 채널 메시지: 메신저 메시지와 감시 알림 (--all: 전부, 상태 포함)
                                             칸: id  상태  지난 시간  종류  보낸 사람 또는 감시 이름  내용
 seori msg check [SOURCE]                     메신저 토큰이 맞는지 확인합니다(봇 이름을 출력). SOURCE를 주면 주인 등록 전에도 됩니다
@@ -459,7 +461,7 @@ seori 자체는 이 파일을 만들거나 다시 쓰지 않습니다. 쓰는 �
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
 | `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`, `others`를 쓰려면 `users:read`), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
-| `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). Public Bot을 끄고(`others`를 쓰려면 꼭), 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
+| `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). Public Bot을 끄고(`others`를 쓰려면 꼭), Add Reactions, Read Message History 권한으로 초대하고(서버 채널에서 seori가 리액션을 달 수 있도록), 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
 
@@ -508,6 +510,18 @@ seori msg pair telegram --write
 3. 리드는 `seori msg send --reply-to <id> --text '...'`로 답하고, 답할 필요가 없으면 `seori msg close <id> --why '...'`로 닫습니다. 답은 리드가 쓴 즉시 바로 나갑니다. 메신저가 받아 준 답이나 닫기만 id를 끝냅니다. 같은 id에 두 번 답하려 하면 `--again` 없이는 거절합니다. 갔는지 확실하지 않은 답(보낸 뒤 시간 초과)은 기록해 두고, 사람이 채팅을 확인하고 `--again`을 붙이기 전까지 다시 보내지 않습니다.
 4. 아직 답하지 않은 id는 다시 전합니다. 모두 합쳐 3번까지 전하고, 그래도 답이 없으면 포기합니다. 메신저가 받아 준 답이나 닫기만 id를 답한 것으로 치므로, 그 id는 다시 전하지 않습니다.
 5. 리드의 omp는 omp의 어드바이저(advisor)를 켜고 돕니다. 어드바이저는 선택 기능이라 기본값은 꺼져 있고, seori가 자기 리드에 한해 켭니다(`$SEORI_HOME/prompts/lead-omp.yml`의 `advisor.enabled: true`; `advisor.syncBacklog: strict`라 검토가 agent_end 전에 끝납니다). 리드는 어드바이저를 기다리지 않습니다. 답이 이미 나간 뒤에 어드바이저가 그 차례를 검토하고, 문제를 짚으면 리드가 정정을 곧바로 별도 메시지로 `--again`과 함께 보냅니다.
+
+### 리액션
+
+seori는 메시지 자체에 지금 어디까지 왔는지 표시합니다. 데몬이 메시지를 리드 몫으로 저장하는 즉시 눈 리액션을 답니다. 버린 메시지에는 달지 않고, 다시 받은 메시지나 이미 저장한 메시지를 고친 것에는 두 번 달지 않습니다. 리드가 답하면 눈이 체크 표시로 바뀝니다. `seori msg send --reply-to`로 보낸 답이나 `seori msg close`가 답한 것입니다. 일(job)의 첫 답은 접수 확인(리드가 계속 고쳐 쓰는 상태 메시지)일 뿐이라 리드가 `--ack`를 붙여 보내고, 이때는 눈이 그대로 남습니다. 일이 끝났을 때 보내는 결과 답(`--again`, `--ack` 없이)이 체크 표시를 답니다. 메시지를 고쳐도 리액션은 바뀌지 않습니다.
+
+| 플랫폼 | 눈 | 체크 표시 | 필요한 것 |
+|---|---|---|---|
+| Slack | `eyes` | `white_check_mark` (단 다음 눈을 뗌) | 봇 권한 `reactions:write` |
+| Discord | 👀 | ✅ (단 다음 눈을 뗌) | 서버 채널에서 Add Reactions, Read Message History 권한 |
+| Telegram | 👀 | 👌, 눈을 대신함: ✅는 텔레그램이 허용하는 리액션이 아닙니다 | 더 없음 |
+
+리액션이 실패해도(권한이 없음, 속도 제한 등) 기록만 남기고(눈은 데몬 로그에, 체크 표시는 `seori msg`의 stderr에), 메시지 전달이나 답을 막지 않습니다.
 
 ### 정정
 

@@ -238,7 +238,8 @@ export class World {
   }
 }
 
-/** The edit beyond send, doing nothing: for test adapters that only care about receive and send. */
-export const noActions: Pick<MessengerAdapter, "edit"> = {
+/** The edit and reaction beyond send, doing nothing: for test adapters that only care about receive and send. */
+export const noActions: Pick<MessengerAdapter, "edit" | "react"> = {
   edit: async () => {},
+  react: async () => {},
 };

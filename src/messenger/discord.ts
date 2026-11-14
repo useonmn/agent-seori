@@ -1,4 +1,4 @@
-import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
+import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type Reaction, type SendTarget, SendUncertain } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, secret, splitText } from "./common.ts";
 
 // Discord: inbound over the gateway websocket (DMs to the bot, and server channel messages that mention the bot or reply
@@ -667,6 +667,20 @@ export class DiscordAdapter implements MessengerAdapter {
     if (!text.trim()) throw new Error(`${this.source}: refusing to edit a message to empty text`);
     if (text.length > MESSAGE_LIMIT) throw new Error(`${this.source}: an edited message holds at most ${MESSAGE_LIMIT} characters, got ${text.length}`);
     await this.act("PATCH", `/channels/${seg(target.thread ?? target.chat)}/messages/${seg(message)}`, { content: text, allowed_mentions: { parse: [] } });
+  }
+
+  /**
+   * The bot's own reaction (PUT/DELETE .../reactions/{emoji}/@me; Add Reactions and Read Message History in a server
+   * channel). Both are idempotent on Discord; the check mark goes on before the eyes come off.
+   */
+  async react(target: SendTarget, message: string, reaction: Reaction): Promise<void> {
+    const path = (emoji: string) => `/channels/${seg(target.thread ?? target.chat)}/messages/${seg(message)}/reactions/${encodeURIComponent(emoji)}/@me`;
+    if (reaction === "read") {
+      await this.act("PUT", path("👀"));
+      return;
+    }
+    await this.act("PUT", path("✅"));
+    await this.act("DELETE", path("👀"));
   }
 
   async check(): Promise<string> {

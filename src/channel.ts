@@ -200,6 +200,14 @@ export class Channel {
     return true;
   }
 
+  /** A row of upstream message `id` (`<source>:<chat>:<message id>`) is stored: that id, or an edit of it (`<id>:edit:<stamp>`). */
+  hasMessage(id: string): boolean {
+    this.scanInbound();
+    if (this.stored.has(id)) return true;
+    for (const stored of this.stored) if (stored.startsWith(`${id}:edit:`)) return true;
+    return false;
+  }
+
   /** Stored rows, oldest first: the owner's alone and watch events, plus everything else with `withOthers`. */
   inbound(view: ChannelView = {}): InboundRow[] {
     const rows = readJsonl<InboundRow>(this.inboundPath);
