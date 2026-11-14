@@ -239,6 +239,7 @@ seori watch log <id|name> [-n N]             감시가 최근에 본 일
 
 1. `seori start <key> --brief FILE`은 먼저 컴퓨터에 레인을 열 자리가 있는지 확인합니다([컴퓨터 자원 감시](#컴퓨터-자원-감시-can-launch-무거운-작업-자리) 참고, `--force`면 자리 확인을 건너뜀). 읽을 수 없는 Done 줄(`--done`)은 거절합니다.
 2. 그 레인 폴더의 교훈([교훈](#교훈) 참고), 브리프, 레인 규칙을 합쳐 `~/.seori/briefs/<key>.md`에 씁니다. 레인 폴더는 `--cwd`, 없으면 `defaultCwd`, 그것도 없으면 명령을 실행한 폴더입니다. 그 폴더가 seori 자신이 돌고 있는 체크아웃(설치 체크아웃: `SEORI_SRC`, 기본 `~/.seori/src`, PATH의 `seori`가 가리키는 체크아웃)이거나 그 안의 폴더이면, seori는 레인을 거기서 열지 않습니다. 예외는 `$SEORI_HOME` 자체가 설치 체크아웃 안에 있을 때 하나입니다. 그 홈 안의 폴더는 seori의 코드가 아니라 상태를 담으므로 여기에 들지 않습니다(기본 배치는 반대로 체크아웃이 `$SEORI_HOME/src`에 있습니다). seori는 `$SEORI_HOME/work/<key>`에 레인만의 git 워크트리를 주고, 패널을 그 워크트리의 맨 위 폴더에서 엽니다. 새 워크트리는 `origin/main`에서 새 브랜치 `<key>`를 만드는데, 그 전에 설치 체크아웃에서 `git fetch origin main`을 합니다. `$SEORI_HOME/work/<key>`가 이미 그 저장소의 워크트리이면(다시 시작한 레인: 재시작 뒤 이어 하기, READY 레인에 일 더 주기, 다시 연 작업) 그대로 다시 씁니다. 워크트리 없이 브랜치 `<key>`만 있으면 새로 만들지 않고 그 브랜치를 체크아웃합니다. 이 두 경우에는 fetch하지 않습니다. 그 경로에 설치 저장소의 워크트리가 아닌 폴더가 있거나, fetch나 `git worktree add`가 실패하면 원인을 밝히고 시작을 거절합니다(아무것도 열지 않음). 레인 기록의 `cwd`는 요청받은 폴더(설치 체크아웃) 그대로이고 워크트리는 새 `worktree` 필드에 따로 둡니다. 그래서 교훈은 체크아웃 기준으로 남고, restart, `[LOST]`, VANISHED가 보여 주는 이어 하기 명령도 여전히 `--cwd <설치 체크아웃>`이며, 그 명령은 워크트리를 다시 씁니다. 이 문서에서 레인 작업 폴더는 워크트리가 있으면 워크트리, 없으면 레인 폴더입니다.
+   브리프 파일은 워크트리를 만들거나 다시 쓰기 전에 먼저 읽으므로, 브리프가 없거나 읽을 수 없으면 아무것도 만들지 않고 시작을 거절합니다. fetch는 `GIT_TERMINAL_PROMPT=0`으로 돌아 인증 질문을 기다리지 않고, 60초를 넘기면 끊고 시간 초과를 밝히며 시작을 거절합니다. `$SEORI_HOME/work/<key>`에 이미 있는 폴더는 설치 체크아웃의 워크트리이고 브랜치가 `<key>`일 때만 다시 씁니다. 다른 브랜치이거나 detached HEAD이면 무엇에 있는지 밝히고 시작을 거절합니다. 손으로 지웠지만 git에는 아직 등록된 워크트리는 `git worktree prune`으로 정리하고 브랜치 `<key>`에서 다시 만듭니다. 기록에 워크트리가 있는 레인을 설치 체크아웃 밖의 폴더로 다시 시작하면, 창을 열기 전에 거절합니다. 그 레인의 작업은 그 워크트리에 있으니 설치 체크아웃에서 다시 시작하거나(seori가 알려 주는 이어 하기 명령이 그렇게 합니다) 먼저 닫으세요.
 3. 터미널이 인스턴스 그룹(`seori.group=<이름>`)에 합류하고, seori가 에이전트 명령을 입력한 뒤 에이전트의 첫 상태 보고를 기다립니다. 이어서 `/goal` 명령을 보냅니다. 목표에는 브리프 위치와 레인 이름이 들어갑니다. 그다음 omp가 이 명령을 받아 `working`을 보고하기를 기다립니다(보고가 없을 때는 아래 5번의 시작 판정).
 4. 레인은 `working`으로 기록되고(주어졌다면 Done 줄, `--thread`, 한도도 함께), 리드는 `[START <key>]`를 받습니다.
 5. `seori start`는 `STARTED <key> pane=<ref> brief=<경로>`를 출력한 뒤(seori가 워크트리를 만들었거나 다시 썼으면 뒤에 ` worktree=<폴더>`가 붙음), 끝내기 전에 새 레인을 지켜봅니다. 시작 명령 20초 뒤에 레인 화면(펼쳐서 읽음: 터미널이 여러 줄로 접은 한 줄은 한 줄로 읽음)과 상태를 읽고, 그 뒤 10초마다 `startupWaitSeconds`(기본 180초, 느린 컴퓨터에서는 omp의 첫 턴까지 몇 분이 걸리기도 함)까지 다시 읽은 뒤 한 줄을 더 출력합니다.
@@ -287,8 +288,10 @@ Done 줄이 있으면 레인의 READY는 "다 했다"는 주장이 됩니다:
 3. 주장 뒤 `closeAfterMin`분(기본 5분, [설정](#설정-configjson) 참고)이 지나면 듀티 루프가 레인을 확인합니다: 모든 신호를 실제로 다시 확인하고, 그다음 푸시 안 된 작업 규칙을 봅니다. 창이 아직 일하는 중이거나 대화 상자에 막혀 있으면 다음 차례로 미룹니다. 신호를 확인하는 사이에 주장이 바뀌었을 때(반대, 멈춤, 새 READY)도 미룹니다. 둘 다 `close-deferred` 듀티 이벤트로 보입니다. 모두 맞으면 창을 닫고 리드에게 `[CLOSED <key>]`를 보냅니다. 하나라도 틀리면 리드가 반대한 것과 똑같이 실패 이유(`<신호> -> <이유>` 형식)로 반대하고, 리드에게 `[NOT-DONE <key>] <이유>`를 보냅니다.
 
 푸시 안 된 작업 규칙: 레인을 닫아서 추적 중인 작업을 잃으면 안 됩니다. seori는 레인 자신의 git 워크트리(브랜치나 폴더 이름이 `<key>` 또는 `<key>-...`인 것. seori가 `$SEORI_HOME/work/<key>`에 만든 워크트리도 여기에 듭니다)를 보고, 없으면 레인 폴더가 git 저장소일 때 그 폴더를 봅니다. 추적 중인 파일에 커밋하지 않은 변경이 있으면 실패입니다(추적하지 않는 새 파일은 세지 않습니다). 어느 원격에도 없는 커밋이 있어도 실패입니다. 원격이 아예 없는 저장소는 커밋하지 않은 변경만 봅니다. git 상태를 읽을 수 없으면 통과가 아니라 실패로 봅니다.
+레인에 기록된 워크트리(`worktree`)는 `git worktree list`에 더는 나오지 않아도(지우고 prune한 경우) 늘 레인 자신의 워크트리로 칩니다. 디스크에 없으면 레인 폴더로 넘어가지 않고 `(worktree missing)`으로 닫기를 실패시킵니다. 워크트리 경로는 심볼릭 링크를 풀어서 비교합니다. 설치 체크아웃에서 시작한 레인(기록에 워크트리가 있거나, 레인 폴더가 설치 체크아웃이거나 그 안의 폴더인 레인)은 어느 워크트리를 가졌든 설치 체크아웃 자체도 봅니다. 거기 추적 중인 파일에 커밋하지 않은 변경이 있으면 `uncommitted tracked changes in the install checkout <dir>, which this lane was started in`으로 닫기가 실패하고, 거기 git 상태를 읽을 수 없어도 실패입니다. 그 체크아웃은 seori가 돌리는 코드이지 무시해도 되는 사람의 체크아웃이 아니고, 이 확인이 없으면 절대 경로로 거기를 고친 레인도 자기 워크트리는 깨끗하니 그대로 닫히기 때문입니다. 거기서도 추적하지 않는 파일은 세지 않고, 어느 원격에도 없는 커밋은 이 규칙으로 보지 않습니다.
 
 Done 줄이 있는 레인에 `seori done <key>`를 하면 같은 확인을 하고, 틀린 것이 있으면 이유 목록과 함께 거절합니다. Done 줄이 없는 레인은 리드가 직접 확인하고 닫습니다. `seori done`은 창이 아직 일하는 중이거나 막혀 있는 레인은 닫지 않습니다. 창과 신호를 확인하는 사이에 레인이 바뀌었으면(반대, 멈춤, 새 READY) `lane <key> changed while it was being checked ...; run done again`으로 거절합니다. 멈춰 둔(paused) 레인은 저절로 닫히지 않습니다.
+Done 줄이 없는 레인에 `seori done`이 하는 확인은 이 설치 체크아웃 규칙 하나입니다. 설치 체크아웃에서 시작한 레인은 설치 체크아웃에 커밋하지 않은 추적 파일 변경이 있는 동안 닫지 않고 거절합니다.
 
 ## verify-pr과 머지 관문
 
@@ -403,10 +406,12 @@ seori worklog list --open
 - `WORKLOG open=N`과 열린 작업 기록 항목마다 `OPEN` 줄
 - `CHANNEL open=N`과 열린 리드 채널 메시지마다 `MSG` 줄
 - `WATCHES`와, 주인 레인이 닫힌 살아 있는 감시마다 `ORPHAN-WATCH`(멈추는 명령 포함)
+- 설치 체크아웃의 `INSTALL` 줄: `INSTALL clean <dir>`, `INSTALL dirty <dir> N uncommitted tracked file(s): <경로 5개까지>[ ...]; a lane started there may have edited the code seori runs`, `INSTALL not-a-checkout <dir>`, 또는 `INSTALL unreadable <dir> (<이유>)`
 - `DAEMON` heartbeat 나이(fresh 또는 stale)와 메신저마다 `MESSENGER` 상태 줄
 - `BOOT checked`, `BOOT incomplete`, 또는 `BOOT failed (N drift)`
 
 오래된 heartbeat는 실패가 아닙니다. `boot`는 읽지 못한 입력이 있을 때(그런 입력은 저마다 따로 한 줄로 나옵니다), 또는 레인 기록이 런타임과 어긋났을 때 종료 코드 1로 끝납니다. 어긋남은 문제마다 `DRIFT` 한 줄입니다: `DRIFT lane <key> has no session <ref>`(런타임이 세션이 사라졌다고 하는 열린 레인), 또는 `DRIFT session <ref> is in group <name> but has no lane or role record`(이 홈의 `seori.group`에 있지만 레인이나 역할 기록이 없는 에이전트 세션. 루프 창 같은 셸은 표시하지 않습니다). 아무것도 다시 띄우거나 닫지 않습니다.
+`INSTALL dirty`는 알리기만 하고 실패가 아닙니다. `INSTALL unreadable`은 읽지 못한 입력이므로 boot가 끝까지 확인하지 못한 것(incomplete)이 되고 종료 코드 1로 끝납니다.
 
 ## 컴퓨터 자원 감시, can-launch, 무거운 작업 자리
 
@@ -452,7 +457,7 @@ seori worklog list --open
 | source | 만들 것 | `owner` | 환경 변수 |
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
-| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`, `others`를 쓰려면 `users:read`), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
+| `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`, `files:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`, `others`를 쓰려면 `users:read`. `files:write`는 파일 올리기용이고, 없으면 `agent-slackbot file upload`가 `missing_scope`로 실패합니다), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
 | `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). Public Bot을 끄고(`others`를 쓰려면 꼭), Add Reactions, Read Message History 권한으로 초대하고(서버 채널에서 seori가 리액션을 달 수 있도록), 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
@@ -740,6 +745,7 @@ bun test && bun run typecheck                 # CI가 돌리는 두 명령
 **테스트는 어디서.** 클론에서 `bun test`와 `bun run typecheck`. 모델도, hc도, `SEORI_HOME`도 필요 없습니다. 저장소의 `.gitignore`에 `.seori/`가 있어서 기본 이름의 상태 폴더가 체크아웃 안에 있어도 git에 들어가지 않습니다. 다른 이름의 폴더라면 들어가니, 체크아웃 밖에 두거나 직접 ignore 규칙을 더하세요.
 
 **seori를 고치는 레인.** 레인은 설치 체크아웃에서 열리지 않습니다. `--cwd`를 설치 체크아웃(또는 그 안의 폴더)으로 주고 시작하면, seori가 `origin/main`에서 만든 브랜치 `<key>`로 `$SEORI_HOME/work/<key>`에 레인만의 워크트리를 줍니다([레인이 시작되는 방법](#레인이-시작되는-방법) 참고). 전에는 레인을 거기서 시작하고 워크트리를 직접 만들라고 했는데, `cd` 전에 하거나 상대 경로로 한 수정이 seori가 돌리는 코드에 커밋되지 않은 채 남았고, 그 뒤 설치본의 `git pull --ff-only`가 실패하거나 그 수정이 섞여 들어갔습니다. 모든 레인의 규칙 꼬리말도 설치 체크아웃 경로를 알려 주고 거기서 수정, 커밋, 브랜치 전환, pull을 하지 말라고 합니다. 워크트리가 있는 레인은 그 경로와 브랜치도 듣습니다.
+닫기 확인과 `seori boot`도 설치 체크아웃 자체를 지켜보므로, 그래도 거기 수정이 생기면 그런 레인이 닫히기 전에 잡힙니다([완료 조건(Done 줄)과 자동 닫기](#완료-조건done-줄과-자동-닫기), [부팅 점검(boot)](#부팅-점검boot) 참고).
 
 ## 테스트
 

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Refusal, type Deps } from "../src/harness.ts";
-import type { ExecResult } from "../src/runtime/exec.ts";
+import { spawnExec, type ExecResult } from "../src/runtime/exec.ts";
 import { checkSignals, defaultSignalIo, parseDone, splitDone, unpushedWork, type SignalIo } from "../src/signals.ts";
 import type { Lane } from "../src/store.ts";
 import { World } from "./fake.ts";
@@ -300,5 +300,72 @@ describe("unpushedWork", () => {
     // Once that lane is done, a fix-login-v2 worktree is fix-login's again.
     d.store.saveLane({ ...mine, key: "fix-login-v2", sessionRef: { runtime: "hc", id: "t3" }, paneId: "t3", tabId: "w1:t3", status: "done" });
     expect(await unpushedWork(d, mine)).toEqual([]);
+  });
+
+  // The developer's own git config (signing, hooks) must not decide whether a commit here works.
+  const realGit = async (dir: string, ...argv: string[]): Promise<string> => {
+    const r = await spawnExec("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...argv]);
+    if (r.code !== 0) throw new Error(`git ${argv.join(" ")}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  /** A real install checkout at $SEORI_HOME/src with one tracked file, and the worktree seori start gives lane fix-login. */
+  async function installed() {
+    const base = new World().deps();
+    const installDir = join(base.store.root, "src");
+    mkdirSync(installDir);
+    await realGit(installDir, "init", "-q", "-b", "main");
+    writeFileSync(join(installDir, "a.ts"), "1");
+    await realGit(installDir, "add", "a.ts");
+    await realGit(installDir, "commit", "-q", "-m", "first");
+    const worktree = join(base.store.root, "work", "fix-login");
+    await realGit(installDir, "worktree", "add", "-q", "-b", "fix-login", worktree);
+    const d: Deps = { ...base, installDir, exec: spawnExec };
+    const lane = (key: string, cwd: string, wt?: string): Lane => ({
+      key, sessionRef: { runtime: "hc", id: "t2" }, paneId: "t2", tabId: "", brief: "b", cwd, ...(wt !== undefined ? { worktree: wt } : {}),
+      status: "ready", createdAt: 0, lastActivityAt: 0, nudges: 0, log: [],
+    });
+    return { d, installDir, worktree, lane };
+  }
+
+  test("a lane started in the install checkout is held while that checkout has uncommitted tracked changes, whatever worktree it owns", async () => {
+    const { d, installDir, worktree, lane } = await installed();
+    const mine = lane("fix-login", installDir, worktree);
+    expect(await unpushedWork(d, mine)).toEqual([]);
+    writeFileSync(join(installDir, "untracked.ts"), "x");
+    expect(await unpushedWork(d, mine)).toEqual([]);
+    writeFileSync(join(installDir, "a.ts"), "edited by absolute path");
+    const held = `uncommitted tracked changes in the install checkout ${installDir}, which this lane was started in`;
+    expect(await unpushedWork(d, mine)).toEqual([held]);
+    expect(await checkSignals(d, { ...mine, done: "file a.ts" }, io())).toEqual([held]);
+    // A lane started elsewhere is not held by the install checkout.
+    expect(await unpushedWork(d, lane("docs", d.store.root))).toEqual([]);
+    // A lane opened in the install checkout itself (before seori gave such lanes a worktree) is told once.
+    expect(await unpushedWork(d, lane("notes", installDir))).toEqual([`uncommitted tracked changes in ${installDir}`]);
+  });
+
+  test("the worktree seori recorded stays the lane's once git no longer lists it, instead of falling back to the cwd", async () => {
+    const { d, installDir, worktree, lane } = await installed();
+    rmSync(worktree, { recursive: true });
+    await realGit(installDir, "worktree", "prune");
+    expect(await unpushedWork(d, lane("fix-login", installDir, worktree))).toEqual([`unpushed work in ${worktree} (worktree missing)`]);
+  });
+
+  test("a cwd reached through a symlink is still the human's checkout, never one of the lane's worktrees", async () => {
+    const { d, lane } = await installed();
+    const human = join(d.store.root, "fix-login-home");
+    mkdirSync(human);
+    await realGit(human, "init", "-q", "-b", "main");
+    writeFileSync(join(human, "h.ts"), "1");
+    await realGit(human, "add", "h.ts");
+    await realGit(human, "commit", "-q", "-m", "first");
+    const wt = join(d.store.root, "wt-fix-login");
+    await realGit(human, "worktree", "add", "-q", "-b", "fix-login", wt);
+    writeFileSync(join(human, "h.ts"), "the human's own edit");
+    const link = join(d.store.root, "link");
+    symlinkSync(human, link);
+    expect(await unpushedWork(d, lane("fix-login", link))).toEqual([]);
+    writeFileSync(join(wt, "h.ts"), "lane edit");
+    expect(await unpushedWork(d, lane("fix-login", link))).toEqual([`uncommitted tracked changes in ${realpathSync(wt)}`]);
   });
 });

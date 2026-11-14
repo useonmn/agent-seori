@@ -2,12 +2,18 @@
 // and end-to-end tests point it at an isolated session.
 
 export type ExecResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
-/** `onSpawn` gets the running process, so a caller that gives up on it can kill it. */
-export type ExecOptions = { readonly onSpawn?: (proc: { kill(): void }) => void };
+/**
+ * `onSpawn` gets the running process, so a caller that gives up on it can kill it. `env` is added to seori's own
+ * environment for that process.
+ */
+export type ExecOptions = { readonly onSpawn?: (proc: { kill(): void }) => void; readonly env?: Readonly<Record<string, string>> };
 export type Exec = (cmd: string, argv: readonly string[], options?: ExecOptions) => Promise<ExecResult>;
 
 export const spawnExec: Exec = async (cmd, argv, options) => {
-  const proc = Bun.spawn([cmd, ...argv], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const proc = Bun.spawn([cmd, ...argv], {
+    stdout: "pipe", stderr: "pipe", stdin: "ignore",
+    ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+  });
   options?.onSpawn?.(proc);
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),

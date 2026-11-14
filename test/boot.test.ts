@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import { bootReport } from "../src/boot.ts";
 import { Channel } from "../src/channel.ts";
 import type { Deps } from "../src/harness.ts";
-import type { Exec } from "../src/runtime/exec.ts";
+import { spawnExec, type Exec } from "../src/runtime/exec.ts";
 import type { Lane } from "../src/store.ts";
 import { WatchStore } from "../src/watch/store.ts";
 import { worklogAdd, worklogNext } from "../src/worklog.ts";
@@ -112,6 +112,7 @@ describe("bootReport", () => {
       'MSG slack:C1:11 messenger from=U2 (not owner) age=30s deliveries=0 "merge it"',
       "WATCHES live=3 orphaned=1",
       `ORPHAN-WATCH ${orphan.id} name=ci owner=lane:old lane=done status=active; stop it with: seori watch stop ${orphan.id}`,
+      `INSTALL not-a-checkout ${d.installDir}`,
       "DAEMON heartbeat age=5s fresh",
       `MESSENGER slack failing since=${iso(now - 300_000)} failures=4 error="invalid_auth"`,
       "MESSENGER telegram receiving (no failure recorded)",
@@ -135,6 +136,7 @@ describe("bootReport", () => {
         "WORKLOG open=0",
         "CHANNEL open=0",
         "WATCHES live=0 orphaned=0",
+        `INSTALL not-a-checkout ${d.installDir}`,
         "DAEMON no heartbeat",
         "BOOT checked read-only; nothing restarted, written or stopped",
       ],
@@ -208,5 +210,44 @@ describe("bootReport", () => {
     const r = await bootReport(d);
     expect(r.lines.some((l) => l.startsWith("CONFIG invalid: config.json: hooks must be an object"))).toBe(true);
     expect(r.complete).toBe(false);
+  });
+
+  test("one INSTALL line says whether the checkout seori runs from has uncommitted tracked changes; only an unreadable one fails", async () => {
+    const { d: base } = setup();
+    const installDir = join(base.store.root, "src");
+    mkdirSync(installDir);
+    let statusFails = false;
+    const d: Deps = {
+      ...base,
+      installDir,
+      exec: async (cmd, argv) => {
+        if (cmd !== "git") return base.exec(cmd, argv);
+        if (statusFails && argv.includes("status")) return { code: 128, stdout: "", stderr: "fatal: index file corrupt\n" };
+        return spawnExec(cmd, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...argv]);
+      },
+    };
+    const git = (...argv: string[]) => d.exec("git", ["-C", installDir, ...argv]);
+    await git("init", "-q", "-b", "main");
+    const files = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"];
+    for (const f of files) writeFileSync(join(installDir, f), "1");
+    await git("add", ...files);
+    await git("commit", "-q", "-m", "first");
+    const install = async () => {
+      const r = await bootReport(d);
+      return { line: r.lines.filter((l) => l.startsWith("INSTALL")), complete: r.complete };
+    };
+    writeFileSync(join(installDir, "untracked.ts"), "x");
+    expect(await install()).toEqual({ line: [`INSTALL clean ${installDir}`], complete: true });
+    writeFileSync(join(installDir, "b.ts"), "2");
+    expect(await install()).toEqual({
+      line: [`INSTALL dirty ${installDir} 1 uncommitted tracked file(s): b.ts; a lane started there may have edited the code seori runs`],
+      complete: true,
+    });
+    for (const f of files) writeFileSync(join(installDir, f), "3");
+    expect((await install()).line).toEqual([
+      `INSTALL dirty ${installDir} 6 uncommitted tracked file(s): a.ts b.ts c.ts d.ts e.ts ...; a lane started there may have edited the code seori runs`,
+    ]);
+    statusFails = true;
+    expect(await install()).toEqual({ line: [`INSTALL unreadable ${installDir} (fatal: index file corrupt)`], complete: false });
   });
 });

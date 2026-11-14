@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { Refusal, type Deps } from "./harness.ts";
+import { inInstall, real, within } from "./paths.ts";
 import type { ExecResult } from "./runtime/exec.ts";
 import type { Lane } from "./store.ts";
 
@@ -328,24 +329,26 @@ async function signalFailure(d: Deps, sig: Signal, cwd: string, io: SignalIo): P
 const git = (d: Deps, dir: string, ...argv: string[]): Promise<ExecResult> => d.exec("git", ["-C", dir, ...argv]);
 
 /**
- * The lane's own git worktrees: those listed by `git worktree list` from its cwd whose branch or directory is named
- * after the lane key (`<key>` or `<key>-...`), a detached one by its directory alone. A name that is another open
- * lane's (`<key>-v2` or `<key>-v2-...` while lane `<key>-v2` is open) is that lane's. The main checkout is never one.
+ * The lane's own git worktrees: the one seori gave it at start (lane.worktree), even once git no longer lists it, and
+ * those listed by `git worktree list` from its cwd whose branch or directory is named after the lane key (`<key>` or
+ * `<key>-...`), a detached one by its directory alone. A name that is another open lane's (`<key>-v2` or `<key>-v2-...`
+ * while lane `<key>-v2` is open) is that lane's. The main checkout is never one. Paths compare with symlinks resolved.
  */
 export async function laneWorktrees(d: Deps, lane: Lane): Promise<string[]> {
+  const found: string[] = lane.worktree !== undefined ? [lane.worktree] : [];
   const r = await git(d, lane.cwd, "worktree", "list", "--porcelain");
-  if (r.code !== 0) return [];
+  if (r.code !== 0) return found;
   const named = (name: string, key: string): boolean => name === key || name.startsWith(`${key}-`);
   const others = d.store.lanes()
     .filter((l) => l.key !== lane.key && l.status !== "done" && l.status !== "lost" && named(l.key, lane.key))
     .map((l) => l.key);
   const ours = (name: string): boolean => named(name, lane.key) && !others.some((o) => named(name, o));
-  const found: string[] = [];
+  const cwd = real(lane.cwd);
   let path = "";
   let branch = "";
   const endRecord = (): void => {
-    const isCwd = path !== "" && resolve(path) === resolve(lane.cwd);
-    if (path && !isCwd && !found.includes(path) && (ours(branch) || ours(path.split("/").pop() ?? ""))) found.push(path);
+    const known = path !== "" && (real(path) === cwd || found.some((f) => real(f) === real(path)));
+    if (path && !known && (ours(branch) || ours(path.split("/").pop() ?? ""))) found.push(path);
     path = "";
     branch = "";
   };
@@ -360,11 +363,46 @@ export async function laneWorktrees(d: Deps, lane: Lane): Promise<string[]> {
   return found;
 }
 
+/** Whether the lane was started in the checkout seori runs from: seori gave it a worktree, or its cwd is in there. */
+export const startedInInstall = (d: Deps, lane: Lane): boolean =>
+  lane.worktree !== undefined || inInstall(lane.cwd, d.installDir, d.store.root);
+
+/** The install checkout (d.installDir) as `git status` reads it: its uncommitted tracked files when it has any. */
+export type InstallState =
+  | { readonly kind: "clean" }
+  | { readonly kind: "dirty"; readonly files: readonly string[] }
+  | { readonly kind: "not-a-checkout" }
+  | { readonly kind: "unreadable"; readonly why: string };
+
+/**
+ * Reads the install checkout's uncommitted tracked changes (untracked files do not count). It runs with
+ * --no-optional-locks, so the read refreshes no index in the live checkout and takes no lock its owner may need. git
+ * that cannot run is an unreadable checkout, never a clean one.
+ */
+export async function installState(d: Deps): Promise<InstallState> {
+  const read = (...argv: string[]): Promise<ExecResult> => d.exec("git", ["--no-optional-locks", "-C", d.installDir, ...argv]);
+  try {
+    const inside = await read("rev-parse", "--is-inside-work-tree");
+    if (inside.code !== 0 || inside.stdout.trim() !== "true") return { kind: "not-a-checkout" };
+    const status = await read("status", "--porcelain", "--untracked-files=no");
+    if (status.code !== 0) return { kind: "unreadable", why: short(status.stderr || status.stdout) || `exit ${status.code}` };
+    const files = status.stdout.split("\n").filter((l) => l.trim()).map((l) => l.slice(3));
+    return files.length ? { kind: "dirty", files } : { kind: "clean" };
+  } catch (e) {
+    return { kind: "unreadable", why: short(e instanceof Error ? e.message : String(e)) };
+  }
+}
+
 /**
  * Tracked work that would be lost by closing: uncommitted changes to tracked files, or commits on no remote. A lane
  * with worktrees of its own is checked there (its cwd is then the human's checkout, which must not block it); else
  * its cwd, when that is a git checkout. A repository with no remote at all (local-only work) has nowhere to push, so
  * only its uncommitted changes count.
+ *
+ * A lane started in the checkout seori runs from also has that checkout checked for uncommitted tracked changes,
+ * whatever worktree it owns: there the cwd is not a human's checkout to leave alone but the code seori runs, and an
+ * edit the lane made there by absolute path would otherwise close clean. dori-superagent's done flow, which this rule
+ * comes from, skips the cwd once the lane owns a worktree.
  */
 export async function unpushedWork(d: Deps, lane: Lane): Promise<string[]> {
   const owned = await laneWorktrees(d, lane);
@@ -394,13 +432,20 @@ export async function unpushedWork(d: Deps, lane: Lane): Promise<string[]> {
     if (ahead.code !== 0) reasons.push(`unpushed work in ${dir} (git state unreadable)`);
     else if (Number(ahead.stdout.trim()) > 0) reasons.push(`${ahead.stdout.trim()} commit(s) on no remote in ${dir}`);
   }
+  // A lane checked in its cwd inside the install checkout (no worktree) had that checkout's changes read above.
+  if (startedInInstall(d, lane) && (owned.length > 0 || !within(lane.cwd, d.installDir))) {
+    const install = await installState(d);
+    if (install.kind === "dirty") reasons.push(`uncommitted tracked changes in the install checkout ${d.installDir}, which this lane was started in`);
+    else if (install.kind === "unreadable") reasons.push(`install checkout ${d.installDir} unreadable (${install.why})`);
+  }
   return reasons;
 }
 
 /**
  * Why the lane may not close (empty: it may): every signal of its Done line read back live (each failure as
- * `<signal> -> <why>`), then tracked work in its cwd or worktrees that is uncommitted or on no remote. A lane with
- * no Done line has only the second check. A Done line that no longer parses is one failure, never a pass.
+ * `<signal> -> <why>`), then tracked work in its cwd or worktrees that is uncommitted or on no remote, and for a lane
+ * started in the install checkout that checkout's uncommitted changes (unpushedWork). A lane with no Done line has
+ * only the second check. A Done line that no longer parses is one failure, never a pass.
  */
 export async function checkSignals(d: Deps, lane: Lane, io: SignalIo = defaultSignalIo): Promise<string[]> {
   const failures: string[] = [];
