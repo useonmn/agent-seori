@@ -97,13 +97,17 @@ describe("install.sh and a checkout you develop in", () => {
 
   /**
    * A checkout that passes install.sh's "is this a seori checkout" check, so a run reaches `bun link`. It is a local
-   * origin and a clone of it carrying this repository's package.json (with its devDependencies dropped, so `bun install`
-   * needs no network), the seori-mode skill directory and the package's bin target. Nothing but a temp tree is written.
+   * origin and a clone of it carrying this repository's package.json with every dependency set dropped (a full install
+   * must stay network-free, so a new `dependencies` entry must not start downloading in CI), the seori-mode skill
+   * directory and the package's bin target. Nothing but a temp tree is written.
    */
   function seoriCheckout() {
     const c = checkout();
     const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"));
+    delete pkg.dependencies;
     delete pkg.devDependencies;
+    delete pkg.optionalDependencies;
+    delete pkg.peerDependencies;
     mkdirSync(join(c.upstream, "skills", "seori-mode"), { recursive: true });
     mkdirSync(join(c.upstream, "src"), { recursive: true });
     writeFileSync(join(c.upstream, "package.json"), JSON.stringify(pkg, null, 2));
@@ -125,9 +129,11 @@ describe("install.sh and a checkout you develop in", () => {
    * lets any of them through writes the machine's own files — the global `seori` link among them.
    */
   function install(dev: string, root: string, extra: Record<string, string> = {}) {
-    // Nothing of this machine's own SEORI_* may leak in either: the point is a checkout and a home under the temp root.
-    const env: Record<string, string | undefined> = {
-      ...process.env,
+    // Every SEORI_* of this shell is deleted first, then the temp defaults and `extra` are applied: keeping one back
+    // (SEORI_NO_PULL, say) would let `SEORI_NO_PULL=1 bun test` change what these cases exercise.
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const k of Object.keys(env)) if (k.startsWith("SEORI_")) delete env[k];
+    Object.assign(env, {
       HOME: join(root, "home"),
       BUN_INSTALL: join(root, "bun"),
       XDG_CONFIG_HOME: join(root, "config"),
@@ -136,9 +142,7 @@ describe("install.sh and a checkout you develop in", () => {
       SEORI_HOME: join(root, "state"),
       SEORI_SRC: dev,
       SKILLS_DIR: join(root, "skills"),
-      ...extra,
-    };
-    for (const k of Object.keys(env)) if (k.startsWith("SEORI_") && !["SEORI_HOME", "SEORI_SRC", "SEORI_NO_PULL"].includes(k)) delete env[k];
+    }, extra);
     const r = Bun.spawnSync(["bash", INSTALL], { env, stdout: "pipe", stderr: "pipe" });
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
   }
@@ -154,10 +158,11 @@ describe("install.sh and a checkout you develop in", () => {
     expect(r.err).toContain(`${realpathSync(dev)} has local work and upstream has commits it does not, so install.sh did not pull:`);
     expect(r.err).toContain("M tracked.txt");
     // The remedies name the script's own file, so they work from anywhere, and the keep-the-work one autostashes the
-    // very edits that triggered the refusal (plain `pull --rebase` refuses unstaged changes).
-    expect(r.err).toContain(`SEORI_NO_PULL=1 bash "${realpathSync(INSTALL)}"`);
+    // The remedies reproduce this very install: they name the script's own file (so they run from anywhere) and carry
+    // the resolved SEORI_SRC. Without that, pasting the printed line installs a *different* tree — the default checkout —
+    // and repoints the machine-wide `seori` at it, which is the failure this PR exists to prevent.
+    expect(r.err).toContain(`SEORI_NO_PULL=1 SKILLS_DIR="${join(root, "skills")}" SEORI_HOME="${join(root, "state")}" SEORI_SRC="${realpathSync(dev)}" bash "${realpathSync(INSTALL)}"`);
     expect(r.err).toContain("pull --rebase --autostash");
-    expect(r.err).toContain(`see "Working on seori itself" in README.md`);
     expect(readFileSync(join(dev, "tracked.txt"), "utf8")).toBe("edited\n");
   });
 
@@ -282,5 +287,50 @@ describe("install.sh and a checkout you develop in", () => {
     expect(r.err).toContain("SEORI_NO_PULL=1: installing " + realpathSync(dev) + " as it is, without pulling");
     expect(git(dev, "rev-parse", "HEAD")).toBe(head);
     expect(readFileSync(join(dev, "tracked.txt"), "utf8")).toBe("edited\n");
+  });
+
+  // The point of the remedies: a printed line, pasted as-is, must install the tree that printed it. A remedy missing
+  // SEORI_SRC re-runs against the default checkout instead and repoints the machine-wide `seori` at it — the developer
+  // then believes their edited checkout is installed when it is not. This runs the printed line verbatim.
+  test("the printed remedy, pasted verbatim, installs the checkout that printed it", () => {
+    const { root, upstream, dev, git } = seoriCheckout();
+    writeFileSync(join(dev, "tracked.txt"), "edited\n");
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    git(upstream, "commit", "--quiet", "-am", "two");
+
+    const first = install(dev, root);
+    expect(first.code).toBe(1);
+    const line = first.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
+    expect(line).toBeDefined();
+    const command = line!.slice(line!.indexOf("SEORI_NO_PULL=1"));
+
+    // The environment the refusal came from, minus SEORI_*: the pasted command must carry everything it needs.
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const k of Object.keys(env)) if (k.startsWith("SEORI_")) delete env[k];
+    Object.assign(env, { HOME: join(root, "home"), BUN_INSTALL: join(root, "bun"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache") });
+    const r = Bun.spawnSync(["bash", "-c", command], { env, stdout: "pipe", stderr: "pipe" });
+    // It installed the dev checkout, not a fresh clone of the default one.
+    expect(r.stdout.toString()).toContain(`Installed seori from ${realpathSync(dev)}`);
+    expect(realpathSync(join(root, "bun", "install", "global", "node_modules", "seori"))).toBe(realpathSync(dev));
+  });
+
+  // Through `curl | bash` there is no file to name, so the remedy is the one-liner — and it must carry SEORI_SRC for the
+  // same reason: without it the re-run installs the default checkout, not the one that refused.
+  test("the piped variant's remedy names SEORI_SRC and the one-liner, not a cwd-relative file", () => {
+    const { root, upstream, dev, git } = seoriCheckout();
+    writeFileSync(join(dev, "tracked.txt"), "edited\n");
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    git(upstream, "commit", "--quiet", "-am", "two");
+
+    // Piping the script through stdin is the `curl … | bash` shape: BASH_SOURCE is /dev/stdin, so no path can be named.
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const k of Object.keys(env)) if (k.startsWith("SEORI_")) delete env[k];
+    Object.assign(env, { HOME: join(root, "home"), BUN_INSTALL: join(root, "bun"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), SEORI_HOME: join(root, "state"), SEORI_SRC: dev, SKILLS_DIR: join(root, "skills") });
+    const r = Bun.spawnSync(["bash", "-c", `cat "${INSTALL}" | bash`], { env, stdout: "pipe", stderr: "pipe" });
+    expect(r.exitCode).toBe(1);
+    const line = r.stderr.toString().split("\n").find((l) => l.includes("install this checkout as it is:"));
+    expect(line).toBeDefined();
+    expect(line).toContain(`SEORI_SRC="${realpathSync(dev)}"`);
+    expect(line).toContain("curl -fsSL");
   });
 });

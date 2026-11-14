@@ -18,14 +18,19 @@ repo="https://github.com/useonmn/agent-seori.git"
 home="${SEORI_HOME:-$HOME/.seori}"
 src="${SEORI_SRC:-$home/src}"
 skills="${SKILLS_DIR:-$HOME/.omp/agent/skills}"
-
-# How the remedies below tell the user to run this script again. Through `curl | bash` there is no file to name, so the
-# one-liner is the way back; run from a file, name that file, since the user's shell may be anywhere.
+# How the remedies below tell the user to run this script again. The command has to reproduce *this* install, so it
+# carries the resolved SEORI_SRC (otherwise a remedy silently installs a different tree, repointing the machine-wide
+# `seori` at it) plus SEORI_HOME and SKILLS_DIR when they are not the defaults. Through `curl | bash` there is no file to
+# name, so the one-liner is the way back; run from a file, name that file, resolved without needing `readlink -f`.
 if [ -f "${BASH_SOURCE[0]:-}" ]; then
-  self="bash \"$(readlink -f "${BASH_SOURCE[0]}")\""
+  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  self="bash \"$dir/$(basename "${BASH_SOURCE[0]}")\""
 else
   self="bash <(curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh)"
 fi
+[ "$src" = "$home/src" ] || self="SEORI_SRC=\"$src\" $self"
+[ "$home" = "$HOME/.seori" ] || self="SEORI_HOME=\"$home\" $self"
+[ "$skills" = "$HOME/.omp/agent/skills" ] || self="SKILLS_DIR=\"$skills\" $self"
 command -v bun >/dev/null || { echo "bun 1.3 or newer is required: https://bun.sh" >&2; exit 1; }
 
 if [ "${1:-}" = "--uninstall" ]; then
