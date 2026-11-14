@@ -83,7 +83,9 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               omp model instead of SEORI_MODEL; --workflow W (ulw,
                                               mass-ulw, ulw-research, ulw-plan, ulw-loop, ulw-execute): the kickoff is
                                               /goal W <keyword> ... (needs the omp-ulw extension), none: plain goal mode
-                                              whatever config workflow says;
+                                              whatever config workflow says; a DIR in the checkout seori runs from
+                                              opens the lane in its own worktree $SEORI_HOME/work/<key> (branch <key>
+                                              from origin/main, or the one already there);
                                               prints STARTED, then waits for the start (config startupWaitSeconds, 180 s):
                                               STARTUP_OK|STARTUP_DONE exit 0, STARTUP_ERROR|STARTUP_UNCONFIRMED exit 3 (lane kept)
   seori adopt <key> --ref <hc:tN> [--brief FILE] [--cwd DIR]
@@ -1284,7 +1286,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
             costUsd: ceilingFlag("cost-limit", defaults.costUsd),
           },
         } : {}),
-      }, config.startupWaitSeconds, (lane) => console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}`));
+      }, config.startupWaitSeconds, (lane) => console.log(`STARTED ${lane.key} pane=${refText(lane.sessionRef)} brief=${lane.brief}${lane.worktree === undefined ? "" : ` worktree=${lane.worktree}`}`));
       console.log(startup);
       return startupExit(startup);
     }

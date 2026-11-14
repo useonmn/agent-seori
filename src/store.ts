@@ -30,6 +30,11 @@ export type Lane = {
   tabId: string;
   brief: string;
   cwd: string;
+  /**
+   * The worktree seori gave the lane because its cwd was the checkout seori runs from (src/harness.ts laneWorktree):
+   * its pane starts there, and the stall check and Done-line signals read it instead of cwd.
+   */
+  worktree?: string;
   status: LaneStatus;
   createdAt: number;
   lastActivityAt: number;

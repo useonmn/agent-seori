@@ -1,20 +1,21 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { agentCommand, selectAgent, type AgentProfile } from "./agent/profile.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
 import {
-  DeliveryUncertain, deliverOrThrow, shq, spawnExec, ToolError, type AgentStatus, type Exec, type SessionRef, type SessionRuntime,
+  DeliveryUncertain, deliverOrThrow, shq, spawnExec, ToolError, type AgentStatus, type Exec, type ExecResult, type SessionRef, type SessionRuntime,
 } from "./runtime/index.ts";
 import { loadMessengers, SendUncertain, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { KEY_RE, reservedKey, Store, type Ceilings, type DeliveryAttempt, type HostLoad, type Lane, type QueuedMessage, type Role } from "./store.ts";
 import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { OMP_ULW_URL, type Workflow, workflowPrefix } from "./workflow.ts";
+import { SEORI_SRC } from "./install.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
 import { agentGone, panesTick } from "./panes.ts";
@@ -56,6 +57,8 @@ export type Deps = {
   readonly model?: string;
   /** Sends one duty alert to the human through a configured messenger. Throws like MessengerAdapter.send. */
   readonly notify: (config: MessengerConfig, target: SendTarget, text: string) => Promise<void>;
+  /** The checkout seori runs from (SEORI_SRC): a lane asked to start in it gets a worktree of its own (laneWorktree). */
+  readonly installDir: string;
   /** The OS, process.platform when unset (tests pin it). `seori up` on hc uses systemd --user units only on "linux". */
   readonly platform?: string;
 };
@@ -83,6 +86,7 @@ export const defaultDeps = (): Deps => {
     },
     seoriCmd: process.env["SEORI_CMD"] ?? defaultSeoriCmd(store.root, process.env),
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
+    installDir: SEORI_SRC,
     sleep: (ms) => Bun.sleep(ms),
     model: process.env["SEORI_MODEL"] || undefined,
     notify: async (config, target, text) => {
@@ -421,9 +425,13 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
   if (workflow !== undefined) await requireWorkflowExtension(d, workflow, opts.workflow === undefined);
   const cwd = resolve(opts.cwd ?? loadConfig(d.store.root).defaultCwd ?? process.cwd());
+  const worktree = within(cwd, d.installDir) ? await laneWorktree(d, key) : undefined;
   const briefPath = d.store.briefPath(key);
   const closeAfterMin = doneLine === undefined ? 0 : loadConfig(d.store.root).closeAfterMin;
-  const footer = prompt("lane-footer.md", { key, seori: d.seoriCmd, close_rule: closeRule(d.seoriCmd, key, doneLine, closeAfterMin) });
+  const footer = prompt("lane-footer.md", {
+    key, seori: d.seoriCmd, close_rule: closeRule(d.seoriCmd, key, doneLine, closeAfterMin), install: d.installDir,
+    worktree_rule: worktree === undefined ? "" : ` This lane was started there, so seori opened it in a worktree of its own: \`${worktree}\` (branch \`${key}\`, from origin/main unless it already existed). Edit, commit and push only there.`,
+  });
   const lessons = lessonsForRepo(d.store.root, cwd);
   for (const line of lessonWarnings(lessons.problems)) process.stderr.write(`${line}\n`);
   // The lead may pass briefs/<key>.md itself (e.g. on a retry): drop the lessons block and the footer seori already
@@ -443,7 +451,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   }
   const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
   const rt = d.runtime;
-  const ref = await rt.create({ name: key, cwd, env, role: "lane", group: loadConfig(d.store.root).name, home: d.store.root });
+  const ref = await rt.create({ name: key, cwd: worktree ?? cwd, env, role: "lane", group: loadConfig(d.store.root).name, home: d.store.root });
   let kickedAt = 0;
   let took = false;
   try {
@@ -463,7 +471,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   }
   const now = d.now();
   const lane: Lane = {
-    key, sessionRef: ref, paneId: ref.id, tabId: "", brief: briefPath, cwd,
+    key, sessionRef: ref, paneId: ref.id, tabId: "", brief: briefPath, cwd, ...(worktree !== undefined ? { worktree } : {}),
     status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
     ...(doneLine !== undefined ? { done: doneLine } : {}),
     ...(opts.thread !== undefined ? { thread: opts.thread.trim() } : {}),
@@ -492,6 +500,49 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   }
   await tellLead(d, `[START ${key}] lane opened in ${refText(ref)}`, key);
   return { lane, kickedAt, took };
+}
+
+/** The path, symlinks resolved when it exists. */
+const real = (path: string): string => (existsSync(path) ? realpathSync(path) : resolve(path));
+
+/** Whether `path` is `dir` or inside it. */
+const within = (path: string, dir: string): boolean => {
+  const [p, r] = [real(path), real(dir)];
+  return p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
+};
+
+/**
+ * The worktree a lane gets when it is asked to start in the checkout seori runs from: an edit made there, before the
+ * lane moves to a worktree of its own or through a relative path, lands in the code seori is running. It is
+ * `$SEORI_HOME/work/<key>` on a new branch `<key>` from origin/main (fetched first); when that directory is already a
+ * worktree of the install's repository (the lane started again) it is taken as it is, and when only the branch is left
+ * the worktree checks it out. Anything else at that path, or a git step that fails, refuses the start.
+ */
+async function laneWorktree(d: Deps, key: string): Promise<string> {
+  const dir = join(d.store.root, "work", key);
+  const git = (...argv: string[]): Promise<ExecResult> => d.exec("git", ["-C", d.installDir, ...argv]);
+  const refuse = (why: string): Refusal =>
+    new Refusal(`lane ${key} would start in the checkout seori runs from (${d.installDir}), so it gets the worktree ${dir}, but ${why}`);
+  const failed = (step: string, r: ExecResult): Refusal => refuse(`${step} failed: ${(r.stderr.trim() || r.stdout.trim()).split("\n")[0] ?? ""}`);
+  if (existsSync(dir)) {
+    const list = await git("worktree", "list", "--porcelain");
+    if (list.code !== 0) throw failed("git worktree list", list);
+    const listed = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => real(l.slice("worktree ".length)));
+    if (listed.includes(real(dir))) return dir;
+    throw refuse(`${dir} is not a worktree of that checkout; move it away and start again`);
+  }
+  mkdirSync(join(d.store.root, "work"), { recursive: true });
+  const branch = await git("rev-parse", "--verify", "--quiet", `refs/heads/${key}`);
+  if (branch.code === 0) {
+    const add = await git("worktree", "add", dir, key);
+    if (add.code !== 0) throw failed("git worktree add", add);
+    return dir;
+  }
+  const fetch = await git("fetch", "origin", "main");
+  if (fetch.code !== 0) throw failed("git fetch origin main", fetch);
+  const add = await git("worktree", "add", "--no-track", "-b", key, dir, "origin/main");
+  if (add.code !== 0) throw failed("git worktree add", add);
+  return dir;
 }
 
 /** How long a lane start waits for omp to start on the kickoff. */

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
@@ -8,6 +8,7 @@ import { defaultSeoriCmd, done, paneEnv, dutyTick, mergeGate, ready, Refusal, re
 import { backlogAdd } from "../src/loop.ts";
 import { deliverOrThrow } from "../src/runtime/index.ts";
 import { refText } from "../src/refs.ts";
+import { spawnExec } from "../src/runtime/exec.ts";
 import { startAgain } from "../src/restart.ts";
 import { WatchStore } from "../src/watch/store.ts";
 import { Channel } from "../src/channel.ts";
@@ -254,6 +255,110 @@ describe("lanes", () => {
     expect(err?.message).not.toContain("not ready");
     expect(w.calls.length).toBe(calls);
     expect(JSON.stringify(d.store.lane("fix-login"))).toBe(before);
+  });
+});
+
+describe("lanes started in the checkout seori runs from", () => {
+  const git = async (dir: string, ...argv: string[]): Promise<string> => {
+    const r = await spawnExec("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...argv]);
+    if (r.code !== 0) throw new Error(`git ${argv.join(" ")}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  /**
+   * An install as install.sh makes it, a clone of an origin, with seori's git going to real git; origin's main has a
+   * commit the install has not fetched yet, so a lane's branch shows whether it was made from a fresh origin/main.
+   */
+  async function installed() {
+    const s = setup();
+    const top = mkdtempSync(join(tmpdir(), "seori-install-"));
+    const install = join(top, "install");
+    const origin = join(top, "origin.git");
+    mkdirSync(install);
+    await git(install, "init", "-q", "-b", "main");
+    await git(install, "commit", "-q", "--allow-empty", "-m", "first");
+    await git(top, "clone", "-q", "--bare", install, origin);
+    await git(install, "remote", "add", "origin", origin);
+    await git(top, "clone", "-q", origin, join(top, "other"));
+    await git(join(top, "other"), "commit", "-q", "--allow-empty", "-m", "upstream");
+    await git(join(top, "other"), "push", "-q", "origin", "main");
+    const gitCalls: (readonly string[])[] = [];
+    const d: typeof s.d = {
+      ...s.d,
+      installDir: install,
+      exec: (cmd, argv, o) => (cmd === "git" ? (gitCalls.push(argv), spawnExec(cmd, argv, o)) : s.w.exec(cmd, argv, o)),
+    };
+    const worktree = join(d.store.root, "work", "fix-login");
+    return { ...s, d, top, install, origin, worktree, gitCalls, head: await git(origin, "rev-parse", "main"), first: await git(install, "rev-parse", "HEAD") };
+  }
+
+  const opened = (w: World): string[] => w.calls.filter((c) => c.cmd === "hc" && c.argv.includes("--cwd")).map((c) => c.argv[c.argv.indexOf("--cwd") + 1]!);
+
+  test("opens in its own worktree on branch <key> from a freshly fetched origin/main; the checkout itself is left as it was", async () => {
+    const { w, d, brief, install, worktree, head, first } = await installed();
+    mkdirSync(join(install, "src"));
+    const out = await captureLog(() => main(["start", "fix-login", "--brief", brief, "--cwd", join(install, "src"), "--force"], d));
+    const lane = d.store.lane("fix-login")!;
+    expect(lane.cwd).toBe(join(install, "src"));
+    expect(lane.worktree).toBe(worktree);
+    expect(opened(w)).toEqual([worktree]);
+    expect(out).toContain(`STARTED fix-login pane=${refText(lane.sessionRef)} brief=${lane.brief} worktree=${worktree}\n`);
+    expect(await git(worktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe("fix-login");
+    expect(await git(worktree, "rev-parse", "HEAD")).toBe(head);
+    expect(await git(install, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(await git(install, "rev-parse", "HEAD")).toBe(first);
+    expect(await git(install, "status", "--porcelain")).toBe("");
+    const footer = readFileSync(lane.brief, "utf8");
+    expect(footer).toContain(`\`${install}\``);
+    expect(footer).toContain(`\`${worktree}\``);
+  });
+
+  test("a lane started elsewhere keeps its cwd and runs no git; its footer still names the checkout seori runs from", async () => {
+    const { w, d, brief, top, install, gitCalls } = await installed();
+    const lane = await startLane(d, "docs", brief, { cwd: top });
+    expect(lane.worktree).toBeUndefined();
+    expect(opened(w)).toEqual([top]);
+    expect(gitCalls).toEqual([]);
+    expect(readFileSync(lane.brief, "utf8")).toContain(`\`${install}\``);
+  });
+
+  test("started again it takes its worktree as it is, or its branch when only that is left; anything else there is refused before a pane opens", async () => {
+    const { w, d, brief, install, worktree } = await installed();
+    const close = () => d.store.saveLane({ ...d.store.lane("fix-login")!, status: "done" });
+    await startLane(d, "fix-login", brief, { cwd: install });
+    writeFileSync(join(worktree, "work.txt"), "x");
+    await git(worktree, "add", "work.txt");
+    await git(worktree, "commit", "-q", "-m", "lane work");
+    const work = await git(worktree, "rev-parse", "HEAD");
+    writeFileSync(join(worktree, "draft.txt"), "uncommitted");
+    close();
+
+    expect((await startLane(d, "fix-login", brief, { cwd: install })).worktree).toBe(worktree);
+    expect(await git(worktree, "rev-parse", "HEAD")).toBe(work);
+    expect(readFileSync(join(worktree, "draft.txt"), "utf8")).toBe("uncommitted");
+    close();
+
+    await git(install, "worktree", "remove", "--force", worktree);
+    expect((await startLane(d, "fix-login", brief, { cwd: install })).worktree).toBe(worktree);
+    expect(await git(worktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe("fix-login");
+    expect(await git(worktree, "rev-parse", "HEAD")).toBe(work);
+    close();
+
+    await git(install, "worktree", "remove", "--force", worktree);
+    mkdirSync(worktree);
+    const panes = opened(w).length;
+    await expect(startLane(d, "fix-login", brief, { cwd: install })).rejects.toThrow(`${worktree} is not a worktree of that checkout`);
+    expect(opened(w)).toHaveLength(panes);
+    expect(d.store.lane("fix-login")!.status).toBe("done");
+  });
+
+  test("a fetch that fails refuses the start: no pane, no lane, no worktree", async () => {
+    const { w, d, brief, install, top, worktree } = await installed();
+    await git(install, "remote", "set-url", "origin", join(top, "missing.git"));
+    await expect(startLane(d, "fix-login", brief, { cwd: install })).rejects.toThrow("git fetch origin main failed");
+    expect(opened(w)).toEqual([]);
+    expect(d.store.lane("fix-login")).toBeUndefined();
+    expect(existsSync(worktree)).toBe(false);
   });
 });
 

@@ -158,7 +158,9 @@ seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널,
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
             [--activity-path PATH ...] [--model M] [--workflow W|none]
                                             닫기 전에 Done 줄을 실제로 확인; ID = 진행 상황을 올릴 리드 채널 id;
-                                            한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4
+                                            한도에 닿으면 리드에게 알림; 컴퓨터에 자리가 없으면 HOLD와 함께 종료 코드 4;
+                                            DIR이 seori가 도는 체크아웃 안이면 레인을 따로 워크트리 $SEORI_HOME/work/<key>에서
+                                            엽니다 (origin/main에서 만든 브랜치 <key>, 이미 있으면 그 브랜치)
 seori adopt <key> --ref <hc:tN> [--brief FILE] [--cwd DIR]
                                             이미 돌고 있는 세션을 레인으로 등록합니다 (아무것도 입력하지 않음)
 seori sync [--write]                         레인 기록과 seori.group 그룹의 살아 있는 세션을 비교합니다. --write면
@@ -236,10 +238,10 @@ seori watch log <id|name> [-n N]             감시가 최근에 본 일
 ## 레인이 시작되는 방법
 
 1. `seori start <key> --brief FILE`은 먼저 컴퓨터에 레인을 열 자리가 있는지 확인합니다([컴퓨터 자원 감시](#컴퓨터-자원-감시-can-launch-무거운-작업-자리) 참고, `--force`면 자리 확인을 건너뜀). 읽을 수 없는 Done 줄(`--done`)은 거절합니다.
-2. 그 레인 폴더의 교훈([교훈](#교훈) 참고), 브리프, 레인 규칙을 합쳐 `~/.seori/briefs/<key>.md`에 씁니다.
+2. 그 레인 폴더의 교훈([교훈](#교훈) 참고), 브리프, 레인 규칙을 합쳐 `~/.seori/briefs/<key>.md`에 씁니다. 레인 폴더는 `--cwd`, 없으면 `defaultCwd`, 그것도 없으면 명령을 실행한 폴더입니다. 그 폴더가 seori 자신이 돌고 있는 체크아웃(설치 체크아웃: `SEORI_SRC`, 기본 `~/.seori/src`, PATH의 `seori`가 가리키는 체크아웃)이거나 그 안의 폴더이면, seori는 레인을 거기서 열지 않습니다. 설치 체크아웃에서 `git fetch origin main`을 한 뒤 `origin/main`에서 새 브랜치 `<key>`를 만들어 `$SEORI_HOME/work/<key>`에 레인만의 git 워크트리를 만들고, 패널을 그 워크트리에서 엽니다. `$SEORI_HOME/work/<key>`가 이미 그 저장소의 워크트리이면(다시 시작한 레인: 재시작 뒤 이어 하기, READY 레인에 일 더 주기, 다시 연 작업) 그대로 다시 씁니다. 워크트리 없이 브랜치 `<key>`만 있으면 새로 만들지 않고 그 브랜치를 체크아웃합니다. 그 경로에 설치 저장소의 워크트리가 아닌 폴더가 있거나, fetch나 `git worktree add`가 실패하면 원인을 밝히고 시작을 거절합니다(아무것도 열지 않음). 레인 기록의 `cwd`는 요청받은 폴더(설치 체크아웃) 그대로이고 워크트리는 새 `worktree` 필드에 따로 둡니다. 그래서 교훈은 체크아웃 기준으로 남고, restart, `[LOST]`, VANISHED가 보여 주는 이어 하기 명령도 여전히 `--cwd <설치 체크아웃>`이며, 그 명령은 워크트리를 다시 씁니다. 이 문서에서 레인 작업 폴더는 워크트리가 있으면 워크트리, 없으면 레인 폴더입니다.
 3. 터미널이 인스턴스 그룹(`seori.group=<이름>`)에 합류하고, seori가 에이전트 명령을 입력한 뒤 에이전트의 첫 상태 보고를 기다립니다. 이어서 `/goal` 명령을 보냅니다. 목표에는 브리프 위치와 레인 이름이 들어갑니다. 그다음 omp가 이 명령을 받아 `working`을 보고하기를 기다립니다(보고가 없을 때는 아래 5번의 시작 판정).
 4. 레인은 `working`으로 기록되고(주어졌다면 Done 줄, `--thread`, 한도도 함께), 리드는 `[START <key>]`를 받습니다.
-5. `seori start`는 `STARTED <key> pane=<ref> brief=<경로>`를 출력한 뒤, 끝내기 전에 새 레인을 지켜봅니다. 시작 명령 20초 뒤에 레인 화면(펼쳐서 읽음: 터미널이 여러 줄로 접은 한 줄은 한 줄로 읽음)과 상태를 읽고, 그 뒤 10초마다 `startupWaitSeconds`(기본 180초, 느린 컴퓨터에서는 omp의 첫 턴까지 몇 분이 걸리기도 함)까지 다시 읽은 뒤 한 줄을 더 출력합니다.
+5. `seori start`는 `STARTED <key> pane=<ref> brief=<경로>`를 출력한 뒤(seori가 워크트리를 만들었거나 다시 썼으면 뒤에 ` worktree=<폴더>`가 붙음), 끝내기 전에 새 레인을 지켜봅니다. 시작 명령 20초 뒤에 레인 화면(펼쳐서 읽음: 터미널이 여러 줄로 접은 한 줄은 한 줄로 읽음)과 상태를 읽고, 그 뒤 10초마다 `startupWaitSeconds`(기본 180초, 느린 컴퓨터에서는 omp의 첫 턴까지 몇 분이 걸리기도 함)까지 다시 읽은 뒤 한 줄을 더 출력합니다.
    - `STARTUP_ERROR <key> <ref>: <문구>`(종료 코드 3): 화면에 알려진 실패 문구가 있음. 예: `No API key`, `429 Too Many Requests`, `Rate limit reached`, `exceeded your current quota`. 첫 확인 뒤로는 omp가 일하는 중이 아닐 때만 화면을 봅니다. 일하는 레인의 출력은 그런 문구를 인용할 수 있기 때문입니다.
    - `STARTUP_UNCONFIRMED <key> <ref>: <이유>; last lines: ...`(종료 코드 3): omp가 제때 준비 상태를 보고하지 않았거나, 대화 상자에 막혔거나, 셸이 앞에 있거나 사라졌거나, 상태나 화면을 읽지 못했거나, 시작 명령을 받아 일을 시작하지 않음(working을 보고하지 않음).
    - `STARTUP_DONE <key>`(종료 코드 0): 기다리는 동안 레인이 READY를 보냄.
@@ -272,8 +274,8 @@ seori start fix-flaky-login --brief brief.md --done 'merged owner/repo#12; comma
 | `merged owner/repo#N` | `gh pr view`에서 PR이 MERGED이고 머지 커밋이 있음 |
 | `closed owner/repo#N` | `gh issue view`에서 이슈가 CLOSED |
 | `published pkg@version` | `npm view`로 레지스트리에서 그 버전이 보임 |
-| `command ["argv",...] [stdout~"regex"]` | 명령이 0으로 끝남(그리고 출력이 정규식에 맞음). 셸 없이 레인 폴더에서 돌리고, 최대 2분 |
-| `file <path> [sha256=<hex>] [json:.a.b=<json>]` | 파일이 있음(레인 폴더 기준 경로, `~`는 홈 폴더). 주었다면 SHA-256 값과 JSON 필드 값도 맞음 |
+| `command ["argv",...] [stdout~"regex"]` | 명령이 0으로 끝남(그리고 출력이 정규식에 맞음). 셸 없이 레인 작업 폴더(seori가 만든 워크트리가 있으면 거기, 없으면 레인 폴더)에서 돌리고, 최대 2분 |
+| `file <path> [sha256=<hex>] [json:.a.b=<json>]` | 파일이 있음(레인 작업 폴더 기준 경로, `~`는 홈 폴더). 주었다면 SHA-256 값과 JSON 필드 값도 맞음 |
 | `url <http(s) url> [status=N] [body~"regex"]` | GET 요청(리다이렉트 따라감)이 15초 안에 그 상태 코드(기본 200)로 답함. 주었다면 본문도 정규식에 맞음 |
 
 `merged`와 `closed`는 `owner/repo/pull/N`, `owner/repo/issues/N` 형식도 받습니다. `command ["true"]`는 읽히기는 하지만 아무것도 증명하지 못합니다. Done 줄에는 결과 자체(머지된 PR, 파일)를 쓰세요.
@@ -284,7 +286,7 @@ Done 줄이 있으면 레인의 READY는 "다 했다"는 주장이 됩니다:
 2. 기다리는 시간이 끝나기 전에 리드는 주장을 거절할 수 있습니다: `seori object <key> --reason T [--reason T]`. 레인은 이유와 함께 다시 일하는 상태(working)가 되고, `[LEAD] not done: <이유>; keep working and send ready again when fixed`를 받습니다. READY인 레인에만 반대할 수 있고, 이유는 비어 있으면 안 됩니다. 레인이 READY를 새로 보내면 반대는 지워지고 기다림이 처음부터 다시 시작됩니다.
 3. 주장 뒤 `closeAfterMin`분(기본 5분, [설정](#설정-configjson) 참고)이 지나면 듀티 루프가 레인을 확인합니다: 모든 신호를 실제로 다시 확인하고, 그다음 푸시 안 된 작업 규칙을 봅니다. 창이 아직 일하는 중이거나 대화 상자에 막혀 있으면 다음 차례로 미룹니다. 신호를 확인하는 사이에 주장이 바뀌었을 때(반대, 멈춤, 새 READY)도 미룹니다. 둘 다 `close-deferred` 듀티 이벤트로 보입니다. 모두 맞으면 창을 닫고 리드에게 `[CLOSED <key>]`를 보냅니다. 하나라도 틀리면 리드가 반대한 것과 똑같이 실패 이유(`<신호> -> <이유>` 형식)로 반대하고, 리드에게 `[NOT-DONE <key>] <이유>`를 보냅니다.
 
-푸시 안 된 작업 규칙: 레인을 닫아서 추적 중인 작업을 잃으면 안 됩니다. seori는 레인 자신의 git 워크트리(브랜치나 폴더 이름이 `<key>` 또는 `<key>-...`인 것)를 보고, 없으면 레인 폴더가 git 저장소일 때 그 폴더를 봅니다. 추적 중인 파일에 커밋하지 않은 변경이 있으면 실패입니다(추적하지 않는 새 파일은 세지 않습니다). 어느 원격에도 없는 커밋이 있어도 실패입니다. 원격이 아예 없는 저장소는 커밋하지 않은 변경만 봅니다. git 상태를 읽을 수 없으면 통과가 아니라 실패로 봅니다.
+푸시 안 된 작업 규칙: 레인을 닫아서 추적 중인 작업을 잃으면 안 됩니다. seori는 레인 자신의 git 워크트리(브랜치나 폴더 이름이 `<key>` 또는 `<key>-...`인 것. seori가 `$SEORI_HOME/work/<key>`에 만든 워크트리도 여기에 듭니다)를 보고, 없으면 레인 폴더가 git 저장소일 때 그 폴더를 봅니다. 추적 중인 파일에 커밋하지 않은 변경이 있으면 실패입니다(추적하지 않는 새 파일은 세지 않습니다). 어느 원격에도 없는 커밋이 있어도 실패입니다. 원격이 아예 없는 저장소는 커밋하지 않은 변경만 봅니다. git 상태를 읽을 수 없으면 통과가 아니라 실패로 봅니다.
 
 Done 줄이 있는 레인에 `seori done <key>`를 하면 같은 확인을 하고, 틀린 것이 있으면 이유 목록과 함께 거절합니다. Done 줄이 없는 레인은 리드가 직접 확인하고 닫습니다. `seori done`은 창이 아직 일하는 중이거나 막혀 있는 레인은 닫지 않습니다. 창과 신호를 확인하는 사이에 레인이 바뀌었으면(반대, 멈춤, 새 READY) `lane <key> changed while it was being checked ...; run done again`으로 거절합니다. 멈춰 둔(paused) 레인은 저절로 닫히지 않습니다.
 
@@ -363,7 +365,7 @@ seori resume fix-flaky-login
 
 비용 기록. 레인이 닫힐 때(`seori done`, 또는 Done 줄이 있는 레인을 seori가 닫을 때) 세션을 닫기 전에 에이전트 세션 파일에서 쓴 토큰과 비용을 읽어 `$SEORI_HOME/cost.jsonl`에 한 줄로 덧붙입니다: `{ "key", "closeKey": "<key>@<createdAt>", "tokens", "costUsd", "at" }`. 읽을 수 없는 값(지금은 hc)은 0이 아니라 `null`입니다. 다시 닫아도 두 번째 줄은 생기지 않습니다. 이 파일은 이 PC에만 남고, `hooks.recordCost`를 설정하지 않으면 어디에도 보내지 않습니다. 설정하면 그 값으로 한 번 실행합니다. 여기서 실패해도 stderr에 한 줄만 남기고 레인은 그대로 닫힙니다.
 
-멈춤. 런타임이 일하는 중으로 보는 working 레인이 `supervision.hungAfterMin`분(기본 20분) 동안 보고도 없고 파일도 바꾸지 않으면, 멈춘 것으로 보고 `[STALLED <key>] ...`를 보냅니다. 멈출 때마다 한 번입니다. 파일 변경은 새 HEAD, 또는 레인 폴더에서 `git status`가 보여 주는 파일들(`node_modules` 제외)의 시각과 크기 변화입니다. `seori start --activity-path PATH`(여러 번 가능)나 `supervision.activityPaths`에 적은 경로(레인 폴더 기준)의 변화도 진행으로 칩니다. git 저장소이든 아니든 마찬가지입니다. 파일은 쓰일 때 바뀐 것으로 치고(심볼릭 링크는 가리키는 파일을 읽음), 폴더는 안에 항목이 생기거나 지워지거나 이름이 바뀔 때만 바뀐 것으로 칩니다. 폴더 안 파일을 고쳐 쓰는 것까지 잡으려면 그 파일을 직접 적으세요. 그러면 저장소 밖에 로그를 쓰는 레인도 쓰는 동안에는 멈춤으로 보지 않습니다. git 저장소가 아니고 이런 경로도 없으면 보고만 진행으로 칩니다. waiting 레인은 기다린다고 말했으니 조용해도 멈춤이 아닙니다. 변경 기록은 `duty/supervision.json`에 둡니다.
+멈춤. 런타임이 일하는 중으로 보는 working 레인이 `supervision.hungAfterMin`분(기본 20분) 동안 보고도 없고 파일도 바꾸지 않으면, 멈춘 것으로 보고 `[STALLED <key>] ...`를 보냅니다. 멈출 때마다 한 번입니다. 파일 변경은 새 HEAD, 또는 레인 작업 폴더(워크트리가 있으면 워크트리, 없으면 레인 폴더)에서 `git status`가 보여 주는 파일들(`node_modules` 제외)의 시각과 크기 변화입니다. `seori start --activity-path PATH`(여러 번 가능)나 `supervision.activityPaths`에 적은 경로(레인 작업 폴더 기준)의 변화도 진행으로 칩니다. git 저장소이든 아니든 마찬가지입니다. 파일은 쓰일 때 바뀐 것으로 치고(심볼릭 링크는 가리키는 파일을 읽음), 폴더는 안에 항목이 생기거나 지워지거나 이름이 바뀔 때만 바뀐 것으로 칩니다. 폴더 안 파일을 고쳐 쓰는 것까지 잡으려면 그 파일을 직접 적으세요. 그러면 저장소 밖에 로그를 쓰는 레인도 쓰는 동안에는 멈춤으로 보지 않습니다. git 저장소가 아니고 이런 경로도 없으면 보고만 진행으로 칩니다. waiting 레인은 기다린다고 말했으니 조용해도 멈춤이 아닙니다. 변경 기록은 `duty/supervision.json`에 둡니다.
 
 에이전트가 빠진 패널. working, waiting, paused 레인의 패널에 듀티 차례 두 번 연속으로 셸이 나와 있으면(에이전트가 끝났거나, 죽었거나, Ctrl+Z로 멈춤) 리드에게 `[DEAD <key>] ...`를 보냅니다. 한 번 그럴 때마다 한 번입니다. 듀티 패널도 같은 방식으로 지켜보고 `[DEAD duty] ...`로 알립니다. 셸에는 아무것도 입력할 수 없으므로 이런 레인에는 깨우기 알림을 보내지 않습니다. 레인 기록은 남겨 두므로, 리드가 패널을 닫고 레인을 다시 시작할 수 있습니다. READY 레인은 건드리지 않습니다.
 
@@ -736,6 +738,8 @@ bun test && bun run typecheck                 # CI가 돌리는 두 명령
 진짜 `HOME`과 `BUN_INSTALL`을 둔 채 어느 체크아웃에서든 `install.sh`(또는 그냥 `bun link`)를 실행하면 그 체크아웃으로 PC 전체의 `seori`가 바뀝니다. 링크한다는 말이 그것이기 때문입니다. 버리는 나무에서 실행하면 PATH의 `seori`가 그 나무를 실행하기 시작하고, 그 나무를 지우면 아예 풀리지 않습니다. 그래서 버리는 설치는 `HOME`, `BUN_INSTALL`, `SEORI_HOME`, `SKILLS_DIR`을 모두 자기 임시 폴더 안으로 잡습니다.
 
 **테스트는 어디서.** 클론에서 `bun test`와 `bun run typecheck`. 모델도, hc도, `SEORI_HOME`도 필요 없습니다. 저장소의 `.gitignore`에 `.seori/`가 있어서 기본 이름의 상태 폴더가 체크아웃 안에 있어도 git에 들어가지 않습니다. 다른 이름의 폴더라면 들어가니, 체크아웃 밖에 두거나 직접 ignore 규칙을 더하세요.
+
+**seori를 고치는 레인.** 레인은 설치 체크아웃에서 열리지 않습니다. `--cwd`를 설치 체크아웃(또는 그 안의 폴더)으로 주고 시작하면, seori가 `origin/main`에서 만든 브랜치 `<key>`로 `$SEORI_HOME/work/<key>`에 레인만의 워크트리를 줍니다([레인이 시작되는 방법](#레인이-시작되는-방법) 참고). 전에는 레인을 거기서 시작하고 워크트리를 직접 만들라고 했는데, `cd` 전에 하거나 상대 경로로 한 수정이 seori가 돌리는 코드에 커밋되지 않은 채 남았고, 그 뒤 설치본의 `git pull --ff-only`가 실패하거나 그 수정이 섞여 들어갔습니다. 모든 레인의 규칙 꼬리말도 설치 체크아웃 경로를 알려 주고 거기서 수정, 커밋, 브랜치 전환, pull을 하지 말라고 합니다. 워크트리가 있는 레인은 그 경로와 브랜치도 듣습니다.
 
 ## 테스트
 

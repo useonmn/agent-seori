@@ -226,6 +226,8 @@ export class World {
       agentCmd: "omp",
       seoriCmd: "seori",
       host: () => this.host,
+      // A checkout no test starts a lane in: lanes keep their cwd unless a test points this at its own clone.
+      installDir: join(root, "install"),
       sleep: async (ms) => {
         this.clock += ms;
       },

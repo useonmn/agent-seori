@@ -168,6 +168,17 @@ describe("checkSignals", () => {
     ]);
   });
 
+  test("a lane seori gave a worktree reads its file and command signals there, not in its cwd", async () => {
+    const { d, cwd, lane } = setup();
+    const worktree = join(d.store.root, "wt");
+    mkdirSync(worktree);
+    writeFileSync(join(worktree, "out.txt"), "built");
+    const run = io();
+    expect(await checkSignals(d, { ...lane('file out.txt; command ["make"]'), worktree }, run)).toEqual([]);
+    expect(run.ran.map((r) => r.cwd)).toEqual([worktree]);
+    expect(await checkSignals(d, lane("file out.txt"), io())).toEqual([`file out.txt -> missing: ${join(cwd, "out.txt")}`]);
+  });
+
   test("a stored Done line that no longer parses is a failure, never a pass", async () => {
     const { d, lane } = setup();
     expect(await checkSignals(d, lane("tests pass"), io())).toEqual([expect.stringMatching(/^tests pass -> unreadable signal/)]);
