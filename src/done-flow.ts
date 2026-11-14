@@ -1,7 +1,7 @@
 import { ConfigError, loadConfig } from "./config.ts";
 import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
 import { laneBusy, Refusal, send, tellLead, type Deps, type DutyEvent, type SendResult } from "./harness.ts";
-import { checkSignals, defaultSignalIo, type SignalIo } from "./signals.ts";
+import { checkSignals, defaultSignalIo, INSTALL_HOLD_ADVICE, installHold, type SignalIo } from "./signals.ts";
 import { recordCloseCost } from "./supervision.ts";
 import { startAgain } from "./restart.ts";
 import type { Lane } from "./store.ts";
@@ -119,6 +119,11 @@ function eventDetail(e: unknown): string {
  * lost: its claim stays, the lead hears `[NOT-DONE <key>]` once per claim with the command that starts it again, and
  * the signals are read again every `closeAfterMin` (not every pass, since a signal may run a command or call gh) until
  * they read back live (the lead merged) and the lane closes.
+ *
+ * A lane whose own checks pass but which was started in the install checkout while that checkout has uncommitted
+ * tracked changes (installHold) is held the same way: those changes may be another lane's or the owner's, so the lane
+ * is never told to fix them. Its claim stays, the lead hears `[NOT-DONE <key>]` once per claim, and it is read again
+ * every `closeAfterMin` until the checkout is clean and the lane closes.
  */
 export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Promise<DutyEvent[]> {
   const due = d.store.lanes().filter((l) => l.status === "ready" && l.done !== undefined && l.final);
@@ -133,10 +138,12 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
   const events: DutyEvent[] = [];
   for (const lane of due) {
     if (d.now() - lane.final!.at < closeAfterMin * 60_000) continue;
-    // The last read of a gone pane's lane (see below); the next is due closeAfterMin later.
+    // The last read of a gone pane's lane or of a held one (see below); the next is due closeAfterMin later.
     const mark = `not-done-gone:${lane.final!.at}`;
     const lastRead = lane.alerts?.[mark];
-    if (lastRead !== undefined && d.now() - lastRead < closeAfterMin * 60_000) continue;
+    const heldMark = `install-held:${lane.final!.at}`;
+    const heldRead = lane.alerts?.[heldMark];
+    if ([lastRead, heldRead].some((at) => at !== undefined && d.now() - at < closeAfterMin * 60_000)) continue;
     try {
       const st = await d.runtime.status(lane.sessionRef);
       if (st === "working" || st === "blocked") {
@@ -144,6 +151,7 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
         continue;
       }
       const failures = await checkSignals(d, lane, io);
+      const hold = failures.length ? undefined : await installHold(d, lane);
       const fresh = sameClaim(d, lane);
       if (!fresh) {
         events.push({ lane: lane.key, action: "close-deferred", detail: "its claim changed while its signals were read" });
@@ -168,6 +176,15 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
         await objectDone(d, lane.key, failures);
         events.push({ lane: lane.key, action: "not-done", detail: failures.join("; ") });
         await tellLead(d, `[NOT-DONE ${lane.key}] ${failures.join("; ")}`, "duty");
+        continue;
+      }
+      if (hold !== undefined) {
+        events.push({ lane: lane.key, action: "close-deferred", detail: hold });
+        if (heldRead === undefined) {
+          await tellLead(d, `[NOT-DONE ${lane.key}] ${hold}. ${INSTALL_HOLD_ADVICE} It stays ready and closes once that checkout is clean.`, "duty");
+        }
+        const read = sameClaim(d, fresh);
+        if (read) d.store.saveLane({ ...read, alerts: { ...read.alerts, [heldMark]: d.now() } });
         continue;
       }
       await closeLane(d, fresh, `closed ${closeAfterMin} min after READY: every Done signal read back live`);

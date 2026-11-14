@@ -375,14 +375,18 @@ describe("lanes started in the checkout seori runs from", () => {
     expect(opened(w)).toEqual([]);
   });
 
-  test("git never prompts, and a fetch that does not answer within the limit is killed and refuses the start", async () => {
+  test("git never prompts and runs with no terminal, and a fetch that does not answer within the limit is killed and refuses the start", async () => {
     const { w, d, brief, install, worktree } = await installed();
     const envs: (string | undefined)[] = [];
+    const detached: (boolean | undefined)[] = [];
     let killed = false;
     const hung: typeof d = {
       ...d,
       exec: (cmd, argv, o) => {
-        if (cmd === "git") envs.push(o?.env?.GIT_TERMINAL_PROMPT);
+        if (cmd === "git") {
+          envs.push(o?.env?.GIT_TERMINAL_PROMPT);
+          detached.push(o?.detached);
+        }
         if (cmd !== "git" || !argv.includes("fetch")) return d.exec(cmd, argv, o);
         o?.onSpawn?.({ kill: () => (killed = true) });
         jest.advanceTimersByTime(FETCH_TIMEOUT_MS);
@@ -398,6 +402,7 @@ describe("lanes started in the checkout seori runs from", () => {
     expect(killed).toBe(true);
     expect(envs.length).toBeGreaterThan(0);
     expect(envs.every((e) => e === "0")).toBe(true);
+    expect(detached.every((x) => x === true)).toBe(true);
     expect(opened(w)).toEqual([]);
     expect(existsSync(worktree)).toBe(false);
   });

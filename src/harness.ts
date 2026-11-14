@@ -22,7 +22,7 @@ import { guardTick } from "./guard.ts";
 import { agentGone, panesTick } from "./panes.ts";
 import { progressTick, threadTarget } from "./progress.ts";
 import { recordCloseCost, superviseTick } from "./supervision.ts";
-import { checkSignals, installState, parseDone, startedInInstall } from "./signals.ts";
+import { checkSignals, INSTALL_HOLD_ADVICE, installHold, parseDone } from "./signals.ts";
 import { GLOBAL_LESSONS_HEADING, LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
@@ -568,13 +568,14 @@ function worktreeRecords(porcelain: string): { path: string; branch?: string }[]
  * worktree of the install's repository on branch `<key>` (the lane started again) it is taken as it is, and when only
  * the branch is left the worktree checks it out. A directory deleted by hand that git still has registered is pruned
  * first, so the branch is checked out again rather than refused. Anything else at that path (another branch, a
- * detached HEAD, not a worktree), or a git step that fails, refuses the start. Git never prompts for credentials here
- * and the fetch is killed after FETCH_TIMEOUT_MS: a start must not hang on a remote that does not answer.
+ * detached HEAD, not a worktree), or a git step that fails, refuses the start. Git never prompts here (no credential
+ * prompt, and no terminal for ssh to ask on) and the fetch is killed with everything it started after
+ * FETCH_TIMEOUT_MS: a start must not hang on a remote that does not answer.
  */
 async function laneWorktree(d: Deps, key: string): Promise<string> {
   const dir = join(d.store.root, "work", key);
-  const env = { GIT_TERMINAL_PROMPT: "0" };
-  const git = (...argv: string[]): Promise<ExecResult> => d.exec("git", ["-C", d.installDir, ...argv], { env });
+  const opts = { env: { GIT_TERMINAL_PROMPT: "0" }, detached: true };
+  const git = (...argv: string[]): Promise<ExecResult> => d.exec("git", ["-C", d.installDir, ...argv], opts);
   const refuse = (why: string): Refusal =>
     new Refusal(`lane ${key} would start in the checkout seori runs from (${d.installDir}), so it gets the worktree ${dir}, but ${why}`);
   const failed = (step: string, r: ExecResult): Refusal => refuse(`${step} failed: ${(r.stderr.trim() || r.stdout.trim()).split("\n")[0] ?? ""}`);
@@ -606,7 +607,7 @@ async function laneWorktree(d: Deps, key: string): Promise<string> {
     proc?.kill();
     timedOut.resolve("timeout");
   }, FETCH_TIMEOUT_MS);
-  const fetching = d.exec("git", ["-C", d.installDir, "fetch", "origin", "main"], { env, onSpawn: (p) => (proc = p) });
+  const fetching = d.exec("git", ["-C", d.installDir, "fetch", "origin", "main"], { ...opts, onSpawn: (p) => (proc = p) });
   const fetch = await Promise.race([fetching, timedOut.promise]).finally(() => clearTimeout(timer));
   if (fetch === "timeout") throw refuse(`git fetch origin main timed out after ${FETCH_TIMEOUT_MS / 1000} s`);
   if (fetch.code !== 0) throw failed("git fetch origin main", fetch);
@@ -676,9 +677,8 @@ export async function ready(d: Deps, key: string, text: string, evidence: readon
 
 /**
  * The lead closes a READY lane. A lane with a Done line closes only when checkSignals finds nothing: every signal
- * reads back live and no tracked work is uncommitted or on no remote; otherwise the refusal lists the reasons. A lane
- * without one is checked for nothing but the install checkout: started there, it does not close while that checkout
- * has uncommitted tracked changes, which it may have made in the code seori runs.
+ * reads back live and no tracked work is uncommitted or on no remote. Any lane started in the install checkout also
+ * waits while that checkout has uncommitted tracked changes (installHold). Otherwise the refusal lists the reasons.
  */
 export async function done(d: Deps, key: string): Promise<void> {
   const lane = d.store.lane(key);
@@ -692,19 +692,11 @@ export async function done(d: Deps, key: string): Promise<void> {
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   const st = await d.runtime.status(lane.sessionRef);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
-  if (lane.done !== undefined) {
-    const failures = await checkSignals(d, lane);
-    if (failures.length) throw new Refusal(`lane ${key} is not done:\n${failures.map((f) => `- ${f}`).join("\n")}`);
-  } else if (startedInInstall(d, lane)) {
-    const install = await installState(d);
-    const started = `lane ${key} was started in the install checkout ${d.installDir}`;
-    if (install.kind === "dirty") {
-      throw new Refusal(
-        `${started}, which has uncommitted tracked changes it may have made: ${install.files.join(" ")}; move them to a ` +
-          `worktree and commit them there, or discard them, then run done again`,
-      );
-    }
-    if (install.kind === "unreadable") throw new Refusal(`${started}, whose git state cannot be read (${install.why}); run done again once it can`);
+  const failures = lane.done === undefined ? [] : await checkSignals(d, lane);
+  const hold = await installHold(d, lane);
+  if (hold !== undefined) failures.push(hold);
+  if (failures.length) {
+    throw new Refusal(`lane ${key} is not done:\n${failures.map((f) => `- ${f}`).join("\n")}${hold === undefined ? "" : `\n${INSTALL_HOLD_ADVICE}`}`);
   }
   // The lead may have objected, paused it or a new READY may have come in while its pane and signals were read.
   const fresh = sameClaim(d, lane);

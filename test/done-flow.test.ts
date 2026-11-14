@@ -6,7 +6,7 @@ import { autoCloseTick, objectDone } from "../src/done-flow.ts";
 import { done, ready, Refusal, startLane, type Deps } from "../src/harness.ts";
 import { addLesson } from "../src/lessons.ts";
 import { spawnExec } from "../src/runtime/exec.ts";
-import type { SignalIo } from "../src/signals.ts";
+import { INSTALL_HOLD_ADVICE, type SignalIo } from "../src/signals.ts";
 import type { Lane } from "../src/store.ts";
 import { World, paneRef } from "./fake.ts";
 
@@ -180,43 +180,16 @@ describe("done", () => {
   });
 
   test("a lane started in the install checkout is not closed, by hand or by its Done line, while that checkout has uncommitted tracked changes", async () => {
-    const w = new World();
-    const base = w.deps();
-    const installDir = join(base.store.root, "src");
-    const d: Deps = {
-      ...base,
-      installDir,
-      exec: (cmd, argv, o) => (cmd === "git" ? spawnExec(cmd, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...argv], o) : base.exec(cmd, argv, o)),
-    };
-    const git = (dir: string, ...argv: string[]) => d.exec("git", ["-C", dir, ...argv]);
-    mkdirSync(installDir);
-    await git(installDir, "init", "-q", "-b", "main");
-    writeFileSync(join(installDir, "a.ts"), "1");
-    await git(installDir, "add", "a.ts");
-    await git(installDir, "commit", "-q", "-m", "first");
-    const worktree = join(d.store.root, "work", "fix-login");
-    await git(installDir, "worktree", "add", "-q", "-b", "fix-login", worktree);
-    const elsewhere = join(d.store.root, "elsewhere");
-    mkdirSync(elsewhere);
-    const claim = (key: string, paneId: string, where: { cwd: string; worktree?: string }): Lane => {
-      w.addPane(paneId, "idle");
-      const lane: Lane = {
-        key, sessionRef: paneRef(paneId), paneId, tabId: "", brief: "b", ...where, status: "ready",
-        createdAt: 0, lastActivityAt: 0, nudges: 0, log: [], final: { text: "fixed", evidence: ["e"], at: 0 },
-      };
-      d.store.saveLane(lane);
-      return lane;
-    };
+    const { w, d, installDir, worktree, elsewhere, git, claim, broken } = await installFixture();
     const lane = claim("fix-login", "t5", { cwd: installDir, worktree });
     writeFileSync(join(installDir, "a.ts"), "edited by absolute path");
-    await expect(done(d, "fix-login")).rejects.toThrow(
-      `lane fix-login was started in the install checkout ${installDir}, which has uncommitted tracked changes it may have made: a.ts; ` +
-        "move them to a worktree and commit them there, or discard them, then run done again",
-    );
+    const held = `- uncommitted tracked changes in the install checkout ${installDir}, which this lane was started in: a.ts\n${INSTALL_HOLD_ADVICE}`;
+    await expect(done(d, "fix-login")).rejects.toThrow(`lane fix-login is not done:\n${held}`);
     d.store.saveLane({ ...d.store.lane("fix-login")!, done: "file a.ts" });
-    await expect(done(d, "fix-login")).rejects.toThrow(
-      `lane fix-login is not done:\n- uncommitted tracked changes in the install checkout ${installDir}, which this lane was started in`,
-    );
+    await expect(done(d, "fix-login")).rejects.toThrow(`lane fix-login is not done:\n${held}`);
+    broken.status = true;
+    await expect(done(d, "fix-login")).rejects.toThrow(`lane fix-login is not done:\n- install checkout ${installDir} unreadable (fatal: index file corrupt)`);
+    broken.status = false;
     expect(w.panes.has(lane.paneId)).toBe(true);
     // A lane started elsewhere is closed whatever the install checkout holds.
     claim("docs", "t6", { cwd: elsewhere });
@@ -226,6 +199,73 @@ describe("done", () => {
     await done(d, "fix-login");
     expect(d.store.lane("fix-login")!.status).toBe("done");
     expect(w.panes.has(lane.paneId)).toBe(false);
+  });
+});
+
+/**
+ * A real install checkout at $SEORI_HOME/src with one tracked file and lane fix-login's worktree from it, a lead pane,
+ * and `claim` to save a READY lane record. `broken.status` makes git status in the install checkout fail.
+ */
+async function installFixture() {
+  const w = new World();
+  const base = w.deps();
+  const installDir = join(base.store.root, "src");
+  const broken = { status: false };
+  const d: Deps = {
+    ...base,
+    installDir,
+    exec: async (cmd, argv, o) => {
+      if (cmd !== "git") return base.exec(cmd, argv, o);
+      if (broken.status && argv[0] === "--no-optional-locks" && argv.includes("status")) return { code: 128, stdout: "", stderr: "fatal: index file corrupt\n" };
+      return spawnExec(cmd, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...argv], o);
+    },
+  };
+  w.addPane("t1", "idle");
+  d.store.setRole("lead", paneRef("t1"));
+  const git = (dir: string, ...argv: string[]) => d.exec("git", ["-C", dir, ...argv]);
+  mkdirSync(installDir);
+  await git(installDir, "init", "-q", "-b", "main");
+  writeFileSync(join(installDir, "a.ts"), "1");
+  await git(installDir, "add", "a.ts");
+  await git(installDir, "commit", "-q", "-m", "first");
+  const worktree = join(d.store.root, "work", "fix-login");
+  await git(installDir, "worktree", "add", "-q", "-b", "fix-login", worktree);
+  const elsewhere = join(d.store.root, "elsewhere");
+  mkdirSync(elsewhere);
+  const claim = (key: string, paneId: string, where: { cwd: string; worktree?: string; done?: string }): Lane => {
+    w.addPane(paneId, "idle");
+    const lane: Lane = {
+      key, sessionRef: paneRef(paneId), paneId, tabId: "", brief: "b", ...where, status: "ready",
+      createdAt: w.clock, lastActivityAt: w.clock, nudges: 0, log: [], final: { text: "fixed", evidence: ["e"], at: w.clock },
+    };
+    d.store.saveLane(lane);
+    return lane;
+  };
+  return { w, d, installDir, worktree, elsewhere, git, claim, broken, lead: w.panes.get("t1")! };
+}
+
+describe("autoCloseTick and the install checkout", () => {
+  test("a lane whose own checks pass is held while the install checkout is dirty: the lead hears it once, the lane never", async () => {
+    const { w, d, installDir, worktree, git, claim, lead } = await installFixture();
+    const lane = claim("fix-login", "t5", { cwd: installDir, worktree, done: "file a.ts" });
+    const pane = w.panes.get(lane.paneId)!;
+    writeFileSync(join(installDir, "a.ts"), "someone's edit");
+    w.clock += 5 * 60_000;
+    const hold = `uncommitted tracked changes in the install checkout ${installDir}, which this lane was started in: a.ts`;
+    expect(await autoCloseTick(d, noIo)).toEqual([{ lane: "fix-login", action: "close-deferred", detail: hold }]);
+    expect(lead.received.at(-1)).toBe(`[NOT-DONE fix-login] ${hold}. ${INSTALL_HOLD_ADVICE} It stays ready and closes once that checkout is clean.`);
+    expect(pane.received).toEqual([]);
+    expect(d.store.lane("fix-login")!.status).toBe("ready");
+    // Read again only closeAfterMin later, and the lead is not told twice.
+    const told = lead.received.length;
+    expect(await autoCloseTick(d, noIo)).toEqual([]);
+    w.clock += 5 * 60_000;
+    expect(await autoCloseTick(d, noIo)).toEqual([{ lane: "fix-login", action: "close-deferred", detail: hold }]);
+    expect(lead.received).toHaveLength(told);
+    await git(installDir, "checkout", "--", "a.ts");
+    w.clock += 5 * 60_000;
+    expect(await autoCloseTick(d, noIo)).toEqual([{ lane: "fix-login", action: "closed" }]);
+    expect(pane.received).toEqual([]);
   });
 });
 
