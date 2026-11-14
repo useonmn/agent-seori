@@ -115,11 +115,18 @@ describe("lanes a restart would end", () => {
     expect(text).toContain("also close 1 paused lane(s), which do not block: docs");
   });
 
-  test("a closed lane's way back is its own record: key, brief, cwd, and thread and Done line when it had them", () => {
+  test("a closed lane's way back is its own record: key, brief, cwd and every launch setting it was started with", () => {
     const lane = { key: "docs", brief: "/h/briefs/docs.md", cwd: "/w/it's here" };
-    expect(startAgain(lane, "seori")).toBe(`seori start docs --brief '/h/briefs/docs.md' --cwd '/w/it'\\''s here'`);
-    expect(startAgain({ ...lane, thread: "slack:C1:2", done: "pr:merged" }, "seori")).toBe(
-      `seori start docs --brief '/h/briefs/docs.md' --cwd '/w/it'\\''s here' --thread 'slack:C1:2' --done 'pr:merged'`,
+    // No workflow in the record means it was started with none: a bare start would take the config's.
+    expect(startAgain(lane, "seori")).toBe(`seori start docs --brief '/h/briefs/docs.md' --cwd '/w/it'\\''s here' --workflow none`);
+    const full = {
+      ...lane, thread: "slack:C1:2", done: "pr:merged", ceilings: { wallMinutes: 90, tokens: null, costUsd: 2 },
+      activityPaths: ["src", "out dir"], model: "anthropic/claude-x", workflow: "ulw-plan" as const,
+    };
+    expect(startAgain(full, "seori")).toBe(
+      `seori start docs --brief '/h/briefs/docs.md' --cwd '/w/it'\\''s here' --thread 'slack:C1:2' --done 'pr:merged' ` +
+        `--wall-minutes 90 --token-limit none --cost-limit 2 --activity-path 'src' --activity-path 'out dir' ` +
+        `--model 'anthropic/claude-x' --workflow ulw-plan`,
     );
     expect(pausedClosedLine(lane, "seori")).toStartWith("PAUSED-CLOSED docs: paused");
     expect(pausedClosedLine(lane, "seori")).toEndWith(startAgain(lane, "seori"));

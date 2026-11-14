@@ -181,6 +181,18 @@ describe("bootReport", () => {
     expect(r.lines).toContain(`ORPHAN-WATCH ${watch.id} name=file owner=lane:vanished-key lane=missing status=active; stop it with: seori watch stop ${watch.id}`);
   });
 
+  test("a paused lane whose pane is gone (a restart closed it) is named with the command that resumes it", async () => {
+    const { w, d } = setup();
+    w.addPane("t1", "idle");
+    d.store.setRole("lead", paneRef("t1"));
+    d.store.saveLane(lane("docs", "t4", "paused", { pausedFrom: "waiting", thread: "slack:C1:2" }));
+    const r = await bootReport(d);
+    expect(r.lines).toContain(
+      "VANISHED docs pane=hc:t4 status=paused; lane record kept, nothing relaunched; it was paused: once duty marks it lost, " +
+        "resume it with: seori start docs --brief '/b/docs.md' --cwd '/repo' --thread 'slack:C1:2' --workflow none",
+    );
+  });
+
   test("a malformed hooks block makes the config invalid", async () => {
     const { d } = setup();
     writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ hooks: "x" }));

@@ -87,10 +87,10 @@ seori restart --follow
 Paused lanes do not block a restart, but `down all` closes their panes like any other. So the restart names each paused lane it closes, with the command that resumes it, both in its own output and in `restart.log` (a refusal for working lanes names them too):
 
 ```
-PAUSED-CLOSED docs: paused, and the down closes its pane (record and brief stay); to resume it later: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs'
+PAUSED-CLOSED docs: paused, and the down closes its pane (record and brief stay); to resume it later: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs' --workflow none
 ```
 
-After the up, the first duty pass finds the pane gone and marks the lane lost, and the new lead gets `[LOST <key>] pane hc:t5 closed while the lane was paused ...` ending with the same `seori start` command (with the lane's `--thread` and `--done` when it had them), so the lead knows the lane was waiting, not failed, and can bring it back when what it waited on clears.
+After the up, the first duty pass finds the pane gone and marks the lane lost, and the new lead gets `[LOST <key>] pane hc:t5 closed while the lane was paused ...` ending with the same `seori start` command, so the lead knows the lane was waiting, not failed, and can bring it back when what it waited on clears. A `seori boot` that runs before that pass shows the lane as `VANISHED <key> ... status=paused` with the same command. The command carries every launch setting in the lane's record (`--thread`, `--done`, the ceilings, `--activity-path`, `--model`, and `--workflow`, `none` when it had none), so the lane comes back as it was started, not on today's config defaults.
 
 After `seori up` or `seori restart` opens a new lead, seori hands it a start-up line: run `seori boot`, then post one short line to the owner (the thread of the oldest open worklog item, else the owner's direct message) saying seori is back, with the open item count and the lanes still open. The line goes out last, once the duty pane is recorded and the daemon and loops run, so the boot finds the whole home instead of reporting a duty pane or daemon that is still starting; an up that fails after the lead opened still hands it the line, so its boot reports what is missing. The owner therefore hears from a restarted seori without typing anything; `prompts/lead.md` says the same, so a lead started by hand does it too.
 

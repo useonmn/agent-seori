@@ -12,6 +12,7 @@ import { checkedLane, type Lane, type StoredLane } from "./store.ts";
 import { WatchStore } from "./watch/store.ts";
 import { worklogLines, worklogPath, worklogRead } from "./worklog.ts";
 import { HerdrRecord, refText } from "./refs.ts";
+import { startAgain } from "./restart.ts";
 
 // `seori boot`: the read-only check a lead runs after a restart or a compaction, so it resumes from the record and not
 // from memory. It changes nothing: no lane or role write, no relaunch, no stopped watch, no closed message, and it
@@ -144,7 +145,12 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
     const owned = new Set([...Object.values(roles).map(refText), ...open.map((lane) => refText(lane.sessionRef))]);
     const unregistered = panes.filter((p) => p.agent !== undefined && !owned.has(p.paneId));
     lines.push(`PANES live=${panes.length} lanesOpen=${open.length} vanished=${vanished.length} unregistered=${unregistered.length}`);
-    for (const lane of vanished) lines.push(`VANISHED ${lane.key} pane=${refText(lane.sessionRef)} status=${lane.status}; lane record kept, nothing relaunched`);
+    for (const lane of vanished) {
+      // A paused lane whose pane is gone was closed while waiting (a restart closes paused panes too), not failed: the
+      // next duty pass marks it lost, and from then on this command resumes it.
+      const resume = lane.status === "paused" ? `; it was paused: once duty marks it lost, resume it with: ${startAgain(lane, d.seoriCmd)}` : "";
+      lines.push(`VANISHED ${lane.key} pane=${refText(lane.sessionRef)} status=${lane.status}; lane record kept, nothing relaunched${resume}`);
+    }
     for (const p of unregistered) lines.push(`UNREGISTERED ${p.paneId} agent=${p.agent} status=${p.status}`);
     const found = await driftCheck({ runtime: d.runtime, open, lanes, roles: Object.values(roles), liveIds: new Set(byId.keys()), group });
     lines.push(...found.lines);

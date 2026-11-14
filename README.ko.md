@@ -86,10 +86,10 @@ seori restart --follow
 멈춘(paused) 레인은 재시작을 막지 않지만, `down all`은 그 패널도 다른 패널처럼 닫습니다. 그래서 재시작은 닫게 되는 멈춘 레인마다 그 레인을 다시 시작하는 명령을 붙여 이름을 알려 주고, 같은 줄을 `restart.log`에도 남깁니다(working 레인 때문에 거절할 때도 멈춘 레인 이름을 함께 알려 줍니다):
 
 ```
-PAUSED-CLOSED docs: paused, and the down closes its pane (record and brief stay); to resume it later: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs'
+PAUSED-CLOSED docs: paused, and the down closes its pane (record and brief stay); to resume it later: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs' --workflow none
 ```
 
-up 뒤 첫 듀티 차례가 사라진 패널을 보고 레인을 사라진(lost) 레인으로 기록하면, 새 리드는 `[LOST <key>] pane hc:t5 closed while the lane was paused ...`를 받습니다. 이 줄은 같은 `seori start` 명령(레인에 `--thread`와 `--done`이 있었으면 그것까지)으로 끝나므로, 리드는 그 레인이 실패한 것이 아니라 기다리던 중이었다는 것을 알고, 기다리던 일이 풀리면 다시 시작할 수 있습니다.
+up 뒤 첫 듀티 차례가 사라진 패널을 보고 레인을 사라진(lost) 레인으로 기록하면, 새 리드는 `[LOST <key>] pane hc:t5 closed while the lane was paused ...`를 받습니다. 이 줄은 같은 `seori start` 명령으로 끝나므로, 리드는 그 레인이 실패한 것이 아니라 기다리던 중이었다는 것을 알고, 기다리던 일이 풀리면 다시 시작할 수 있습니다. 그 차례보다 먼저 `seori boot`을 실행하면 그 레인은 같은 명령과 함께 `VANISHED <key> ... status=paused`로 나옵니다. 이 명령은 레인 기록에 있는 시작 설정을 모두 담습니다(`--thread`, `--done`, 한도, `--activity-path`, `--model`, `--workflow`; 워크플로가 없었으면 `none`). 그래서 레인은 지금의 설정 기본값이 아니라 처음 시작한 그대로 돌아옵니다.
 
 `seori up`이나 `seori restart`가 새 리드를 열면 seori가 시작 안내 한 줄을 전달합니다: `seori boot`을 실행하고, 주인에게 짧은 한 줄(가장 오래된 열린 worklog 항목의 스레드, 없으면 주인 DM)로 seori가 돌아왔다는 것과 열린 항목 수, 아직 열린 레인을 알리라는 내용입니다. 이 한 줄은 맨 마지막에, 듀티 패널이 기록되고 데몬과 루프가 돌기 시작한 뒤에 갑니다. 그래야 `seori boot`이 아직 뜨는 중인 듀티 패널이나 데몬을 문제로 보고하지 않고 다 갖춰진 홈을 봅니다. 리드를 연 뒤에 up이 실패해도 이 한 줄은 전달되므로, `seori boot`이 빠진 것을 보고합니다. 그래서 재시작 뒤에 주인이 아무것도 입력하지 않아도 소식이 갑니다. `prompts/lead.md`도 같은 규칙을 담고 있어서 손으로 띄운 리드도 그렇게 합니다.
 

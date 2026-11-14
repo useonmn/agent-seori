@@ -363,7 +363,7 @@ describe("paused lanes", () => {
     expect(lead.received).toHaveLength(1);
     expect(lead.received[0]).toStartWith("[LOST fix-a] pane hc:t5 closed while the lane was paused");
     expect(lead.received[0]).toEndWith(`to resume it: ${startAgain(lane(), d.seoriCmd)}`);
-    expect(startAgain(lane(), d.seoriCmd)).toBe("seori start fix-a --brief '/dev/null' --cwd '/repo'");
+    expect(startAgain(lane(), d.seoriCmd)).toBe("seori start fix-a --brief '/dev/null' --cwd '/repo' --workflow none");
     expect(await superviseTick(d)).toEqual([]);
   });
 });

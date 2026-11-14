@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { shq } from "./runtime/index.ts";
 import { MESSENGER_TOKEN_ENV } from "./runtime/hc/sessions.ts";
-import { bootCutoff, pidAlive } from "./store.ts";
+import { bootCutoff, pidAlive, type Lane } from "./store.ts";
 
 // `seori restart`: down then up, from inside a pane whose own down closes it. The command that does the work cannot be
 // the pane's process (down closes that pane, killing it mid-restart: the trap the hand-rolled /tmp/seori-restart.sh hit
@@ -51,20 +51,33 @@ export function pausedLanesARestartCloses<L extends { readonly status: string }>
   return lanes.filter((l) => l.status === "paused");
 }
 
-/** A closed lane's way back, from its record: the same key, brief and cwd, and its thread and Done line when it had them. */
-export function startAgain(
-  lane: { readonly key: string; readonly brief: string; readonly cwd: string; readonly thread?: string; readonly done?: string },
-  seoriCmd: string,
-): string {
+/** What a lane's way back is read from: the record's launch settings. */
+export type RestartableLane = Pick<Lane, "key" | "brief" | "cwd"> &
+  Partial<Pick<Lane, "thread" | "done" | "ceilings" | "activityPaths" | "model" | "workflow">>;
+
+/**
+ * A closed lane's way back, from its record: the same key, brief and cwd, plus every launch setting `seori start` took
+ * (thread, Done line, ceilings, activity paths, model, workflow), so the lane comes back as it was started and not on
+ * today's config defaults. The workflow is always named: a record without one was started with none, and a bare start
+ * would take the config's.
+ */
+export function startAgain(lane: RestartableLane, seoriCmd: string): string {
+  const limit = (n: number | null): string => (n === null ? "none" : String(n));
   return [
     `${seoriCmd} start ${lane.key} --brief ${shq(lane.brief)} --cwd ${shq(lane.cwd)}`,
     ...(lane.thread !== undefined ? [`--thread ${shq(lane.thread)}`] : []),
     ...(lane.done !== undefined ? [`--done ${shq(lane.done)}`] : []),
+    ...(lane.ceilings !== undefined
+      ? [`--wall-minutes ${limit(lane.ceilings.wallMinutes)} --token-limit ${limit(lane.ceilings.tokens)} --cost-limit ${limit(lane.ceilings.costUsd)}`]
+      : []),
+    ...(lane.activityPaths ?? []).map((p) => `--activity-path ${shq(p)}`),
+    ...(lane.model !== undefined ? [`--model ${shq(lane.model)}`] : []),
+    `--workflow ${lane.workflow ?? "none"}`,
   ].join(" ");
 }
 
 /** The line a restart prints, and writes to its log, for each paused lane it closes. */
-export function pausedClosedLine(lane: Parameters<typeof startAgain>[0], seoriCmd: string): string {
+export function pausedClosedLine(lane: RestartableLane, seoriCmd: string): string {
   return `PAUSED-CLOSED ${lane.key}: paused, and the down closes its pane (record and brief stay); to resume it later: ${startAgain(lane, seoriCmd)}`;
 }
 
