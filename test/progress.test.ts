@@ -149,6 +149,8 @@ describe("threadTarget", () => {
       target: { chat: "c1", thread: "t7", replyTo: "m1", attached: true },
     });
     expect(threadTarget({ id: "slack:C9:1.2:3", kind: "messenger", source: "slack", chat: "C9", from: "U1", at: 1, text: "hi" })).toEqual({ source: "slack", target: { chat: "C9", replyTo: "1.2:3", attached: true } });
+    // A job thread seori opened for the message (Discord): the post goes into it.
+    expect(threadTarget({ id: "discord:C1:55", kind: "messenger", source: "discord", chat: "C1", from: "42", at: 1, text: "hi" }, "55")).toEqual({ source: "discord", target: { chat: "C1", thread: "55" } });
   });
 });
 

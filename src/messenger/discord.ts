@@ -27,8 +27,23 @@ const RESUMABLE_CLOSE = 4000;
 const ABORT_GRACE_MS = 1_000;
 /** Thread channel types: announcement, public and private thread. */
 const THREAD_TYPES: ReadonlySet<unknown> = new Set([10, 11, 12]);
+/** Channel types a thread can be opened on a message in: a server text channel and an announcement channel. */
+const THREAD_PARENT_TYPES: ReadonlySet<unknown> = new Set([0, 5]);
+/** Discord's error code for a second thread on one message. */
+const THREAD_ALREADY_CREATED = 160004;
+/** A job thread hides after this many minutes without a message (Discord's longest), so it stays in view while the job runs. */
+const JOB_THREAD_ARCHIVE_MIN = 10_080;
+/** A thread name holds 1 to 100 characters. */
+const THREAD_NAME_LIMIT = 100;
 /** How long a server membership answer for a DM sender stands before it is asked again (they may join or leave). */
 const MEMBER_RECHECK_MS = 10 * 60_000;
+
+/** A thread name cut to Discord's limit (by code point, so an emoji is never split); empty is refused. */
+function fitThreadName(name: string): string {
+  const cut = [...name.trim()].slice(0, THREAD_NAME_LIMIT).join("");
+  if (!cut) throw new Error("discord: a thread name may not be empty");
+  return cut;
+}
 
 type Session = { sessionId: string; resumeUrl: string; seq: number | null };
 /**
@@ -59,7 +74,7 @@ type Payload = { op: number; d?: unknown; s?: number | null; t?: string | null }
 /**
  * What GET /channels/{id} says about a channel: a direct message, or a server channel with its server and, for a
  * thread, its InboundMessage root (the starter message's id: a thread started from a message has that message's id)
- * and whether the owner started it.
+ * and whether the owner wrote its first message (startedByOwner).
  */
 type Place = { dm: boolean; guild?: string; thread?: { root: string; byOwner: boolean } };
 /**
@@ -482,7 +497,8 @@ export class DiscordAdapter implements MessengerAdapter {
   }
 
   /**
-   * InboundMessage root of a message in `chat`: a thread's root, with rootByOwner when the owner started the thread.
+   * InboundMessage root of a message in `chat`: a thread's root, with rootByOwner when the owner wrote the thread's
+   * first message (the owner opened it, or seori opened a job thread on the owner's message).
    * Nothing for a DM or a plain server channel. A channel the bot may not look up counts as a thread of unknown author,
    * so the owner's message there is never the owner's alone.
    */
@@ -584,18 +600,34 @@ export class DiscordAdapter implements MessengerAdapter {
       if (e instanceof HttpError && e.status === 403) return undefined;
       throw e;
     }
+    const parent = typeof c?.parent_id === "string" ? c.parent_id : chat;
     const place: Place =
       c?.type === 1
         ? { dm: true }
         : {
             dm: false,
             ...(typeof c?.guild_id === "string" ? { guild: c.guild_id } : {}),
-            ...(THREAD_TYPES.has(c?.type)
-              ? { thread: { root: messageId(this.source, typeof c?.parent_id === "string" ? c.parent_id : chat, chat), byOwner: c?.owner_id === this.owner } }
-              : {}),
+            ...(THREAD_TYPES.has(c?.type) ? { thread: { root: messageId(this.source, parent, chat), byOwner: await this.startedByOwner(chat, parent, c?.owner_id, signal) } } : {}),
           };
     this.places.set(chat, place);
     return place;
+  }
+
+  /**
+   * Whether the owner wrote the first message of thread `chat`: the owner opened it, or seori opened it on a message of
+   * the owner's (a job thread, openThread), which is the starter message: it sits in `parent` under the thread's own id.
+   */
+  private async startedByOwner(chat: string, parent: string, opener: unknown, signal: AbortSignal): Promise<boolean> {
+    if (opener === this.owner) return true;
+    if (parent === chat || opener !== (await this.bot(signal))) return false;
+    try {
+      const res = await httpJson(`${this.api}/channels/${seg(parent)}/messages/${seg(chat)}`, { headers: this.headers(this.token()), signal }, { mutating: false, sleep: (ms) => this.pause(ms, signal), timeoutMs: this.timeoutMs });
+      return (res.body as { author?: { id?: unknown } } | undefined)?.author?.id === this.owner;
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 401) throw this.tokenRejected("401 on GET /channels/{id}/messages/{id}");
+      if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return false; // starter deleted or out of reach: not known to be the owner's
+      throw e;
+    }
   }
 
   /** Every tracked channel from its committed message id, oldest first, a page of 100 at a time. */
@@ -686,6 +718,47 @@ export class DiscordAdapter implements MessengerAdapter {
     }
     await this.act("PUT", path("✅"));
     await this.act("DELETE", path("👀"));
+  }
+
+  /** GET /channels/{id} for a send-side action (no cursor bookkeeping: that is receive's, in place()). */
+  private async channel(chat: string): Promise<{ type?: unknown; name?: unknown }> {
+    return ((await this.act("GET", `/channels/${seg(chat)}`)) ?? {}) as { type?: unknown; name?: unknown };
+  }
+
+  /**
+   * POST /channels/{chat}/messages/{message}/threads (Create Public Threads), only in a text or announcement channel.
+   * The thread gets the message's id; Discord refuses a second thread on one message (code 160004), which is that
+   * thread, so the request is safe to repeat.
+   */
+  async openThread(chat: string, message: string, name: string): Promise<string | undefined> {
+    if (!THREAD_PARENT_TYPES.has((await this.channel(chat)).type)) return undefined;
+    const path = `/channels/${seg(chat)}/messages/${seg(message)}/threads`;
+    try {
+      const res = await httpJson(
+        `${this.api}${path}`,
+        { method: "POST", headers: this.headers(this.token()), body: { name: fitThreadName(name), auto_archive_duration: JOB_THREAD_ARCHIVE_MIN } },
+        { mutating: false, retries: 2, sleep: this.sleepFn, timeoutMs: this.timeoutMs, maxRetryAfterMs: ACTION_MAX_RETRY_AFTER_MS },
+      );
+      const id = (res.body as { id?: unknown } | undefined)?.id;
+      if (typeof id !== "string" || !id) throw new Error(`${this.source}: POST ${path} returned no thread id`);
+      return id;
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 400 && (e.body as { code?: unknown } | undefined)?.code === THREAD_ALREADY_CREATED) return message;
+      if (e instanceof HttpError && e.status === 401) throw new Error(this.tokenRejected(`401 on POST ${path}`).message);
+      if (e instanceof HttpError) throw new Error(`${this.source}: POST ${path} failed: ${e.message}`);
+      throw e;
+    }
+  }
+
+  async threadName(thread: string): Promise<string> {
+    const c = await this.channel(thread);
+    if (!THREAD_TYPES.has(c.type)) throw new Error(`${this.source}: channel ${thread} is not a thread`);
+    return typeof c.name === "string" ? c.name : "";
+  }
+
+  /** PATCH /channels/{thread} (Manage Threads for a thread someone else opened); `archived: false` reopens it. */
+  async editThread(thread: string, edit: { readonly name?: string; readonly archived: boolean }): Promise<void> {
+    await this.act("PATCH", `/channels/${seg(thread)}`, { ...(edit.name !== undefined ? { name: fitThreadName(edit.name) } : {}), archived: edit.archived });
   }
 
   async check(): Promise<string> {

@@ -46,9 +46,12 @@ export type MsgSendOptions = {
   readonly again?: boolean;
   /**
    * The reply acknowledges the message (a job's status message) instead of answering it: the eyes stay on it. Any other
-   * reply answers it, and the eyes give way to the check mark.
+   * reply answers it, and the eyes give way to the check mark. On Discord the first acknowledgement of a message in a
+   * server channel opens the job's own thread on it (openJobThread) and goes there.
    */
   readonly ack?: boolean;
+  /** The job's title in the name of the thread an acknowledgement opens; the reply's first line when not given. */
+  readonly title?: string;
 };
 
 /**
@@ -59,6 +62,8 @@ export type MsgSendResult = {
   readonly status: "SENT" | "HELD";
   readonly messageId?: string;
   readonly ids: readonly string[];
+  /** The job thread this acknowledgement opened. */
+  readonly thread?: string;
 };
 
 /** `source:chat[:thread]`. Chat and thread may not be empty; a thread may itself contain colons. */
@@ -82,6 +87,8 @@ function adapterFor(d: MsgDeps, source: string): MessengerAdapter {
 export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Promise<MsgSendResult> {
   if ([o.replyTo, o.to].filter((x) => x !== undefined).length !== 1) throw new Refusal("give exactly one of --reply-to or --to");
   if (o.to && o.ack === true) throw new Refusal("--ack marks a reply to a message as its acknowledgement; it needs --reply-to");
+  if (o.title !== undefined && o.ack !== true) throw new Refusal("--title names the thread an acknowledgement opens; it needs --ack");
+  if (o.title !== undefined && !o.title.trim()) throw new Refusal("--title may not be empty");
   if (!o.text.trim()) throw new Refusal("refusing to send an empty message");
 
   if (o.to) {
@@ -154,22 +161,26 @@ type LockedReply = { readonly result: MsgSendResult; readonly rows: readonly Mes
 
 /** The reply under the reply lock: states are read only once it is held, so a concurrent reply is already recorded. */
 async function replyLocked(
-  channel: Channel, ids: readonly string[], o: { readonly text: string; readonly again?: boolean }, d: MsgDeps,
+  channel: Channel, ids: readonly string[], o: Pick<MsgSendOptions, "text" | "again" | "ack" | "title">, d: MsgDeps,
 ): Promise<LockedReply> {
   const picked = checkReply(channel, ids, o.again === true);
   const rows = picked.map((s) => s.row);
   const first = picked[0]!;
+  const adapter = adapterFor(d, first.row.source);
+  // Only before the first reply: then every reply to the id, the status message first, is in the thread.
+  const opened = o.ack === true && !first.replied ? await openJobThread(channel, first.row, ids, o.title ?? o.text, adapter, d) : undefined;
+  const thread = opened ?? channel.jobThread(first.row.id)?.thread;
   // The upstream message id part of `<source>:<chat>:<message id>`; chat ids may contain colons, so slice by known parts.
   const replyTo = first.row.id.slice(first.row.source.length + first.row.chat.length + 2);
-  const target: SendTarget = { chat: first.row.chat, ...(first.row.thread ? { thread: first.row.thread } : {}), replyTo };
-  const adapter = adapterFor(d, first.row.source);
+  // In the job's thread the reply needs no quote of the request: the thread hangs under it.
+  const target: SendTarget = thread !== undefined ? { chat: first.row.chat, thread } : { chat: first.row.chat, ...(first.row.thread ? { thread: first.row.thread } : {}), replyTo };
   const startedAt = d.now();
   for (const id of ids) channel.appendLedger({ id, ev: "sending", at: startedAt });
   try {
     const { messageId, laterChunks } = await adapter.send(target, o.text);
     const at = d.now();
     for (const id of ids) channel.appendLedger({ id, ev: "replied", at, messageId, ...(laterChunks?.length ? { laterChunks } : {}) });
-    return { result: { status: "SENT", messageId, ids }, rows };
+    return { result: { status: "SENT", messageId, ids, ...(opened !== undefined ? { thread: opened } : {}) }, rows };
   } catch (e) {
     const at = d.now();
     if (!(e instanceof SendUncertain)) {
@@ -181,6 +192,34 @@ async function replyLocked(
     for (const id of ids) channel.appendLedger({ id, ev: "send-uncertain", at, detail: e.message });
     return { result: { status: "HELD", ids }, rows };
   }
+}
+
+/** Status emoji at the start of a job thread's name (`seori msg thread --status`). */
+export const THREAD_STATUS = { working: "🔄", waiting: "⏸", done: "✅" } as const;
+export type ThreadStatus = keyof typeof THREAD_STATUS;
+const STATUS_PREFIX = /^(🔄|⏸\uFE0F?|✅)\s*/u;
+
+/**
+ * The job's own thread on `row`, opened at its first acknowledgement where the messenger can (Discord, a message in a
+ * server channel): named "🔄 <title>" (the title's first line), recorded for every id the reply covers before the reply
+ * goes out, so a retry or a later reply finds it. Nothing for a message already in a thread or a DM, or once a thread
+ * is recorded. A refused thread is only reported through `d.warn`: the acknowledgement then goes where the message was
+ * written, as without threads.
+ */
+async function openJobThread(channel: Channel, row: MessengerRow, ids: readonly string[], title: string, adapter: MessengerAdapter, d: MsgDeps): Promise<string | undefined> {
+  if (!adapter.openThread || row.root !== undefined || row.thread !== undefined || channel.jobThread(row.id) !== undefined) return undefined;
+  const line = title.trim().split("\n")[0]!.trim();
+  let thread: string | undefined;
+  try {
+    thread = await adapter.openThread(row.chat, upstreamMessage(row), `${THREAD_STATUS.working} ${line}`);
+  } catch (e) {
+    (d.warn ?? console.error)(`seori: no thread opened for ${row.id}; the acknowledgement goes where it was written: ${e instanceof Error ? e.message : String(e)}`);
+    return undefined;
+  }
+  if (thread === undefined) return undefined;
+  const at = d.now();
+  for (const id of ids) channel.appendLedger({ id, ev: "thread", at, thread, title: line });
+  return thread;
 }
 
 /**
@@ -201,7 +240,7 @@ async function markAnswered(rows: readonly InboundRow[], d: MsgDeps): Promise<vo
 }
 
 // ---------- edit ----------
-// Never touches the ledger or the reactions: an edit answers no id.
+// An edit answers no id: it never touches the reactions, and only a job thread's new title goes to the ledger.
 
 function messengerRow(root: string, id: string): MessengerRow {
   const row = new Channel(root).inbound({ withOthers: true }).find((r) => r.id === id);
@@ -219,16 +258,49 @@ export async function msgEdit(to: NoticeTarget, message: string, text: string, d
 
 /**
  * `seori msg edit --reply-of <id>`: new text for seori's FIRST reply to that message (the acknowledgement that serves as
- * the job's status message), found in the ledger, so a reply can be edited without its message id.
- * Returns the edited message id.
+ * the job's status message), found in the ledger, so a reply can be edited without its message id. In the id's job
+ * thread when it has one. Returns the edited message id.
  */
 export async function msgEditReplyOf(root: string, id: string, text: string, d: MsgDeps): Promise<string> {
   const row = messengerRow(root, id);
-  const first = new Channel(root).ledger().find((e) => e.id === id && e.ev === "replied");
+  const channel = new Channel(root);
+  const first = channel.ledger().find((e) => e.id === id && e.ev === "replied");
   if (first?.ev !== "replied") throw new Refusal(`no reply to ${id} has been sent yet; --reply-of edits a reply seori already sent`);
   if (!text.trim()) throw new Refusal("refusing to edit a message to empty text");
-  await adapterFor(d, row.source).edit({ chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}) }, first.messageId, text);
+  const thread = channel.jobThread(id)?.thread ?? row.thread;
+  await adapterFor(d, row.source).edit({ chat: row.chat, ...(thread !== undefined ? { thread } : {}) }, first.messageId, text);
   return first.messageId;
+}
+
+/**
+ * `seori msg thread <id>`: renames the job's thread to "<status emoji> <title>" and archives it (`archive`) or keeps it
+ * open, reopening an archived one. The thread is the one seori opened for the id, or the thread the message was written
+ * in. A missing status keeps the name's current emoji; a missing title keeps the recorded one, else the name's.
+ */
+export async function msgThread(
+  root: string, id: string, o: { readonly status?: ThreadStatus; readonly title?: string; readonly archive?: boolean }, d: MsgDeps,
+): Promise<{ readonly thread: string; readonly name?: string }> {
+  const row = messengerRow(root, id);
+  const adapter = adapterFor(d, row.source);
+  if (!adapter.editThread || !adapter.threadName) throw new Refusal(`${row.source} has no threads seori can rename or archive`);
+  if (o.status === undefined && o.title === undefined && o.archive !== true) throw new Refusal("give --status, --title or --archive");
+  if (o.title !== undefined && !o.title.trim()) throw new Refusal("--title may not be empty");
+  const channel = new Channel(root);
+  const job = channel.jobThread(id);
+  // A message written inside a thread (it has a root) belongs to that thread: on Discord the thread is its chat.
+  const thread = job?.thread ?? (row.root !== undefined ? row.chat : undefined);
+  if (thread === undefined) throw new Refusal(`${id} has no thread: seori opens one at the first --ack reply to a message in a Discord server channel`);
+  let name: string | undefined;
+  if (o.status !== undefined || o.title !== undefined) {
+    const title = o.title?.trim() ?? job?.title;
+    const current = o.status === undefined || title === undefined ? await adapter.threadName(thread) : "";
+    const emoji = o.status !== undefined ? THREAD_STATUS[o.status] : STATUS_PREFIX.exec(current)?.[1];
+    const words = title ?? current.replace(STATUS_PREFIX, "");
+    name = emoji !== undefined ? `${emoji} ${words}` : words;
+  }
+  await adapter.editThread(thread, { ...(name !== undefined ? { name } : {}), archived: o.archive === true });
+  if (job !== undefined && o.title !== undefined) channel.appendLedger({ id, ev: "thread", at: d.now(), thread, title: o.title.trim() });
+  return { thread, ...(name !== undefined ? { name } : {}) };
 }
 
 /** Closes an id without replying (handled elsewhere, not worth an answer); a messenger message gets its check mark. */

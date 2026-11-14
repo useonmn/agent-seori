@@ -15,7 +15,7 @@ import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUnti
 import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
-import { msgClose, msgDepsFor, msgEdit, msgEditReplyOf, msgList, msgSend, parseTo } from "./msg.ts";
+import { msgClose, msgDepsFor, msgEdit, msgEditReplyOf, msgList, msgSend, msgThread, parseTo, THREAD_STATUS, type ThreadStatus } from "./msg.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 import type { SessionRef } from "./runtime/index.ts";
 import { lockFile, pidAlive, type Lane, type LaneStatus, type Role } from "./store.ts";
@@ -134,12 +134,14 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               still runs after 30 s
   seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
-  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack]
+  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack [--title T]]
                                               answer messenger messages (one reply per id) or send a notice; it goes out
                                               at once, so answer as soon as you have written it; --again sends another
                                               reply to an id already answered (a correction, a job's result); the eyes
                                               seori put on the message become a check mark, except with --ack (a job's
-                                              acknowledgement, its status message, which keeps the eyes)
+                                              acknowledgement, its status message, which keeps the eyes); on Discord the
+                                              first --ack to a server channel message opens the job's thread on it, named
+                                              "🔄 <title>" (prints thread=ID), and every later reply and edit goes there
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no
                                               reply; a messenger message gets the check mark
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
@@ -147,6 +149,10 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
   seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                               replace the text of a message seori sent: --reply-of edits seori's first reply
                                               to that lead channel message; MID: the message= send printed
+  seori msg thread <id> [--status working|waiting|done] [--title T] [--archive]
+                                              rename the job's thread (its emoji 🔄, ⏸ or ✅ and its title) and archive it,
+                                              or keep it open (reopens an archived one); the thread is the one seori opened
+                                              for the id or the one the message was written in (Discord)
   seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
   seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                               setup: print the sender of the next DM to the bot; --write makes them the owner;
@@ -175,8 +181,8 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "purge", "help", "global",
   // up --wait-hc (the logon hook), restart --follow (watch the detached restart's log), down --keep-autostart (what
-  // the restart worker runs) and msg send --ack never take a value.
-  "wait-hc", "follow", "keep-autostart", "ack",
+  // the restart worker runs), msg send --ack and msg thread --archive never take a value.
+  "wait-hc", "follow", "keep-autostart", "ack", "archive",
 ]);
 
 function parse(argv: readonly string[]): Args {
@@ -969,12 +975,13 @@ function workflowFlag(v: string): Workflow | null {
  * outside its subcommand's list is refused by name instead.
  */
 const MSG_FLAGS: Readonly<Record<string, readonly string[]>> = {
-  send: ["reply-to", "to", "text", "again", "ack"],
+  send: ["reply-to", "to", "text", "again", "ack", "title"],
   close: ["why"],
   list: ["all"],
   check: [],
   pair: ["minutes", "write", "all", "force"],
   edit: ["reply-of", "to", "message", "text"],
+  thread: ["status", "title", "archive"],
 };
 
 /** Refuses flags a `seori msg` subcommand does not take, so no argument is silently read as their value. */
@@ -998,10 +1005,11 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
       text: await textOf(a),
       again: one(a, "again") === "true",
       ack: one(a, "ack") === "true",
+      ...(one(a, "title") !== undefined ? { title: one(a, "title")! } : {}),
     }, msgDepsFor(root, d.now));
     const what = r.ids.length ? r.ids.join(",") : to!;
     if (r.status === "SENT") {
-      console.log(`SENT ${what} message=${r.messageId}`);
+      console.log(`SENT ${what} message=${r.messageId}${r.thread !== undefined ? ` thread=${r.thread}` : ""}`);
       return 0;
     }
     console.log(r.ids.length
@@ -1013,6 +1021,16 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     const id = need(a.pos[2], "message id");
     await msgClose(root, id, need(one(a, "why"), "--why"), msgDepsFor(root, d.now));
     console.log(`CLOSED ${id}`);
+    return 0;
+  }
+  if (sub === "thread") {
+    const id = need(a.pos[2], "message id");
+    const status = one(a, "status");
+    if (status !== undefined && !Object.hasOwn(THREAD_STATUS, status)) throw new Refusal(`--status must be one of ${Object.keys(THREAD_STATUS).join(", ")}, got "${status}"`);
+    const title = one(a, "title");
+    const archive = one(a, "archive") === "true";
+    const r = await msgThread(root, id, { ...(status !== undefined ? { status: status as ThreadStatus } : {}), ...(title !== undefined ? { title } : {}), archive }, msgDepsFor(root, d.now));
+    console.log(`THREAD ${id} thread=${r.thread} ${archive ? "archived" : "open"}${r.name !== undefined ? ` name=${r.name}` : ""}`);
     return 0;
   }
   if (sub === "list") {

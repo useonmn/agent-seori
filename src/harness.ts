@@ -956,7 +956,7 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
       events.push({ action: "alert-failed", detail: `${id} ${why}: no messenger configured for source ${source}` });
       continue;
     }
-    const { target } = threadTarget(s.row);
+    const { target } = threadTarget(s.row, channel.jobThread(s.row.id)?.thread);
     try {
       await d.notify(config, target, ALERT_TEXT[why]);
     } catch (e) {

@@ -58,6 +58,13 @@ class MockDiscord {
   gatewayStatus = 200;
   historyStatus = 200;
   nextId = 900;
+  /** POST /channels/{id}/messages/{id}/threads bodies; `threadExists` answers 400 code 160004 (the message has a thread). */
+  threadPosts: { channel: string; message: string; body: Record<string, unknown> }[] = [];
+  threadExists = false;
+  /** PATCH /channels/{id} bodies. */
+  channelPatches: { channel: string; body: Record<string, unknown> }[] = [];
+  /** `<channel>/<id>` → what GET /channels/{channel}/messages/{id} answers (a thread's starter message); anything else 404. */
+  messages: Record<string, Msg> = {};
   /** A `hang` post answers only once this resolves (at the end of the test, after the adapter gave up). */
   readonly hung = Promise.withResolvers<void>();
 
@@ -141,6 +148,21 @@ class MockDiscord {
       if (this.notIn.has(gm[1]!)) return Response.json({ message: "Missing Access", code: 50001 }, { status: 403 });
       const member = this.members[`${gm[1]}:${gm[2]}`];
       return member ? Response.json(member) : Response.json({ message: "Unknown Member", code: 10007 }, { status: 404 });
+    }
+    if (ch && req.method === "PATCH") {
+      this.channelPatches.push({ channel: ch[1]!, body: (await req.json()) as Record<string, unknown> });
+      return Response.json({ id: ch[1] });
+    }
+    const th = /^\/channels\/([^/]+)\/messages\/([^/]+)\/threads$/.exec(path);
+    if (th && req.method === "POST") {
+      if (this.threadExists) return Response.json({ message: "A thread has already been created for this message", code: 160004 }, { status: 400 });
+      this.threadPosts.push({ channel: th[1]!, message: th[2]!, body: (await req.json()) as Record<string, unknown> });
+      return Response.json({ id: th[2], type: 11, parent_id: th[1] });
+    }
+    const one = /^\/channels\/([^/]+)\/messages\/([^/]+)$/.exec(path);
+    if (one && req.method === "GET") {
+      const found = this.messages[`${one[1]}/${one[2]}`];
+      return found ? Response.json(found) : Response.json({ message: "Unknown Message", code: 10008 }, { status: 404 });
     }
     const m = /^\/channels\/([^/]+)\/messages$/.exec(path);
     if (m && req.method === "GET") {
@@ -534,6 +556,24 @@ describe("DiscordAdapter receive", () => {
     expect(m.channelCalls).not.toContain("D1");
   });
 
+  test("a thread seori opened on the owner's message counts as the owner's; one it opened on someone else's does not", async () => {
+    const m = mock();
+    m.channelInfo = {
+      T1: { id: "T1", type: 11, guild_id: "G1", parent_id: "C2", owner_id: "BOT" },
+      T2: { id: "T2", type: 11, guild_id: "G1", parent_id: "C2", owner_id: "BOT" },
+    };
+    m.messages = { "C2/T1": msg("T1", { channel_id: "C2" }), "C2/T2": msg("T2", { channel_id: "C2", author: { id: "7" } }) };
+    m.afterReady = [
+      ["MESSAGE_CREATE", msg("1201", { channel_id: "T1", guild_id: "G1", content: "follow-up" })],
+      ["MESSAGE_CREATE", msg("1202", { channel_id: "T2", guild_id: "G1", content: "follow-up" })],
+    ];
+    const got = await collect(adapter(m, home()), 2);
+    expect(got.map((x) => [x.id, x.root, x.rootByOwner])).toEqual([
+      ["discord:T1:1201", "discord:C2:T1", true],
+      ["discord:T2:1202", "discord:C2:T2", undefined],
+    ]);
+  });
+
   test("op 9 (session invalid) re-identifies, waiting at least 5s since the last identify", async () => {
     const m = mock();
     const root = home();
@@ -745,6 +785,36 @@ describe("DiscordAdapter send and check", () => {
     const m = mock();
     expect(await adapter(m, home()).check()).toBe("@seori (id BOT)");
     await expect(adapter(m, home(), { token: "nope" }).check()).rejects.toThrow(/rejected the bot token/);
+  });
+
+  test("openThread opens a job thread on a server channel message, named within 100 characters, hiding after a week idle; none in a DM or a thread", async () => {
+    const m = mock();
+    m.guildChannels.add("C1");
+    m.channelInfo = { T9: { id: "T9", type: 11, guild_id: "G1", parent_id: "C1" } };
+    const a = adapter(m, home());
+    expect(await a.openThread("C1", "55", `🔄 ${"x".repeat(120)}`)).toBe("55");
+    expect(m.threadPosts).toEqual([{ channel: "C1", message: "55", body: { name: `🔄 ${"x".repeat(98)}`, auto_archive_duration: 10_080 } }]);
+    expect(await a.openThread("D1", "56", "🔄 dm")).toBeUndefined();
+    expect(await a.openThread("T9", "57", "🔄 in a thread")).toBeUndefined();
+    expect(m.threadPosts.length).toBe(1);
+    // The message already has a thread (an earlier request that may have gone through): that thread is the answer.
+    m.threadExists = true;
+    expect(await a.openThread("C1", "58", "🔄 again")).toBe("58");
+  });
+
+  test("threadName reads a thread's name and refuses any other channel; editThread renames, archives and reopens", async () => {
+    const m = mock();
+    m.guildChannels.add("C1");
+    m.channelInfo = { T9: { id: "T9", type: 11, guild_id: "G1", parent_id: "C1", name: "🔄 fix login" } };
+    const a = adapter(m, home());
+    expect(await a.threadName("T9")).toBe("🔄 fix login");
+    await expect(a.threadName("C1")).rejects.toThrow("channel C1 is not a thread");
+    await a.editThread("T9", { name: "✅ fix login", archived: true });
+    await a.editThread("T9", { archived: false });
+    expect(m.channelPatches).toEqual([
+      { channel: "T9", body: { name: "✅ fix login", archived: true } },
+      { channel: "T9", body: { archived: false } },
+    ]);
   });
 });
 

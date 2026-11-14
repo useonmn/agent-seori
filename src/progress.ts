@@ -58,9 +58,11 @@ export const progressText = (report: string, stateRoot?: string, home?: string):
 
 /**
  * Where a post about a stored lead channel message (a progress post, a duty alert) goes: its chat, its topic or thread,
- * and attached to the message itself, so it says which message it is about even where a reply would go top-level.
+ * and attached to the message itself, so it says which message it is about even where a reply would go top-level. With
+ * a job thread (`jobThread`, Channel.jobThread), into that thread: the thread itself says which message it is about.
  */
-export function threadTarget(row: MessengerRow): { source: string; target: SendTarget } {
+export function threadTarget(row: MessengerRow, jobThread?: string): { source: string; target: SendTarget } {
+  if (jobThread !== undefined) return { source: row.source, target: { chat: row.chat, thread: jobThread } };
   const replyTo = row.id.slice(row.source.length + row.chat.length + 2);
   return { source: row.source, target: { chat: row.chat, ...(row.thread !== undefined ? { thread: row.thread } : {}), ...(replyTo ? { replyTo, attached: true as const } : {}) } };
 }
@@ -134,7 +136,8 @@ export async function progressTick(d: Deps, timeoutMs = THREAD_REPLY_TIMEOUT_MS)
     }
   }
   const events: DutyEvent[] = [];
-  const ownerRows = new Map(new Channel(d.store.root).inbound().flatMap((r) => (r.kind === "messenger" ? [[r.id, r] as const] : [])));
+  const channel = new Channel(d.store.root);
+  const ownerRows = new Map(channel.inbound().flatMap((r) => (r.kind === "messenger" ? [[r.id, r] as const] : [])));
   for (const { lane, report } of due) {
     const thread = lane.thread!;
     const row = ownerRows.get(thread);
@@ -176,7 +179,7 @@ export async function progressTick(d: Deps, timeoutMs = THREAD_REPLY_TIMEOUT_MS)
         clearTimeout(timer);
       }
     } else {
-      const where = threadTarget(row);
+      const where = threadTarget(row, channel.jobThread(row.id)?.thread);
       const found = messengers.find((m) => m.source === where.source);
       if (!found) {
         events.push({ lane: lane.key, action: "post-failed", detail: `messenger: no messenger configured for source ${where.source}` });

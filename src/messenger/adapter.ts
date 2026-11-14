@@ -79,6 +79,20 @@ export interface MessengerAdapter {
    * already in place, or eyes already gone, is no error. A refusal rejects; the caller logs it and carries on.
    */
   react(target: SendTarget, message: string, reaction: Reaction): Promise<void>;
+  /**
+   * Discord only: opens a thread named `name` on `message` (its id as in `target.replyTo`) in the server channel `chat`,
+   * a job's own thread, and resolves with the thread's id; undefined where no thread can be opened on it (a DM, a
+   * message already inside a thread). A message that already has a thread resolves with that thread, so a retry after
+   * an uncertain request opens no second one. Any other failure rejects.
+   */
+  openThread?(chat: string, message: string, name: string): Promise<string | undefined>;
+  /** Discord only: the current name of `thread`; rejects when `thread` is not a thread. */
+  threadName?(thread: string): Promise<string>;
+  /**
+   * Discord only: renames `thread` (when `name` is given) and archives it (`archived: true`) or keeps it open, reopening
+   * an archived one (`archived: false`). Idempotent.
+   */
+  editThread?(thread: string, edit: { readonly name?: string; readonly archived: boolean }): Promise<void>;
 }
 
 export type MessengerConfig = {
