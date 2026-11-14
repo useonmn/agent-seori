@@ -48,12 +48,24 @@ export const fromOther = (row: InboundRow): boolean => {
 const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.notOwner === true || fromOther(row));
 
 /**
- * The ids that are not the owner's alone: messages from someone else, and the owner's own messages in a thread one of
- * them started (a reply there lands in their thread, which `<source>:<chat>:<thread>` names).
+ * The ids that are not the owner's alone: messages from someone else, and every message in a thread such a message is
+ * in, unless the thread's first message is a stored message of the owner (a thread the owner started stays theirs).
+ * A thread is `<source>:<chat>:<thread>`; its first message is often never stored (it did not mention the bot).
  */
 function othersOf(rows: readonly InboundRow[]): Set<string> {
   const others = new Set(rows.filter(nonOwner).map((row) => row.id));
-  for (const row of rows) if (row.kind === "messenger" && row.thread !== undefined && others.has(`${row.source}:${row.chat}:${row.thread}`)) others.add(row.id);
+  const ownerIds = new Set(rows.filter((row) => row.kind === "messenger" && !others.has(row.id)).map((row) => row.id));
+  const threadOf = (row: InboundRow): string | undefined => (row.kind === "messenger" && row.thread !== undefined ? `${row.source}:${row.chat}:${row.thread}` : undefined);
+  // A thread someone else started (their message is its root), or one they wrote in whose root is not the owner's.
+  const shared = new Set([...others]);
+  for (const row of rows) {
+    const thread = threadOf(row);
+    if (thread !== undefined && others.has(row.id) && !ownerIds.has(thread)) shared.add(thread);
+  }
+  for (const row of rows) {
+    const thread = threadOf(row);
+    if (thread !== undefined && shared.has(thread)) others.add(row.id);
+  }
   return others;
 }
 

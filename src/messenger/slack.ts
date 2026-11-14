@@ -19,6 +19,8 @@ const THREAD_LIMIT = 20;
 const THREAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Threads per receive remembered as not involving seori, so a busy thread is looked up once (see `involved`). */
 const UNTRACKED_LIMIT = 1000;
+/** Pages (of 200) of an untracked thread `involved` reads before calling it not seori's: events wait behind it. */
+const INVOLVED_PAGES = 3;
 const DEFAULT_API = "https://slack.com/api";
 const BOT_ENV = "SEORI_SLACK_BOT_TOKEN";
 const APP_ENV = "SEORI_SLACK_APP_TOKEN";
@@ -544,18 +546,22 @@ export class SlackAdapter implements MessengerAdapter {
 
   /**
    * A live reply in a thread the cursor does not track (never seen, or pruned past THREAD_LIMIT or THREAD_MAX_AGE_MS):
-   * the thread is followed when seori posted in it or a message in it mentions the bot. A thread found not to be is
-   * remembered until it is tracked, so chatter in it costs one conversations.replies call per receive.
+   * the thread is followed when seori posted in it or someone seori answers (`sender`) mentioned the bot there. At most
+   * INVOLVED_PAGES pages are read, since events wait in order behind the lookup; a longer thread, a lookup Slack
+   * refuses or rate-limits counts as not seori's. That answer is remembered until the thread is tracked or mentioned,
+   * so chatter in it costs one lookup per receive.
    */
   private async involved(channel: string, root: string, ctx: Receiving): Promise<boolean> {
     const key = `${channel}:${root}`;
     if (ctx.untracked.has(key) || ctx.botUser === "") return false;
-    const ours = (r: SlackMessage) => r.user === ctx.botUser || mentions(r.text ?? "", ctx.botUser);
+    const ours = (r: SlackMessage) => r.user === ctx.botUser || (mentions(r.text ?? "", ctx.botUser) && this.sender(r, ctx) !== undefined);
+    let read = 0;
     let messages: SlackMessage[];
     try {
-      messages = await this.pages("conversations.replies", { channel, ts: root }, ctx, (page) => page.some(ours));
+      messages = await this.pages("conversations.replies", { channel, ts: root }, ctx, (page) => page.some(ours) || ++read >= INVOLVED_PAGES);
     } catch (e) {
-      if (!(e instanceof SlackApiError) || !(e.error === "thread_not_found" || UNREADABLE_ERRORS.has(e.error) || GONE_ERRORS.has(e.error))) throw e;
+      const refused = e instanceof SlackApiError && (e.error === "thread_not_found" || e.error === "ratelimited" || UNREADABLE_ERRORS.has(e.error) || GONE_ERRORS.has(e.error));
+      if (!refused && !(e instanceof HttpError && e.status === 429)) throw e;
       messages = [];
     }
     if (messages.some(ours)) return true;

@@ -481,56 +481,60 @@ describe("SlackAdapter receive", () => {
     expect(mock.repliesCalls.map((q) => q.get("ts"))).toEqual(["1700000000.000050", "1700000000.000060"]);
   });
 
-  test("a thread lookup Slack refuses drops that reply and keeps the session; a lookup stops paging once seori shows up", async () => {
+  test("a thread lookup Slack refuses or rate-limits drops that reply and keeps the session; paging stops at seori's message or after 3 pages", async () => {
     const mock = startMock();
     mock.repliesError["C1:1700000000.000050"] = { ok: false, error: "thread_not_found" };
     mock.repliesError["C1:1700000000.000055"] = { ok: false, error: "missing_scope", needed: "groups:history" };
+    mock.repliesError["C1:1700000000.000057"] = { ok: false, error: "ratelimited" };
     mock.repliesPaged = true;
+    const reply = (thread: string, ts: string, extra: Record<string, unknown> = {}) => ({ type: "message", user: "UX", text: "chat", ts, thread_ts: thread, ...extra });
     mock.replies["C1:1700000000.000060"] = [
-      { type: "message", user: "UBOT", bot_id: "B1", text: "done", ts: "1700000000.000070", thread_ts: "1700000000.000060" },
-      { type: "message", user: "UX", text: "later", ts: "1700000000.000080", thread_ts: "1700000000.000060" },
-      { type: "message", user: "UX", text: "later still", ts: "1700000000.000090", thread_ts: "1700000000.000060" },
+      reply("1700000000.000060", "1700000000.000070", { user: "UBOT", bot_id: "B1", text: "done" }),
+      reply("1700000000.000060", "1700000000.000080"),
+      reply("1700000000.000060", "1700000000.000090"),
     ];
+    mock.replies["C1:1700000000.000065"] = ["66", "67", "68", "69", "70"].map((n) => reply("1700000000.000065", `1700000000.0000${n}5`));
     mock.onConnect = (ws) => {
       ws.send(envelope("e1", chan("1700000000.000100", "gone thread", { thread_ts: "1700000000.000050" })));
       ws.send(envelope("e2", chan("1700000000.000200", "unreadable", { thread_ts: "1700000000.000055" })));
-      ws.send(envelope("e3", chan("1700000000.000300", "seori's thread", { thread_ts: "1700000000.000060" })));
-      ws.send(envelope("e4", dm("1700000000.000400")));
+      ws.send(envelope("e3", chan("1700000000.000250", "rate limited", { thread_ts: "1700000000.000057" })));
+      ws.send(envelope("e4", chan("1700000000.000300", "seori's thread", { thread_ts: "1700000000.000060" })));
+      ws.send(envelope("e5", chan("1700000000.000350", "long chatter thread", { thread_ts: "1700000000.000065" })));
+      ws.send(envelope("e6", dm("1700000000.000400")));
     };
-    const got = await collect(adapter(mock, home()), () => mock.acks.length >= 4);
+    const got = await collect(adapter(mock, home()), () => mock.acks.length >= 6);
     expect(got.map((m) => m.id)).toEqual(["slack:C1:1700000000.000300", "slack:D1:1700000000.000400"]);
     expect(mock.opens).toBe(1);
-    // Parent page, then seori's message on the second page: the two later pages are never read.
-    expect(mock.repliesCalls.filter((q) => q.get("ts") === "1700000000.000060").length).toBe(2);
+    const calls = (ts: string) => mock.repliesCalls.filter((q) => q.get("ts") === ts).length;
+    // Parent page, then seori's message on the second page; a thread without it stops after 3 pages of 6.
+    expect([calls("1700000000.000060"), calls("1700000000.000065")]).toEqual([2, 3]);
   });
 
-  for (const how of ["a new message", "an edit"] as const) {
-    test(`a thread found not to be seori's is looked up again once anyone mentions the bot in it (${how})`, async () => {
+  test("a thread seen as not seori's is looked up again after a mention, which counts only from someone seori answers", async () => {
+    for (const who of [OWNER, "UOTHER"]) {
       const mock = startMock();
       let socket: ServerWebSocket<unknown> | undefined;
       mock.onConnect = (ws) => {
         socket = ws;
         ws.send(envelope("e1", chan("1700000000.000100", "just chatting", { thread_ts: "1700000000.000050" })));
       };
-      const mention = { type: "message", user: "UOTHER", text: "<@UBOT> can you help", ts: "1700000000.000200", thread_ts: "1700000000.000050" };
-      const event =
-        how === "a new message"
-          ? { ...mention, channel: "C1", channel_type: "channel" }
-          : { type: "message", subtype: "message_changed", channel: "C1", channel_type: "channel", message: { ...mention, edited: { user: "UOTHER", ts: "1700000000.000250" } }, ts: "1700000000.000251" };
-      const got = await collect(adapter(mock, home()), (g) => {
+      // The mention arrives as an edit (an edit is not tracked like a delivered new message).
+      const mention = { type: "message", user: who, team: "T1", text: "<@UBOT> can you help", ts: "1700000000.000200", thread_ts: "1700000000.000050" };
+      const event = { type: "message", subtype: "message_changed", channel: "C1", channel_type: "channel", message: { ...mention, edited: { user: who, ts: "1700000000.000250" } }, ts: "1700000000.000251" };
+      const got = await collect(adapter(mock, home()), () => {
         if (mock.acks.length === 1 && socket) {
-          // Seen as not seori's; then someone the bot does not answer (others off) mentions it there.
           mock.replies["C1:1700000000.000050"] = [mention];
           socket.send(envelope("e2", event));
           socket.send(envelope("e3", chan("1700000000.000300", "yes please", { thread_ts: "1700000000.000050" })));
           socket = undefined;
         }
-        return g.length >= 1;
+        return mock.acks.length >= 3;
       });
-      expect(got.map((m) => [m.id, m.from])).toEqual([["slack:C1:1700000000.000300", OWNER]]);
+      // The owner's mention makes it seori's; a mention by someone seori does not answer (others off) does not.
+      expect(got.map((m) => m.id)).toEqual(who === OWNER ? ["slack:C1:1700000000.000200:edit:1700000000.000250", "slack:C1:1700000000.000300"] : []);
       expect(mock.repliesCalls.map((q) => q.get("ts"))).toEqual(["1700000000.000050", "1700000000.000050"]);
-    });
-  }
+    }
+  });
 
   test("catch-up applies the same rule: channel chatter is dropped, a mention and a reply in a tracked thread arrive", async () => {
     const mock = startMock();

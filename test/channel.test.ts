@@ -39,6 +39,22 @@ describe("owner-only by default", () => {
     expect(c.open({ withOthers: true }).map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2", "fake:c1:3", "watch:w1:1"]);
     expect([...c.othersIds()].sort()).toEqual(["fake:c1:2", "fake:c1:3"]);
   });
+
+  test("a thread with someone else's message is theirs unless the owner's stored message started it, even when its first message was never stored", () => {
+    const c = fresh();
+    const m = (id: string, thread: string, other = false): InboundRow => ({ id: `fake:c1:${id}`, kind: "messenger", source: "fake", chat: "c1", thread, from: other ? "u2" : "u1", ...(other ? { notOwner: true as const } : {}), at: T0, text: id });
+    // Thread 50: its first message (no mention) was never stored; someone else asked, then the owner answered there.
+    c.appendInbound(m("51", "50", true));
+    c.appendInbound(m("52", "50"));
+    // Thread 60: the owner started it; someone else joined; the owner's thread stays the owner's.
+    c.appendInbound(m("60", "60"));
+    c.appendInbound(m("61", "60", true));
+    c.appendInbound(m("62", "60"));
+    // Thread 70: only the owner.
+    c.appendInbound(m("71", "70"));
+    expect([...c.othersIds()].sort()).toEqual(["fake:c1:51", "fake:c1:52", "fake:c1:61"]);
+    expect(c.inbound().map((r) => r.id)).toEqual(["fake:c1:60", "fake:c1:62", "fake:c1:71"]);
+  });
 });
 
 describe("appendInbound", () => {
