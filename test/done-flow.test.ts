@@ -191,13 +191,18 @@ describe("done", () => {
     await expect(done(d, "fix-login")).rejects.toThrow(`lane fix-login is not done:\n- install checkout ${installDir} unreadable (fatal: index file corrupt)`);
     broken.status = false;
     expect(w.panes.has(lane.paneId)).toBe(true);
+    // A lane opened in the install checkout itself with no worktree and no Done line (an adopted session) is held too.
+    claim("adopted", "t7", { cwd: installDir });
+    await expect(done(d, "adopted")).rejects.toThrow(`lane adopted is not done:\n${held}`);
     // A lane started elsewhere is closed whatever the install checkout holds.
     claim("docs", "t6", { cwd: elsewhere });
     await done(d, "docs");
     expect(d.store.lane("docs")!.status).toBe("done");
     await git(installDir, "checkout", "--", "a.ts");
     await done(d, "fix-login");
+    await done(d, "adopted");
     expect(d.store.lane("fix-login")!.status).toBe("done");
+    expect(d.store.lane("adopted")!.status).toBe("done");
     expect(w.panes.has(lane.paneId)).toBe(false);
   });
 });

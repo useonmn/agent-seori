@@ -344,20 +344,33 @@ describe("unpushedWork", () => {
     expect(await installHold(d, mine)).toBe(`uncommitted tracked changes in the install checkout ${installDir}, which this lane was started in: b c.ts`);
     // A lane started elsewhere is not held by the install checkout.
     expect(await installHold(d, lane("docs", d.store.root))).toBeUndefined();
-    // A lane opened in the install checkout itself (before seori gave such lanes a worktree) is told once, as its own work.
-    expect(await unpushedWork(d, lane("notes", installDir))).toEqual([`uncommitted tracked changes in ${installDir}`]);
-    expect(await installHold(d, lane("notes", installDir))).toBeUndefined();
+    // A lane opened in the install checkout itself (before seori gave such lanes a worktree): with a Done line its close
+    // check reads the checkout as its own work, so it is told once; without one nothing else reads it, so it is held.
+    const notes = lane("notes", installDir);
+    expect(await unpushedWork(d, notes)).toEqual([`uncommitted tracked changes in ${installDir}`]);
+    expect(await installHold(d, { ...notes, done: "file b c.ts" })).toBeUndefined();
+    expect(await installHold(d, notes)).toBe(`uncommitted tracked changes in the install checkout ${installDir}, which this lane was started in: b c.ts`);
   });
 
-  test("an install checkout git cannot read is unreadable, never clean; only a folder that is no repository is not a checkout", async () => {
-    const { d } = await installed();
+  test("an install checkout git cannot read is unreadable, never clean; a folder that is no repository of its own is not a checkout", async () => {
+    const { d, installDir } = await installed();
     const plain = join(d.store.root, "plain");
     mkdirSync(plain);
     expect(await installState({ ...d, installDir: plain })).toEqual({ kind: "not-a-checkout" });
+    // Inside another repository (a dotfiles repo at ~), whose changes are not seori's.
+    const nested = join(installDir, "sub");
+    mkdirSync(nested);
+    writeFileSync(join(installDir, "a.ts"), "dirty");
+    expect(await installState({ ...d, installDir: nested })).toEqual({ kind: "not-a-checkout" });
     const broken = join(d.store.root, "broken");
     mkdirSync(broken);
     writeFileSync(join(broken, ".git"), "gitdir: /nonexistent/seori-test\n");
     expect(await installState({ ...d, installDir: broken })).toEqual({ kind: "unreadable", why: expect.stringMatching(/\S/) });
+    // git's English decides "no repository", whatever language the owner runs it in.
+    const locales: (string | undefined)[] = [];
+    const read = await installState({ ...d, exec: (cmd, argv, o) => (locales.push(o?.env?.LC_ALL), d.exec(cmd, argv, o)) });
+    expect(read).toEqual({ kind: "dirty", files: ["a.ts"] });
+    expect(locales).toEqual(["C", "C"]);
   });
 
   test("the worktree seori recorded stays the lane's once git no longer lists it, instead of falling back to the cwd", async () => {

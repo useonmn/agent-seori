@@ -381,16 +381,20 @@ export type InstallState =
  * broken .git) is an unreadable checkout, never a clean one.
  */
 export async function installState(d: Deps): Promise<InstallState> {
-  const read = (...argv: string[]): Promise<ExecResult> => d.exec("git", ["--no-optional-locks", "-C", d.installDir, ...argv]);
+  // LC_ALL=C: git's own words decide "no repository" below, whatever language the owner runs git in.
+  const read = (...argv: string[]): Promise<ExecResult> =>
+    d.exec("git", ["--no-optional-locks", "-C", d.installDir, ...argv], { env: { LC_ALL: "C" } });
   const failure = (r: ExecResult): InstallState => ({ kind: "unreadable", why: short(r.stderr || r.stdout) || `exit ${r.code}` });
   try {
-    const inside = await read("rev-parse", "--is-inside-work-tree");
-    if (inside.code !== 0) {
+    const top = await read("rev-parse", "--show-toplevel");
+    if (top.code !== 0) {
       // `not a git repository (or any of the parent directories)`, or `(or any parent up to mount point /)`; a .git
       // that points nowhere says something else, and is unreadable.
-      return /not a git repository \(or any/i.test(inside.stderr) || !existsSync(d.installDir) ? { kind: "not-a-checkout" } : failure(inside);
+      return /not a git repository \(or any/i.test(top.stderr) || !existsSync(d.installDir) ? { kind: "not-a-checkout" } : failure(top);
     }
-    if (inside.stdout.trim() !== "true") return { kind: "not-a-checkout" };
+    // A folder inside some other repository (a dotfiles repo at ~) is not a checkout of its own: that repository's
+    // changes are not seori's.
+    if (!top.stdout.trim() || real(top.stdout.trim()) !== real(d.installDir)) return { kind: "not-a-checkout" };
     const status = await read("status", "--porcelain", "-z", "--untracked-files=no");
     if (status.code !== 0) return failure(status);
     // `XY path` entries split on NUL; a rename or copy is followed by an entry with its old path.
@@ -452,11 +456,14 @@ export async function unpushedWork(d: Deps, lane: Lane): Promise<string[]> {
  * close clean; dori-superagent's done flow, which unpushedWork comes from, skips the cwd once the lane owns a
  * worktree. Nothing shows the lane made those changes (another lane, or the owner developing in the checkout, may
  * have), so this is a hold for the lead to resolve, never an objection sent to the lane. Undefined: no hold. A lane
- * checked in its cwd inside the checkout (no worktree) had these changes read by unpushedWork already.
+ * with a Done line checked in its cwd inside the checkout (no worktree) had these changes read by unpushedWork
+ * already; without a Done line nothing else reads them.
  */
 export async function installHold(d: Deps, lane: Lane): Promise<string | undefined> {
   if (!startedInInstall(d, lane)) return undefined;
-  if (lane.worktree === undefined && within(lane.cwd, d.installDir) && !(await laneWorktrees(d, lane)).length) return undefined;
+  if (lane.done !== undefined && lane.worktree === undefined && within(lane.cwd, d.installDir) && !(await laneWorktrees(d, lane)).length) {
+    return undefined;
+  }
   const install = await installState(d);
   if (install.kind === "dirty") {
     return `uncommitted tracked changes in the install checkout ${d.installDir}, which this lane was started in: ${install.files.join(" ")}`;

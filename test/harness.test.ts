@@ -419,7 +419,7 @@ describe("lanes started in the checkout seori runs from", () => {
     expect(opened(w)).toHaveLength(panes);
   });
 
-  test("a worktree deleted by hand that git still has registered is pruned and made again from the lane's branch", async () => {
+  test("a worktree deleted by hand that git still has registered is made again from the lane's branch; other lanes' records stay", async () => {
     const { d, brief, install, worktree } = await installed();
     await startLane(d, "fix-login", brief, { cwd: install });
     writeFileSync(join(worktree, "work.txt"), "x");
@@ -428,11 +428,15 @@ describe("lanes started in the checkout seori runs from", () => {
     const work = await git(worktree, "rev-parse", "HEAD");
     d.store.saveLane({ ...d.store.lane("fix-login")!, status: "done" });
     rmSync(worktree, { recursive: true, force: true });
+    const other = join(d.store.root, "work", "other-lane");
+    await git(install, "worktree", "add", "-q", "-b", "other-lane", other);
+    rmSync(other, { recursive: true, force: true });
     expect(await git(install, "worktree", "list", "--porcelain")).toContain("branch refs/heads/fix-login");
 
     expect((await startLane(d, "fix-login", brief, { cwd: install })).worktree).toBe(worktree);
     expect(await git(worktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe("fix-login");
     expect(await git(worktree, "rev-parse", "HEAD")).toBe(work);
+    expect(await git(install, "worktree", "list", "--porcelain")).toContain(`worktree ${other}\n`);
   });
 
   test("taking back a lane that has a worktree, in a directory outside the checkout, is refused before a pane opens", async () => {

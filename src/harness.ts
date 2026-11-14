@@ -566,9 +566,10 @@ function worktreeRecords(porcelain: string): { path: string; branch?: string }[]
  * lane moves to a worktree of its own or through a relative path, lands in the code seori is running. It is
  * `$SEORI_HOME/work/<key>` on a new branch `<key>` from origin/main (fetched first); when that directory is already a
  * worktree of the install's repository on branch `<key>` (the lane started again) it is taken as it is, and when only
- * the branch is left the worktree checks it out. A directory deleted by hand that git still has registered is pruned
- * first, so the branch is checked out again rather than refused. Anything else at that path (another branch, a
- * detached HEAD, not a worktree), or a git step that fails, refuses the start. Git never prompts here (no credential
+ * the branch is left the worktree checks it out. A directory deleted by hand that git still has registered loses that
+ * one record first (other lanes' records are left alone), so the branch is checked out again rather than refused.
+ * Anything else at that path (another branch, a detached HEAD, not a worktree), or a git step that fails, refuses the
+ * start. Git never prompts here (no credential
  * prompt, and no terminal for ssh to ask on) and the fetch is killed with everything it started after
  * FETCH_TIMEOUT_MS: a start must not hang on a remote that does not answer.
  */
@@ -591,8 +592,8 @@ async function laneWorktree(d: Deps, key: string): Promise<string> {
     throw refuse(`${dir} is on ${on}, not branch ${key}; check out ${key} there or move it away, and start again`);
   }
   if (record) {
-    const prune = await git("worktree", "prune");
-    if (prune.code !== 0) throw failed("git worktree prune", prune);
+    const remove = await git("worktree", "remove", "--force", record.path);
+    if (remove.code !== 0) throw failed("git worktree remove", remove);
   }
   mkdirSync(join(d.store.root, "work"), { recursive: true });
   const branch = await git("rev-parse", "--verify", "--quiet", `refs/heads/${key}`);
