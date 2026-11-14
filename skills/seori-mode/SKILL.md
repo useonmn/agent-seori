@@ -11,7 +11,7 @@ This skill is the setup guide and the operating summary. Steps are in `reference
 
 - `references/setup.md`: install, hc, `seori up`, config.
 - `references/messengers.md`: creating the bot, secrets, owner pairing, the first greeting.
-- `references/onboarding.md`: learning the owner's work, with consent, into omp memory and the owner profile (`~/.seori/owner.md`).
+- `references/onboarding.md`: learning the owner's work, with consent, into omp memory.
 - `references/writing.md`: how to write to the owner.
 
 ## Language
@@ -34,7 +34,7 @@ These files are in English. Talk to the owner in the language they use (often Ko
 7. **Secrets.** Write the tokens into `~/.seori/secrets.json` and `chmod 600` it. Never echo a token back to the owner, into a log, a brief or memory. Then `seori msg check <source>` must print `OK <source>: ...` (it works before the owner is known).
 8. **Owner.** Run `seori msg pair <source> --write` and ask the owner to send the bot any message. seori prints `CANDIDATE ...` for the sender and writes them as the owner into `~/.seori/messengers.json`. Greet the owner through the bot: `seori msg send --to <source>:<chat> --text '...'`, with the chat id from the CANDIDATE line.
 9. **Start.** From a shell: `seori up`. It opens the lead and duty terminals and runs the duty loop, hourly loop and messenger daemon as systemd --user units on Linux (as hc terminals on macOS). From now on the lead answers the owner's messages.
-10. **Onboarding.** Unless it has been done before (recall memory first), run `references/onboarding.md` with the owner: consent, a read-only look through each tool they allow, memory written with omp's `retain` tool, the owner profile `~/.seori/owner.md` written from it, and a short summary.
+10. **Onboarding.** Unless it has been done before (recall memory first), run `references/onboarding.md` with the owner: consent, a read-only look through each tool they allow, memory written with omp's `retain` tool, and a short summary.
 
 ## How the lead works
 
@@ -45,7 +45,6 @@ The lead runs with `prompts/lead.md` appended to its system prompt, which holds 
 - **One thread per job.** A lane started for a messenger request carries that message's id: `seori start <key> --brief FILE --thread <id> --done "<signals>"`. Its progress is posted into that thread on its own only when config.json sets `progressEveryMin` to a positive number of minutes; that is off by default (`null` is off, `0` is refused), and then keeping the thread's status message current is the lead's job. The lead answers in that thread. The thread keeps one status message edited in place (⏳ working, ✅ done) and a status emoji in its name (🔄 / ⏸ / ✅); it is closed when done and reopened, with the job's recorded lane, when the owner writes in it. Thread names, closing and reopening go through agent-messenger or the platform's bot API (`references/writing.md`).
 - **One message, readable.** A send goes out at once, so write it final and send it the moment it is written; once it is out, extend it with `seori msg edit --reply-of <id>`. Lead with the conclusion, then one item per line, breaking a long sentence across lines instead of letting a paragraph run. Typing indicator only right before sending. Finished files go to the main channel at once, through agent-messenger when installed (`references/writing.md`).
 - **Remember and watch.** "Remember this": memory plus `seori worklog add '<title>' --source <id>`. "Tell me when": the same plus a `seori watch add`, and a message at that moment.
-- **Owner profile.** `~/.seori/owner.md` (`$SEORI_HOME/owner.md`) holds who the owner is, how to address and write to them, their work, tools and accounts, and standing rules. `seori boot` prints it first, so the lead reads it every session; the lead updates it (and memory) when it learns something durable about the owner, newest decision written over the old. The owner may edit it, and their edits win over memory. No secrets and no one else's private messages in it, and nothing of it to people other than the owner.
 - **Finish the work.** Fix bugs without asking, act yourself with every tool you have instead of asking, merge with `seori merge` when the gates pass, release through the repository's documented release process once main's checks and its pre-release checks pass (ask when it documents none), and keep going until it is done. Lane work still goes to lanes.
 - **A plan waits for the owner.** A lane started with `--workflow ulw-plan` sends READY when its plan is written; show the plan to the owner and ask before any `ulw-execute`.
 - **Done is a claim.** READY needs evidence; a lane with a Done line closes on its own N minutes after READY when every signal reads back live (`seori object <key> --reason ...` stops it). Without a Done line the lead checks and closes by hand.
@@ -79,6 +78,6 @@ The lead runs with `prompts/lead.md` appended to its system prompt, which holds 
 | `seori object <key> --reason T` / `seori done <key>` | refuse a READY claim / close a lane |
 | `seori pause <key>` / `seori resume <key>` | owner said wait / go |
 | `seori worklog add\|next\|note\|close\|list` | the lead's record of owner requests |
-| `seori boot` | after a restart or compaction: the owner profile, panes, lanes, open worklog items and messages; read-only |
+| `seori boot` | after a restart or compaction: panes, lanes, open worklog items and messages; read-only |
 | `seori verify-pr <owner/repo#N>` | commit identity and test rules before a merge |
 | `seori status` | lanes and roles |
