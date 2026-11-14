@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main, up, upCheck } from "../src/cli.ts";
+import { LEAD_START_LINE, main, up, upCheck } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { recordPath } from "../src/down.ts";
 import { AGENT_OMP_CONFIG, agentOmpConfig, ompMemoryDb, Refusal, startLane } from "../src/harness.ts";
@@ -87,8 +87,18 @@ describe("seori up, once per home", () => {
     expect(plan.kind).toBe("panes");
     expect(plan.kind === "panes" ? plan.missing : []).toEqual(["lead", "duty"]);
     const panesBefore = w.panes.size;
+    // The roles the reopened lead's `seori boot` would find when it is told to run it.
+    let dutyAtStart: string | undefined;
+    const deliver = d.runtime.deliver.bind(d.runtime);
+    d.runtime.deliver = async (ref, text, opts) => {
+      if (text === LEAD_START_LINE) dutyAtStart = d.store.roles().duty?.id;
+      return deliver(ref, text, opts);
+    };
     const line = await captureLog(() => up(d, undefined));
     expect(line).toStartWith("REOPENED lead,duty lead=hc:t");
+    // The start line waits for the reopened duty pane, so the boot does not report it unregistered.
+    expect(dutyAtStart).toBe(d.store.roles().duty!.id);
+    expect(dutyAtStart).not.toBe("t2");
     expect(line).toMatch(/running=[a-z,-]*daemon-loop/);
     expect(line).toMatch(/running=[a-z,-]*duty/);
     // Exactly the two missing panes were opened, and the roles now name the new ones.
@@ -106,12 +116,14 @@ describe("seori up, once per home", () => {
     const d = w.deps();
     d.store.setRole("lead", paneRef("t1"));
     d.store.setRole("duty", paneRef("t2"));
-    w.addPane("t1", "idle");
+    const lead = w.addPane("t1", "idle");
     const before = opened(w);
     const line = await captureLog(() => up(d, undefined));
     expect(line).toStartWith("REOPENED duty lead=hc:t1 duty=hc:t");
     expect(opened(w)).toBe(before + 1);
     expect(d.store.roles().lead!.id).toBe("t1");
+    // The live lead is not new: it gets no start line (it would boot and announce a restart that did not happen).
+    expect(lead.received).not.toContain(LEAD_START_LINE);
   });
 
   test("another home's terminals under the same name are refused; a stale lead id in another instance's group is not this home", async () => {

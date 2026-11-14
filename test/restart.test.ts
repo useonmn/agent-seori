@@ -623,8 +623,8 @@ describe("the start-up line a new lead gets", () => {
     // The lead's start-up line is refused; everything else is delivered as the fake world does.
     rt.deliver = async (ref, text, opts) => (text === LEAD_START_LINE ? { kind: "not-ready", status: "working" } : real(ref, text, opts));
     const d = { ...w.deps(), runtime: rt, platform: "darwin" as const };
-    // A heartbeat dated past the two refused tries' waits, so the daemon counts as started without a real-time wait.
-    w.heartbeat(d.store.root, -(3 * LEAD_START_WAIT_MS));
+    // A heartbeat written now: the daemon counts as started on the first read (the refused tries come after it).
+    w.heartbeat(d.store.root, 0);
     const errors: string[] = [];
     const error = console.error;
     console.error = (...a: unknown[]) => void errors.push(a.join(" "));

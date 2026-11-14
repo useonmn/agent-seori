@@ -242,6 +242,13 @@ describe("seori up on hc", () => {
     const { r, d } = setup();
     const root = d.store.root;
     const UNITS = unitsOf(root);
+    // What the new lead's `seori boot` would find at the moment it is told to run it.
+    let atStart: { roles: unknown; ctl: string[] } | undefined;
+    const deliver = r.rt.deliver.bind(r.rt);
+    r.rt.deliver = async (ref, text, opts) => {
+      if (text === LEAD_START_LINE) atStart = { roles: d.store.roles(), ctl: ctlCalls() };
+      return deliver(ref, text, opts);
+    };
     const out = await captureLog(() => main(["up"], d));
     expect(out).toBe(`UP lead=hc:t1 duty=hc:t2 units=${UNITS.join(",")} home=${root} name=seori-two`);
     // omp's settings: agent-omp.yml for every agent, lead-omp.yml after it for the lead only
@@ -257,15 +264,19 @@ describe("seori up on hc", () => {
         "--cwd", root, "--name", "seori-two", "--", "env", ...UNSET, `SEORI_HOME=${root}`, "SEORI_CMD=seori", leadConfig, "sh",
       ],
       ["send", "t1", "--", ["omp", "-e", LEAD_EXTENSION, "--append-system-prompt", join(root, "prompts", "lead.md")].map(shq).join(" ")],
-      // The new lead is told to run `seori boot` and announce itself, so the owner sees it without typing anything.
-      ["send", "t1", "--if", "idle", "--", LEAD_START_LINE],
       [
         "run", "--bg", "--no-parent", "--no-notify",
         "--label", "seori.group=seori-two", "--label", "seori.role=duty", "--label", "seori.name=seori-two-duty", "--label", `seori.home=${homeTag(root)}`,
         "--cwd", root, "--name", "seori-two-duty", "--", "env", ...UNSET, `SEORI_HOME=${root}`, `PI_CONFIG_FILES=${agentOmp}`, "sh",
       ],
       ["send", "t2", "--", ["omp", "--append-system-prompt", join(root, "prompts", "duty.md")].map(shq).join(" ")],
+      // The new lead is told to run `seori boot` and announce itself, so the owner sees it without typing anything.
+      ["send", "t1", "--if", "idle", "--", LEAD_START_LINE],
     ]);
+    // It is told only once the whole home is up: duty recorded and every unit started. Told any earlier, its boot
+    // reported the duty pane as unregistered and the daemon as silent, and it told the owner about a fault.
+    expect(atStart?.roles).toEqual({ lead: { runtime: "hc", id: "t1" }, duty: { runtime: "hc", id: "t2" } });
+    expect(atStart?.ctl.at(-1)).toBe(`--user enable --now ${UNITS[1]} ${UNITS[2]}`);
     expect(d.store.roles()).toEqual({ lead: { runtime: "hc", id: "t1" }, duty: { runtime: "hc", id: "t2" } });
     expect(readdirSync(unitDir).sort()).toEqual(UNITS);
     const spec = { instance: "seori-two", home: root, cwd: root, bun: process.execPath, cli: join(import.meta.dir, "..", "src", "cli.ts"), env: process.env };
@@ -429,6 +440,19 @@ describe("seori up on hc", () => {
     expect(ctlCalls()).toEqual(["--user show-environment"]);
   });
 
+  test("an up that fails after the lead opened still hands the lead its start line, so its boot reports the fault", async () => {
+    const { r, d } = setup();
+    // A systemctl that answers but cannot enable a unit: the up fails with the lead and duty already open and recorded.
+    const ctl = join(mkdtempSync(join(tmpdir(), "seori-fakectl-")), "systemctl");
+    writeFileSync(ctl, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${ctlLog}'\ncase "$*" in *enable*) echo 'Failed to enable unit' >&2; exit 1;; esac\n`);
+    chmodSync(ctl, 0o755);
+    process.env["SEORI_SYSTEMCTL"] = ctl;
+    await expect(captureLog(() => main(["up"], d))).rejects.toThrow("Failed to enable unit");
+    expect(r.calls().filter((c) => c[0] === "send").at(-1)).toEqual(["send", "t1", "--if", "idle", "--", LEAD_START_LINE]);
+    // A second up finds the lead live and is not a fresh one, so this was the lead's only chance to get the line.
+    expect(d.store.roles().lead).toEqual({ runtime: "hc", id: "t1" });
+  });
+
   test("down with no reachable user manager still removes the unit files and closes the group", async () => {
     const { r, d } = setup();
     await captureLog(() => main(["up"], d));
@@ -472,6 +496,8 @@ describe("seori up on hc", () => {
       ["send", "t3", "--", "seori duty --interval 60"],
       ["send", "t4", "--", "seori loop"],
     ]);
+    // The new lead's start line comes after every resident process is running, so its boot finds them.
+    expect(r.calls().filter((c) => c[0] === "send").at(-1)).toEqual(["send", "t1", "--if", "idle", "--", LEAD_START_LINE]);
     expect(existsSync(unitDir)).toBe(false);
     expect(ctlCalls()).toEqual([]);
 

@@ -543,16 +543,6 @@ async function upHc(d: Deps, name: string, cwd: string, plan: UpPlan, out: (line
     const ref = await rt.create({ name, cwd, env: leadEnv, role: "lead", group: name, home });
     await startAgent(d, ref, ["-e", LEAD_EXTENSION, "--append-system-prompt", renderPrompt(d, "lead.md")]);
     d.store.setRole("lead", ref);
-    // A fresh lead is the one the owner is waiting on: seed the boot-and-greet so it speaks first instead of sitting
-    // silent until someone types "seori mode" (the boring option: the prompt says what to do, this makes it happen).
-    const warn = (why: string): void =>
-      console.error(`seori: the new lead in ${refText(ref)} did not take its start-up line (${why}); it still answers its messages`);
-    try {
-      if (!(await wakeNewLead(d, ref))) warn("its agent was not ready for it");
-    } catch (e) {
-      // DeliveryUncertain: the line may be in the pane already, so it is not typed again.
-      warn(e instanceof DeliveryUncertain ? `it may have arrived: ${e.message}` : e instanceof Error ? e.message : String(e));
-    }
     return ref;
   };
   const openDuty = async (): Promise<SessionRef> => {
@@ -564,31 +554,50 @@ async function upHc(d: Deps, name: string, cwd: string, plan: UpPlan, out: (line
   // A pane the plan found live is kept as it is; only a missing one is opened (never a second lead).
   const livePanes = plan.kind === "panes" ? plan.live : {};
   const leadRef = panes.includes("lead") ? await openLead() : livePanes.lead;
-  const dutyRef = panes.includes("duty") ? await openDuty() : livePanes.duty;
-  if (plan.kind === "panes") {
-    // Reopened panes only: the units and the other panes are running and were not touched.
+  try {
+    const dutyRef = panes.includes("duty") ? await openDuty() : livePanes.duty;
+    if (plan.kind === "panes") {
+      // Reopened panes only: the units and the other panes are running and were not touched.
+      out(
+        `REOPENED ${panes.join(",")} lead=${refText(leadRef!)} duty=${refText(dutyRef!)} ` +
+          `running=${plan.runners.join(",") || "panes"} home=${home} name=${name}`,
+      );
+      return;
+    }
+    if (!usesSystemdUnits(d)) return await upHcTerminals(d, name, cwd, env, leadRef!, dutyRef!, out);
+    const [daemonUnit, dutyUnit, hourlyUnit] = units;
+    await ctl(["daemon-reload"]);
+    const daemonStarted = d.now();
+    await ctl(["enable", "--now", daemonUnit!]);
+    // The duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
+    const beat = await heartbeatSince(d.store.root, daemonStarted, {
+      onSlow: () => console.error(`waiting for the messenger daemon (${daemonUnit}) to start (a first start can be slow)...`),
+    });
+    if (!beat) {
+      console.error(`WARNING: the messenger daemon wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check: systemctl --user status ${daemonUnit}`);
+    }
+    await ctl(["enable", "--now", dutyUnit!, hourlyUnit!]);
     out(
-      `REOPENED ${panes.join(",")} lead=${refText(leadRef!)} duty=${refText(dutyRef!)} ` +
-        `running=${plan.runners.join(",") || "panes"} home=${home} name=${name}`,
+      `UP lead=${refText(leadRef!)} duty=${refText(dutyRef!)} units=${[daemonUnit, dutyUnit, hourlyUnit].join(",")} home=${home} name=${name}`,
     );
-    return;
+  } finally {
+    // A fresh lead is the one the owner is waiting on: seed the boot-and-greet so it speaks first instead of sitting
+    // silent until someone types "seori mode" (the boring option: the prompt says what to do, this makes it happen).
+    // It goes out last, once duty is recorded and the daemon and loops run: a boot run any earlier reports the duty
+    // pane as unregistered and the daemon as silent, and the lead tells the owner about a fault that is not there. An up
+    // that fails after the lead opened still hands it the line, so its boot reports the faults that are there: the next
+    // up finds the lead live and would never hand it over.
+    if (panes.includes("lead")) {
+      const warn = (why: string): void =>
+        console.error(`seori: the new lead in ${refText(leadRef!)} did not take its start-up line (${why}); it still answers its messages`);
+      try {
+        if (!(await wakeNewLead(d, leadRef!))) warn("its agent was not ready for it");
+      } catch (e) {
+        // DeliveryUncertain: the line may be in the pane already, so it is not typed again.
+        warn(e instanceof DeliveryUncertain ? `it may have arrived: ${e.message}` : e instanceof Error ? e.message : String(e));
+      }
+    }
   }
-  if (!usesSystemdUnits(d)) return upHcTerminals(d, name, cwd, env, leadRef!, dutyRef!, out);
-  const [daemonUnit, dutyUnit, hourlyUnit] = units;
-  await ctl(["daemon-reload"]);
-  const daemonStarted = d.now();
-  await ctl(["enable", "--now", daemonUnit!]);
-  // The duty loop reports a missing heartbeat as a daemon outage, so it starts once the daemon is up.
-  const beat = await heartbeatSince(d.store.root, daemonStarted, {
-    onSlow: () => console.error(`waiting for the messenger daemon (${daemonUnit}) to start (a first start can be slow)...`),
-  });
-  if (!beat) {
-    console.error(`WARNING: the messenger daemon wrote no heartbeat within ${DAEMON_START_MS / 1000} s; check: systemctl --user status ${daemonUnit}`);
-  }
-  await ctl(["enable", "--now", dutyUnit!, hourlyUnit!]);
-  out(
-    `UP lead=${refText(leadRef!)} duty=${refText(dutyRef!)} units=${[daemonUnit, dutyUnit, hourlyUnit].join(",")} home=${home} name=${name}`,
-  );
 }
 /**
  * The line a freshly opened lead gets, so it announces itself instead of waiting for the owner to find it: run the boot
