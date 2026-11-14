@@ -44,7 +44,8 @@ import {
   type UnitSpecKind,
 } from "./systemd.ts";
 import {
-  detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript, runningRestart,
+  detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, pausedClosedLine, pausedLanesARestartCloses, restartLogPath,
+  restartScript, runningRestart,
 } from "./restart.ts";
 import { hcReason } from "./runtime/hc/exec.ts";
 
@@ -62,9 +63,11 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               down then up for this home, safe from inside the lead or duty pane: the
                                               work runs in a detached child (setsid/systemd-run/nohup), because down closes the
                                               caller's pane. Refused while a lane is working unless --force (which names
-                                              the keys it ended), and while another restart of this home runs; keeps the
-                                              logon hook; DIR defaults to the cwd this home's units run in, else
-                                              $SEORI_HOME; new refs go to $SEORI_HOME/restart.log, --follow prints them
+                                              the keys it ended), and while another restart of this home runs; paused
+                                              lanes do not block, and each is named with the command that resumes it
+                                              (PAUSED-CLOSED); keeps the logon hook; DIR defaults to the cwd this home's
+                                              units run in, else $SEORI_HOME; new refs go to $SEORI_HOME/restart.log,
+                                              --follow prints them
   seori autostart install [--cwd DIR]          write and enable the logon hook (a systemd --user oneshot running
                                               seori up --wait-hc --cwd DIR), so the lead and duty panes come back after a
                                               reboot; DIR defaults to the cwd this home's units run in, else $SEORI_HOME
@@ -727,6 +730,8 @@ async function homeTerminals(d: Deps, name: string): Promise<SessionRef[]> {
  * process only starts that child and prints where it reports; the new lead and duty refs land in the log.
  *
  * A restart that would end working lanes is refused unless `--force` is given, and then says which keys it ended.
+ * Paused lanes never block it, but their panes close too: each is named with the command that brings it back, here and
+ * in the log.
  * Without --cwd the agents come back where the home's units run (the cwd its last up or autostart install was given),
  * else in $SEORI_HOME, as `seori up` would open them.
  */
@@ -744,12 +749,18 @@ export async function restart(
   const unitsCwd = usesSystemdUnits(d) ? unitCwd(unitDir(), loadConfig(home).name, home) : undefined;
   const cwd = cwdFlag === undefined ? (unitsCwd ?? home) : resolve(cwdFlag);
   const log = restartLogPath(home);
-  const lanes = lanesARestartEnds(d.store.lanes());
-  if (lanes.length > 0 && !force) throw new Refusal(lanesRefusal(lanes, d.seoriCmd));
+  const all = d.store.lanes();
+  const lanes = lanesARestartEnds(all);
+  const paused = pausedLanesARestartCloses(all);
+  if (lanes.length > 0 && !force) throw new Refusal(lanesRefusal(lanes, paused, d.seoriCmd));
   // One worker per home: a second would down the first's half-opened set (and the worker refuses itself as well).
   const worker = runningRestart(home);
   if (worker !== undefined) throw new Refusal(`a restart of this home is already running (pid ${worker}); its steps are in ${log}`);
-  const script = restartScript({ home, cwd, seoriCmd: d.seoriCmd, log });
+  const notes = [
+    ...lanes.map((lane) => `ENDED ${lane.key} (--force: a restart closes every terminal of this home, lane panes included)`),
+    ...paused.map((lane) => pausedClosedLine(lane, d.seoriCmd)),
+  ];
+  const script = restartScript({ home, cwd, seoriCmd: d.seoriCmd, log, notes });
   const ways = detachWays(script, deps.has ?? ((bin) => Bun.which(bin) !== null), `seori-restart-${homeTag(home)}`, process.env);
   if (ways.length === 0) throw new Refusal(noDetachRefusal());
   const spawn = deps.spawn ?? (async (a: readonly string[], at: string) => {
@@ -769,7 +780,7 @@ export async function restart(
     out(`RESTART_FAILED could not detach the relaunch (${failed.join(", ")}); nothing was stopped. See ${log}`);
     return 1;
   }
-  for (const lane of lanes) out(`ENDED ${lane.key} (--force: a restart closes every terminal of this home, lane panes included)`);
+  for (const note of notes) out(note);
   out(
     `RESTARTING detached; this pane is closed by the down. ` +
       `The new refs and every step land in ${log} (seori restart --follow prints them as they come)`,

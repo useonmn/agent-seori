@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { spawnExec } from "../src/runtime/exec.ts";
 import { blockedText, fileActivity, laneUsage, reachedCeilings, superviseTick } from "../src/supervision.ts";
+import { startAgain } from "../src/restart.ts";
 import type { Lane, LaneStatus } from "../src/store.ts";
 import { World, paneRef } from "./fake.ts";
 
@@ -351,7 +352,7 @@ describe("paused lanes", () => {
     expect(lead.received).toEqual([]);
   });
 
-  test("a gone pane marks the paused lane lost and tells the lead, so the key can be started again", async () => {
+  test("a gone pane marks the paused lane lost and tells the lead it was paused, with the command that resumes it", async () => {
     const { w, d, lead, lane } = setup("paused", { pausedFrom: "working" });
     w.panes.delete("t5");
     w.clock = 5 * MIN;
@@ -359,7 +360,10 @@ describe("paused lanes", () => {
     expect(lane().status).toBe("lost");
     expect(lane().pausedFrom).toBeUndefined();
     expect(lane().log.at(-1)).toEqual({ at: 5 * MIN, kind: "lost", text: "pane disappeared while paused" });
-    expect(lead.received).toEqual(["[LOST fix-a] pane hc:t5 closed while the lane was paused"]);
+    expect(lead.received).toHaveLength(1);
+    expect(lead.received[0]).toStartWith("[LOST fix-a] pane hc:t5 closed while the lane was paused");
+    expect(lead.received[0]).toEndWith(`to resume it: ${startAgain(lane(), d.seoriCmd)}`);
+    expect(startAgain(lane(), d.seoriCmd)).toBe("seori start fix-a --brief '/dev/null' --cwd '/repo' --workflow none");
     expect(await superviseTick(d)).toEqual([]);
   });
 });

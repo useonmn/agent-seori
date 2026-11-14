@@ -84,6 +84,14 @@ seori restart --follow
 
 `seori down all` closes the terminal the command runs in, so a restart cannot be its own pane's child: the command starts a detached worker that survives the pane being closed, then reports where that worker writes. It tries `setsid --fork`, then `systemd-run --user` (with `PATH` and the caller's `SEORI_*` and `HC_*` variables passed on, since a transient unit gets the user manager's environment; the messenger tokens never are), then `nohup` with SIGHUP ignored, and takes the first that starts. On macOS, which has no `setsid`, that is `nohup`: the worker stays in the pane's session and process group, so it outlives a close that hangs the pane up (SIGHUP) but not one that kills the whole process group; no test closes a real hc pane, so if a restart from a macOS pane dies with it, run `seori restart` from a shell outside the group. One restart of a home runs at a time: the worker holds `$SEORI_HOME/run/restart.pid`, and a second `seori restart` is refused while it runs. The worker checks that hc answers, runs `seori down all --keep-autostart` (a restart keeps the logon hook), and runs the up only once the down has finished; every step and the final exit code go to `$SEORI_HOME/restart.log`, because the pane that asked is gone by then. Without `--cwd` the up opens the agents where the home's units run (the cwd its last `seori up` or `autostart install` was given), else in `$SEORI_HOME`. `--follow` prints that log until the worker ends. Without any way to detach (no `setsid`, `systemd-run` or `nohup`) it refuses, non-zero, before stopping anything. A restart closes every lane pane of the home, so it is refused while a lane is `working`; `--force` goes ahead and names the keys it ended, whose records stay and can be started again. Never hand-roll a restart script: this is the only supported way, because it is the only one that handles its own pane closing.
 
+Paused lanes do not block a restart, but `down all` closes their panes like any other. So the restart names each paused lane it closes, with the command that resumes it, both in its own output and in `restart.log` (a refusal for working lanes names them too):
+
+```
+PAUSED-CLOSED docs: paused, and the down closes its pane (record and brief stay); to resume it later: seori start docs --brief '/home/you/.seori/briefs/docs.md' --cwd '/home/you/src/docs' --workflow none
+```
+
+After the up, the first duty pass finds the pane gone and marks the lane lost, and the new lead gets `[LOST <key>] pane hc:t5 closed while the lane was paused ...` ending with the same `seori start` command, so the lead knows the lane was waiting, not failed, and can bring it back when what it waited on clears. A `seori boot` that runs before that pass shows the lane as `VANISHED <key> ... status=paused` with the same command. The command carries every launch setting in the lane's record (`--thread`, `--done`, the ceilings, `--activity-path`, `--model`, and `--workflow`, `none` when it had none), so the lane comes back as it was started, not on today's config defaults.
+
 After `seori up` or `seori restart` opens a new lead, seori hands it a start-up line: run `seori boot`, then post one short line to the owner (the thread of the oldest open worklog item, else the owner's direct message) saying seori is back, with the open item count and the lanes still open. The line goes out last, once the duty pane is recorded and the daemon and loops run, so the boot finds the whole home instead of reporting a duty pane or daemon that is still starting; an up that fails after the lead opened still hands it the line, so its boot reports what is missing. The owner therefore hears from a restarted seori without typing anything; `prompts/lead.md` says the same, so a lead started by hand does it too.
 
 `seori down` stops the processes, disables and removes the units and closes every terminal in the group, lanes included. Run it from a shell outside the group: run from inside the lead's terminal, it closes that terminal last and its own output stops there. `down all` also removes the logon hook, unless given `--keep-autostart` (what `seori restart` runs); `down duty`, `down loop` and `down daemon` leave it in place.
@@ -135,9 +143,11 @@ seori restart [--cwd DIR] [--force] [--follow]
                                             down then up for this home, safe from inside the lead or duty pane: the
                                             work runs in a detached child (setsid/systemd-run/nohup), because down closes the
                                             caller's pane. Refused while a lane is working unless --force (which names
-                                            the keys it ended), and while another restart of this home runs; keeps the
-                                            logon hook; DIR defaults to the cwd this home's units run in, else
-                                            $SEORI_HOME; new refs go to $SEORI_HOME/restart.log, --follow prints them
+                                            the keys it ended), and while another restart of this home runs; paused
+                                            lanes do not block, and each is named with the command that resumes it
+                                            (PAUSED-CLOSED); keeps the logon hook; DIR defaults to the cwd this home's
+                                            units run in, else $SEORI_HOME; new refs go to $SEORI_HOME/restart.log,
+                                            --follow prints them
 seori autostart install [--cwd DIR]          write and enable the logon hook (a systemd --user oneshot running
                                             seori up --wait-hc --cwd DIR), so the lead and duty panes come back after a
                                             reboot; DIR defaults to the cwd this home's units run in, else $SEORI_HOME
