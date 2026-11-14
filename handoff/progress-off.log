@@ -1,0 +1,56 @@
+# progress-off verification 2026-11-14T01:55:19Z head=a519ab4
+
+## bun run typecheck
+$ tsc --noEmit
+typecheck exit=0
+
+## bun test ./test/ --timeout 60000
+seori: lane fix-a: cost not recorded (cost ledger is locked by another process (/tmp/seori-run-lUQmpc/seori-test-R23MZ0/cost.jsonl.lock))
+seori: no lead pane registered; message kept only in the lane log
+
+ 818 pass
+ 31 skip
+ 0 fail
+ 3028 expect() calls
+Ran 849 tests across 69 files. [36.83s]
+bun test exit=0
+
+## test/progress.test.ts (new coverage)
+bun test v1.4.4 (38afee6c8)
+
+ 19 pass
+ 0 fail
+ 56 expect() calls
+Ran 19 tests across 1 file. [49.00ms]
+
+## real-hook smoke test (spawned process, temp SEORI_HOME)
+events: [{"lane":"fix-a","action":"posted","detail":"via hooks.threadReply"}]
+TEXT=Progress (from the lane's last report): wrote (state path) and /tmp/log.txt <pane>
+
+## out-of-tree proof: posting off does not affect report/ready (no config.json)
+report()               => DELIVERED
+lane log has report    => true
+lead received          => [REPORT fix-a] milestone
+ready()                => DELIVERED; lane status => ready
+lead received          => [READY fix-a] all done + evidence
+progressTick           => [] (nothing due)
+posted                 => absent
+messenger sends        => 0
+
+## hook failure path, real spawn (missing binary)
+events => [{"lane":"fix-a","action":"post-failed","detail":"hooks.threadReply: Executable not found in \$PATH: \"no-such-binary-xyz\""}]
+posted absent => true (report kept for the next tick)
+
+## rubric audit (pre-review, frozen tree)
+flush/injection: hostile report x"; touch /tmp/PWNED; `touch PWNED2` $(touch PWNED3) reached the hook as ONE literal argv element
+  => no files created; Bun.spawn([cmd,...argv]) uses no shell
+fractional cadence: 0.5 => not due at 29s, due at 30s (match: blockedPromptMin precedent)
+boundaries: 14m59.999s not due, 15m exact due; post-to-post = 15m after last post
+duty with posting off: nudge-1 + stalled still fire, 0 post events, 0 messenger sends, lane+report intact
+stateRoot omitted (latent, not reachable): patch saved separately
+
+## CLI-level check (real cli.ts, temp SEORI_HOME)
+can-launch with progressEveryMin:0   => exit 2, "<path>.progressEveryMin must be a positive number of minutes, or null (off)"
+can-launch with progressEveryMin:null => exit 0
+can-launch with progressEveryMin:15   => exit 0
+test inventory: main 9 -> branch 19, zero main-only test names (no test weakened or removed)
