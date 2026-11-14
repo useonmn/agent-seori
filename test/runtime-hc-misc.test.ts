@@ -64,23 +64,24 @@ describe("close, list, groups, self", () => {
     expect(r.calls()).toEqual([["kill", "t1"]]);
   });
 
-  test("list filters by the seori.group label and keeps only live terminals", async () => {
+  test("list filters by the seori.group label and keeps only live terminals; only a reporting program is an agent", async () => {
     const r = rig({
-      t1: terminal({ labels: { "seori.group": "g1" }, argv: ["env", "bash"] }),
+      // A shell nothing reports from: hc still names its program as `agent`, which is not an agent session.
+      t1: terminal({ labels: { "seori.group": "g1" }, argv: ["env", "bash"], status: null }),
       t2: terminal({ labels: { "seori.group": "g2" } }),
       t3: terminal({ labels: { "seori.group": "g1" }, argv: ["omp"] }),
       t4: terminal({ labels: { "seori.group": "g1" }, state: "finished" }),
     });
     expect(await r.rt.list({ group: "g1" })).toEqual([
-      { ref: { runtime: "hc", id: "t1", group: "g1" }, cwd: "/w", agent: "env" },
-      { ref: { runtime: "hc", id: "t3", group: "g1" }, cwd: "/w", agent: "omp" },
+      { ref: { runtime: "hc", id: "t1", group: "g1" }, cwd: "/w" },
+      { ref: { runtime: "hc", id: "t3", group: "g1" }, cwd: "/w", status: "idle", agent: "omp" },
     ]);
     expect(r.calls()).toEqual([["ls", "--label", "seori.group=g1"]]);
   });
 
   test("list without a group lists every live terminal", async () => {
     const r = rig({ t1: terminal({ name: "lead" }), t2: terminal({ state: "finished" }) });
-    expect(await r.rt.list()).toEqual([{ ref: { runtime: "hc", id: "t1" }, name: "lead", cwd: "/w", agent: "omp" }]);
+    expect(await r.rt.list()).toEqual([{ ref: { runtime: "hc", id: "t1" }, name: "lead", cwd: "/w", status: "idle", agent: "omp" }]);
     expect(r.calls()).toEqual([["ls"]]);
   });
 

@@ -154,7 +154,11 @@ export async function list(exec: Exec, group: string | undefined, homes = false)
 }
 
 function info(t: Record<string, unknown>, id: string, group: string | undefined, home: string | undefined): SessionInfo {
-  const [name, cwd, status, agent] = [str(t["name"]), str(t["cwd"]), statusWord(t["status"]), str(t["agent"])];
+  const [name, cwd, status] = [str(t["name"]), str(t["cwd"]), statusWord(t["status"])];
+  // hc lists the terminal's own command (`sh`, or `env` for the terminals seori opens) as the `agent` of a terminal
+  // nothing reports from; only one with a reported status has an agent, so a shell or a loop terminal is never taken
+  // for an agent session.
+  const agent = status === undefined ? undefined : str(t["agent"]);
   return {
     ref: { runtime: "hc", id, ...(group === undefined ? {} : { group }) },
     ...(name === undefined ? {} : { name }),

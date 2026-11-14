@@ -161,7 +161,8 @@ seori inbox list <pane|role|key>             queued entries: index, state (queue
 seori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
 seori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
 seori duty [--once] [--interval SECONDS]     flush inboxes, nudge silent lanes, escalate, detect lost lanes, close Done lanes,
-                                            ceilings and stalls, host guard, progress posts to the owner's thread
+                                            ceilings and stalls, host guard, progress posts to the owner's thread,
+                                            dead agents and agent sessions nothing owns
 seori duty stop [--text WHY] | resume | status   kill switch
 seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                             hourly: sync backlog, audit missed work, start the next item, ask decisions
@@ -349,15 +350,21 @@ When the pane does not confirm within about 6 seconds, the command prints `PAUSE
 
 A paused lane gets no nudges and no ceiling or stall reports. A report from a paused lane (woken by a watch or a message) is passed to the lead but never ends the pause; only `seori resume` does. If its pane reads working on two duty passes in a row, the lead gets `[WORKING-WHILE-PAUSED <key>]`, once per working stretch, and the lane stays paused. A paused lane whose pane disappears is marked lost and the lead gets `[LOST <key>]`, like any other lane. The lead's rules tell it to pause in the same turn when the owner says wait, stop or hold on (잠깐, 멈춰, 기다려). Pausing a lane that runs an omp-ulw workflow is safe the same way; resume continues from the workflow's own ledger, but subagents already running finish their current step.
 
-## Supervision (ceilings and stalls)
+## Supervision (ceilings, stalls and pane health)
 
-The duty loop watches every open lane for two things and tells the lead once each. seori never messages, pauses or kills a lane for them; the lead decides.
+The duty loop watches every open lane for the things below and tells the lead once each. seori never messages, pauses or kills a lane for them; the lead decides.
 
 Ceilings. A lane can have a wall-clock, a token and a cost ceiling. `seori start --wall-minutes N --token-limit N --cost-limit N` sets them for one lane; `none` switches one off, and a flag left out takes the config default. A lane started with none of these flags follows `supervision.defaults` in `config.json`, which are all off by default. Wall-clock time counts from the lane's start. Tokens and cost are summed over the assistant messages in the lane's agent session file, whose path comes from the runtime. hc reports no such path today, so the totals read as unknown and only the wall-clock ceiling applies; a total that cannot be read never reaches a ceiling and is shown once as a `usage-unknown` duty event. A reached ceiling is told as `[BLOCKED <key>] <which> ceiling reached (<reading>, limit <limit>); the lane keeps running until you decide`, once per ceiling and limit (a raised limit is told again once reached), and logged on the lane.
 
 Cost record. When a lane closes (`seori done`, or seori's own close after a Done line), what it spent is read from its agent session file before the session closes and appended to `$SEORI_HOME/cost.jsonl` as one line: `{ "key", "closeKey": "<key>@<createdAt>", "tokens", "costUsd", "at" }`. A total that cannot be read (hc reports none today) is `null`, never 0. A retried close adds no second line. The file stays local; nothing is sent anywhere unless you set `hooks.recordCost`, which then runs once with the reading. A failure here is one stderr line and never keeps a lane open.
 
 Stalls. A working lane that the runtime reads working but that has sent no report and changed no file for `supervision.hungAfterMin` minutes (default 20) is told as `[STALLED <key>] ...`, once per stall. A file change is a new HEAD or a change in the paths `git status` lists in the lane's cwd (`node_modules` left out), with their times and sizes. Paths given with `seori start --activity-path PATH` (repeatable) or in `supervision.activityPaths`, relative to the lane's cwd, count too, git checkout or not: a file counts when it is written (a symlink's target is read), a directory only when an entry in it is added, removed or renamed, so list a file itself to catch rewrites inside a directory. A lane writing a log outside its checkout is then not reported stalled while it writes; outside a git checkout and without activity paths only reports count. A waiting lane said it waits, so its quiet is no stall. The change history is kept in `duty/supervision.json`.
+
+Dead agents. A working, waiting or paused lane whose pane shows a shell in front (its agent exited, crashed or was suspended with Ctrl+Z) on two duty passes in a row is told as `[DEAD <key>] ...`, once per spell; the duty pane is watched the same way and told as `[DEAD duty] ...`. Such a lane gets no nudges, since nothing can be typed into a shell; its record stays, so the lead can close the pane and start the lane again. A READY lane is left alone.
+
+Agent sessions nothing owns. An agent session (a terminal whose program reports a status; a plain shell is none, although hc lists its command as `agent`) in the instance's group that no role and no open lane owns for 5 minutes is told as `[UNREGISTERED <pane>] ...`, once, with the `seori adopt` command that makes it a lane. The wait covers a lane's start, when its terminal runs before its record is written. `seori boot` lists the same sessions on demand.
+
+For both, a pass less than 30 seconds after the last one (a `seori duty --once` beside the loop) does not count again, a lane record naming a terminal outside the group (an id reused after an hc restart) is not reported, and nothing is marked told while no lead is recorded, so a lead recorded later still hears of it. The messages give the hc commands with the bare terminal id (`hc read t5`). Spells are kept in `duty/panes.json`.
 
 ## Worklog
 
@@ -638,7 +645,7 @@ To uninstall, run `seori down` (it stops the processes, removes the systemd unit
 
 ## State
 
-JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, the host guard state (`duty/guard.json`) and the stall history (`duty/supervision.json`), `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `checkpoints/` for each lane's checkpoint journal (`<key>.jsonl`), `heavy/` for the heavy slot locks (`<n>.lock`), `lessons.jsonl`, `worklog.jsonl` and the `worklog.md` rendered from it, `config.json`, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
+JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, the host guard state (`duty/guard.json`), the stall history (`duty/supervision.json`) and the pane-health spells (`duty/panes.json`), `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `checkpoints/` for each lane's checkpoint journal (`<key>.jsonl`), `heavy/` for the heavy slot locks (`<n>.lock`), `lessons.jsonl`, `worklog.jsonl` and the `worklog.md` rendered from it, `config.json`, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
 
 ## Several instances on one PC
 
@@ -737,6 +744,7 @@ None. seori sends nothing anywhere.
 - Runtime: hc only. Sessions are grouped by the `seori.group` label (dori uses its own key), so seori and dori never claim each other's terminals.
 - Agent: omp only. Any other agent value is refused.
 - Linux runs the daemon and loops as `systemd --user` units; macOS keeps them in hc terminals.
+- The duty loop also does what Dori mode's `dead-panes` monitor does: a lane or duty pane whose agent left it is told as `[DEAD ...]`, and an unowned agent session as `[UNREGISTERED ...]`.
 - Lanes start with a `/goal` kickoff, so each lane runs in goal mode. Briefs carry an observable exit condition.
 - The reviewer is a non-interactive agent run isolated from the repository's AGENTS.md, skills, rules and extensions.
 - No telemetry.

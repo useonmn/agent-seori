@@ -17,6 +17,7 @@ import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { OMP_ULW_URL, type Workflow, workflowPrefix } from "./workflow.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
+import { agentGone, panesTick } from "./panes.ts";
 import { progressTick } from "./progress.ts";
 import { superviseTick } from "./supervision.ts";
 import { checkSignals, parseDone } from "./signals.ts";
@@ -588,7 +589,8 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   for (const listed of d.store.lanes()) {
     if (!dutyOwned(listed)) continue;
     try {
-      const st = await d.runtime.status(listed.sessionRef);
+      const read = await d.runtime.probe(listed.sessionRef);
+      const st = read.status;
       const now = d.now();
       // Re-read: a pause, report, ready or done may have landed while the pane was read (or an earlier lane nudged).
       const lane = d.store.lane(listed.key);
@@ -617,7 +619,8 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
           if (l.alerts) for (const k of Object.keys(l.alerts)) if (k.startsWith("blocked-prompt:")) delete l.alerts[k];
         });
       }
-      if (lane.status === "waiting") continue;
+      // No agent in front (it exited or was suspended): a nudge would only queue, and panesTick tells the lead [DEAD].
+      if (lane.status === "waiting" || agentGone(read)) continue;
       const silentMin = (now - lane.lastActivityAt) / 60_000;
       const due = NUDGE_MINUTES[lane.nudges];
       if (due === undefined || silentMin < due) continue;
@@ -644,10 +647,10 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     // An unwritable lead dir must not stop lane and inbox duty (a broken messengers.json is told to the lead, not thrown).
     events.push({ action: "channel-failed", detail: failureDetail(e) });
   }
-  // The done window, ceilings and stalls, the host guard and progress posts: each its own module,
+  // The done window, ceilings and stalls, the host guard, progress posts and pane health: each its own module,
   // each guarded so one failing never stops the others.
   const ticks: [string, (d: Deps) => Promise<DutyEvent[]>][] = [
-    ["autoclose", autoCloseTick], ["supervise", superviseTick], ["guard", guardTick], ["progress", progressTick],
+    ["autoclose", autoCloseTick], ["supervise", superviseTick], ["guard", guardTick], ["progress", progressTick], ["panes", panesTick],
   ];
   for (const [name, tick] of ticks) {
     try {

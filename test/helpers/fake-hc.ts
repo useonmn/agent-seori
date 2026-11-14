@@ -132,12 +132,15 @@ export function answer(s: FakeState, args: string[]): Out {
     const shown = all.filter(([, t]) => t.state === "live" || args.includes("--all"));
     return ok({
       hidden_finished: all.length - shown.length,
+      // As real hc (0.1.21): `agent` is the foreground program even for a silent shell, and `status` (the reported
+      // state word) is there only once an agent has reported.
       terminals: shown.map(([address, t]) => ({
         address,
         agent: base(t.argv?.[0] ?? t.foreground?.name ?? "bash"),
         cwd: t.cwd ?? "/w",
         state: t.state,
         turn: t.turn,
+        ...(t.status === null ? {} : { status: t.status.state }),
         ...(t.name === undefined ? {} : { name: t.name }),
       })),
     });

@@ -35,6 +35,7 @@ export type SessionInfo = {
   readonly title?: string;
   readonly cwd?: string;
   readonly status?: AgentStatus;
+  /** The program that reports this session's status (omp); absent on a terminal no agent reports from, such as a shell. */
   readonly agent?: string;
   /** hc, listed with `homes`: the seori.home label (homeTag of the home that opened it); absent on an unlabelled terminal. */
   readonly home?: string;

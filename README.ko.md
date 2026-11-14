@@ -162,7 +162,8 @@ seori inbox list <pane|role|key>             모아 둔 메시지 목록: 번호
 seori inbox ack <pane|role|key> <index>      보류(held) 메시지를 지웁니다: 실제로 전해졌을 때
 seori inbox resend <pane|role|key> <index>   보류 메시지를 풀어 줍니다: 다음에 다시 전합니다
 seori duty [--once] [--interval SECONDS]     메시지 전달, 보고 없는 레인 깨우기, 리드에게 알리기, 사라진 레인 찾기, Done 레인 닫기,
-                                            한도와 멈춤 알림, 컴퓨터 자원 감시, 주인 스레드에 진행 상황 올리기
+                                            한도와 멈춤 알림, 컴퓨터 자원 감시, 주인 스레드에 진행 상황 올리기,
+                                            에이전트가 빠진 패널과 아무도 맡지 않은 에이전트 세션 알리기
 seori duty stop [--text WHY] | resume | status   비상 정지
 seori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                             시간 단위: 백로그 정리, 놓친 일 점검, 다음 일 시작, 질문하기
@@ -342,15 +343,21 @@ seori resume fix-flaky-login
 
 멈춘 레인에는 깨우기 알림도, 한도나 멈춤 알림도 가지 않습니다. 멈춘 레인이 감시나 메시지에 깨어나 보고를 보내도 그 보고는 리드에게 가지만, 멈춤은 풀리지 않습니다. 멈춤은 `seori resume`으로만 풉니다. 멈춘 레인의 창이 듀티 차례 두 번 연속 일하는 중으로 보이면, 일하는 구간마다 한 번씩 리드에게 `[WORKING-WHILE-PAUSED <key>]`를 보냅니다. 레인은 멈춘 상태로 남습니다. 멈춘 레인의 창이 사라지면 다른 레인처럼 사라진(lost) 레인으로 기록하고 리드에게 `[LOST <key>]`를 보냅니다. 리드 규칙은 주인이 잠깐, 멈춰, 기다려(wait, stop, hold on)라고 하면 같은 차례 안에 멈추라고 시킵니다. omp-ulw 워크플로로 도는 레인도 같은 방식으로 안전하게 멈춥니다. 다시 켜면 워크플로 자기 장부에서 이어 가지만, 이미 돌고 있던 하위 에이전트는 지금 단계를 마칩니다.
 
-## 감독(한도와 멈춤)
+## 감독(한도, 멈춤, 패널 상태)
 
-듀티 루프는 열린 레인마다 두 가지를 지켜보고, 각각 한 번씩 리드에게 알립니다. seori는 이 일로 레인에 메시지를 보내거나, 멈추거나, 끄지 않습니다. 결정은 리드가 합니다.
+듀티 루프는 열린 레인마다 아래 것들을 지켜보고, 각각 한 번씩 리드에게 알립니다. seori는 이 일로 레인에 메시지를 보내거나, 멈추거나, 끄지 않습니다. 결정은 리드가 합니다.
 
 한도. 레인마다 걸린 시간, 토큰, 비용 한도를 둘 수 있습니다. `seori start --wall-minutes N --token-limit N --cost-limit N`은 그 레인 하나의 한도를 정합니다. `none`은 그 한도를 끄고, 빠진 플래그는 설정의 기본값을 씁니다. 이 플래그를 하나도 주지 않은 레인은 `config.json`의 `supervision.defaults`를 따르고, 기본값은 모두 꺼져 있습니다. 걸린 시간은 레인을 연 때부터 셉니다. 토큰과 비용은 레인 에이전트 세션 파일(경로는 런타임이 알려 줌)의 어시스턴트 메시지에서 더합니다. 읽을 수 없는 값은 한도에 닿지 않은 것으로 보고, `usage-unknown` 듀티 이벤트로 한 번 보여 줍니다. 한도에 닿으면 리드에게 `[BLOCKED <key>] <종류> ceiling reached (<값>, limit <한도>); the lane keeps running until you decide`를 보냅니다. 한도마다, 한도 값마다 한 번이고(리드가 한도를 올리면 거기에 닿을 때 다시 알림), 레인 기록에도 남습니다.
 
 비용 기록. 레인이 닫힐 때(`seori done`, 또는 Done 줄이 있는 레인을 seori가 닫을 때) 세션을 닫기 전에 에이전트 세션 파일에서 쓴 토큰과 비용을 읽어 `$SEORI_HOME/cost.jsonl`에 한 줄로 덧붙입니다: `{ "key", "closeKey": "<key>@<createdAt>", "tokens", "costUsd", "at" }`. 읽을 수 없는 값(지금은 hc)은 0이 아니라 `null`입니다. 다시 닫아도 두 번째 줄은 생기지 않습니다. 이 파일은 이 PC에만 남고, `hooks.recordCost`를 설정하지 않으면 어디에도 보내지 않습니다. 설정하면 그 값으로 한 번 실행합니다. 여기서 실패해도 stderr에 한 줄만 남기고 레인은 그대로 닫힙니다.
 
 멈춤. 런타임이 일하는 중으로 보는 working 레인이 `supervision.hungAfterMin`분(기본 20분) 동안 보고도 없고 파일도 바꾸지 않으면, 멈춘 것으로 보고 `[STALLED <key>] ...`를 보냅니다. 멈출 때마다 한 번입니다. 파일 변경은 새 HEAD, 또는 레인 폴더에서 `git status`가 보여 주는 파일들(`node_modules` 제외)의 시각과 크기 변화입니다. `seori start --activity-path PATH`(여러 번 가능)나 `supervision.activityPaths`에 적은 경로(레인 폴더 기준)의 변화도 진행으로 칩니다. git 저장소이든 아니든 마찬가지입니다. 파일은 쓰일 때 바뀐 것으로 치고(심볼릭 링크는 가리키는 파일을 읽음), 폴더는 안에 항목이 생기거나 지워지거나 이름이 바뀔 때만 바뀐 것으로 칩니다. 폴더 안 파일을 고쳐 쓰는 것까지 잡으려면 그 파일을 직접 적으세요. 그러면 저장소 밖에 로그를 쓰는 레인도 쓰는 동안에는 멈춤으로 보지 않습니다. git 저장소가 아니고 이런 경로도 없으면 보고만 진행으로 칩니다. waiting 레인은 기다린다고 말했으니 조용해도 멈춤이 아닙니다. 변경 기록은 `duty/supervision.json`에 둡니다.
+
+에이전트가 빠진 패널. working, waiting, paused 레인의 패널에 듀티 차례 두 번 연속으로 셸이 나와 있으면(에이전트가 끝났거나, 죽었거나, Ctrl+Z로 멈춤) 리드에게 `[DEAD <key>] ...`를 보냅니다. 한 번 그럴 때마다 한 번입니다. 듀티 패널도 같은 방식으로 지켜보고 `[DEAD duty] ...`로 알립니다. 셸에는 아무것도 입력할 수 없으므로 이런 레인에는 깨우기 알림을 보내지 않습니다. 레인 기록은 남겨 두므로, 리드가 패널을 닫고 레인을 다시 시작할 수 있습니다. READY 레인은 건드리지 않습니다.
+
+아무도 맡지 않은 에이전트 세션. 인스턴스 그룹 안의 에이전트 세션(프로그램이 상태를 보고하는 터미널. hc가 셸의 명령 이름을 `agent`로 보여 주더라도 그냥 셸은 에이전트 세션이 아닙니다)을 어느 역할도, 어느 열린 레인도 5분 동안 맡지 않으면 리드에게 `[UNREGISTERED <pane>] ...`를 한 번 보냅니다. 그 세션을 레인으로 만드는 `seori adopt` 명령도 함께 적습니다. 5분을 기다리는 것은 레인이 시작될 때 터미널이 레인 기록보다 먼저 생기기 때문입니다. 같은 세션은 `seori boot`로 언제든 볼 수 있습니다.
+
+두 경우 모두, 앞 차례에서 30초가 안 지난 차례(루프 옆에서 돌린 `seori duty --once`)는 다시 세지 않고, 그룹 밖의 터미널을 가리키는 레인 기록(hc 재시작 뒤 같은 id가 다시 쓰인 경우)은 알리지 않습니다. 리드가 기록되어 있지 않은 동안에는 알린 것으로 표시하지 않으므로, 나중에 리드가 기록되면 그때 알립니다. 메시지에 적는 hc 명령에는 터미널 id만 씁니다(`hc read t5`). 이 상태는 `duty/panes.json`에 둡니다.
 
 ## 작업 기록(worklog)
 
@@ -631,7 +638,7 @@ hc, omp, gh를 설치하지는 않고, hc의 설정을 고치지도 않습니다
 
 ## 상태 저장 위치
 
-모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON과 JSONL 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일과 자원 감시 상태(`duty/guard.json`), 멈춤 판단용 변경 기록(`duty/supervision.json`)이 있는 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록, 그 기록), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, 레인마다의 체크포인트 기록(`<key>.jsonl`)용 `checkpoints/`, 무거운 작업 자리 잠금(`<n>.lock`)용 `heavy/`, `lessons.jsonl`, `worklog.jsonl`과 거기서 만든 `worklog.md`, `config.json`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
+모든 상태는 `~/.seori`(또는 `$SEORI_HOME`) 아래 JSON과 JSONL 파일입니다: `lanes/`, `inbox/`, `briefs/`, `receipts/`, 시간 단위 루프용 `backlog/`, `loop/`, 듀티 정지 파일과 자원 감시 상태(`duty/guard.json`), 멈춤 판단용 변경 기록(`duty/supervision.json`), 패널 상태 기록(`duty/panes.json`)이 있는 `duty/`, 리드 채널용 `lead/`(저장된 메신저 메시지, 리드에게 온 감시 알림, 그 기록, 그 기록), 데몬의 잠금 파일과 heartbeat, 메신저마다의 커서와 상태 파일(그리고 `fake` 메신저)용 `messenger/`, 감시와 그 기록용 `watches/`, 레인마다의 체크포인트 기록(`<key>.jsonl`)용 `checkpoints/`, 무거운 작업 자리 잠금(`<n>.lock`)용 `heavy/`, `lessons.jsonl`, `worklog.jsonl`과 거기서 만든 `worklog.md`, `config.json`, `messengers.json`, 그리고 `secrets.json`(권한 600). omp 세션 말고 계속 도는 프로세스는 듀티 루프, 시간 단위 루프, 데몬(그리고 명령 감시가 띄운 명령)뿐입니다. 실행에 필요한 건 Bun 하나입니다.
 
 ## 한 PC에서 여러 인스턴스 돌리기
 
@@ -730,6 +737,7 @@ SEORI_E2E_HC=1 SEORI_E2E_OMP=1 bun test test/e2e-hc-channel.test.ts test/e2e-hc-
 - 런타임: hc만 씁니다. 세션은 `seori.group` 라벨로 묶고(dori는 자기 키를 씀), seori와 dori가 서로의 터미널을 건드리지 않습니다.
 - 에이전트: omp만 씁니다. 다른 에이전트 값은 거부합니다.
 - Linux에서는 데몬과 루프를 `systemd --user` 유닛으로 돌리고, macOS에서는 hc 터미널에서 돕니다.
+- 듀티 루프가 Dori 모드의 `dead-panes` 감시가 하던 일도 합니다: 에이전트가 빠진 레인이나 듀티 패널은 `[DEAD ...]`로, 아무도 맡지 않은 에이전트 세션은 `[UNREGISTERED ...]`로 알립니다.
 - 레인은 `/goal`로 시작하므로, 모든 레인이 목표 모드로 돕니다. 브리프에는 확인 가능한 끝나는 조건을 씁니다.
 - 리뷰어는 저장소의 AGENTS.md, 스킬, 규칙, 확장에서 격리된 비대화형 에이전트입니다.
 - 텔레메트리가 없습니다.
