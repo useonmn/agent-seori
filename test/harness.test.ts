@@ -161,7 +161,9 @@ describe("lanes", () => {
 
     writeFileSync(config, JSON.stringify({ defaultCwd: "~/assistant" }));
     expect(loadConfig(d.store.root).defaultCwd).toBe(join(homedir(), "assistant"));
-    for (const bad of ["assistant", "", 7]) {
+    writeFileSync(config, JSON.stringify({ defaultCwd: "~" }));
+    expect(loadConfig(d.store.root).defaultCwd).toBe(homedir());
+    for (const bad of ["assistant", "", "~user/x", 7, null]) {
       writeFileSync(config, JSON.stringify({ defaultCwd: bad }));
       expect(() => loadConfig(d.store.root)).toThrow(ConfigError);
     }

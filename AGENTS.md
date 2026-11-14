@@ -6,7 +6,7 @@ seori is a harness that runs omp coding agents in hc terminals: a lead that take
 
 `install.sh` links `seori` on PATH (`bun link`) and the omp skill `~/.omp/agent/skills/seori-mode` into the checkout at `SEORI_SRC` (default `~/.seori/src`). That one checkout is both the running seori and the place it is developed, committed and pushed; README.md "Working on seori itself" describes the layout.
 
-- An edit is live at once: the running seori reads it on its next command, and the daemon restarts within a second. Finish a change and run the tests before the running seori needs it.
+- An edit is live for the next `seori` command. The daemon, duty loop and hourly loop keep the code they started with until they restart (`seori down`, then `seori up`). Finish a change and run the tests before the running seori needs it.
 - Commit and push each change when it is done. `install.sh` will not pull over local work when upstream has commits the checkout does not; it prints the three ways out and stops.
 - Every tracked change is a change to every user's default. Personal settings stay out of git: `$SEORI_HOME` (`~/.seori`: `config.json`, `secrets.json`, `messengers.json`) and `~/.omp/agent/AGENTS.md` for tone and persona.
 - A throwaway install (tests, experiments) sets `HOME`, `BUN_INSTALL`, `SEORI_HOME` and `SKILLS_DIR` inside its own temp directory; otherwise it repoints the machine-wide `seori`.
@@ -15,7 +15,8 @@ seori is a harness that runs omp coding agents in hc terminals: a lead that take
 
 ```
 src/cli.ts           # `seori` entry: command dispatch, up/down, lead and duty startup
-src/harness.ts       # lanes: start, adopt, kickoff, nudges, review; prompt rendering (prompts/*.md, {{var}})
+src/harness.ts       # lanes: start, kickoff, nudges, review; prompt rendering (prompts/*.md, {{var}})
+src/adopt-sync.ts    # seori adopt and seori sync
 src/agent/profile.ts # omp launch command, PI_CONFIG_FILES, DEFAULT_HOME
 src/config.ts        # $SEORI_HOME/config.json schema; unknown fields are errors
 src/store.ts         # state files under $SEORI_HOME
