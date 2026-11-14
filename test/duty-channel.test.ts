@@ -103,7 +103,7 @@ describe("duty channel alerts", () => {
     expect(await dutyTick(d)).toEqual([]);
     advance(2 * MIN);
     expect(await dutyTick(d)).toEqual([{ action: "alerted", detail: "fake:c1:m1 lead-offline" }]);
-    expect(w.notified).toEqual([{ config: FAKE, target: { chat: "c1", thread: "t1", replyTo: "m1" }, text: ALERT_TEXT["lead-offline"] }]);
+    expect(w.notified).toEqual([{ config: FAKE, target: { chat: "c1", thread: "t1", replyTo: "m1", attached: true }, text: ALERT_TEXT["lead-offline"] }]);
     expect(alerted()).toEqual(["lead-offline"]);
     advance(MIN);
     w.consumerLock(root, "none");
@@ -153,6 +153,31 @@ describe("duty channel alerts", () => {
       { action: "alerted", detail: "fake:c1:m1 lead-offline" },
       { action: "alerted", detail: "fake:c1:q lead-offline" },
     ]);
+  });
+
+  test("the owner's follow-up in a thread under seori's own message is the owner's alone only when that message answered only messages of the owner's alone", async () => {
+    const { w, d, root, channel } = setup();
+    // seori answered the owner's top-level m1 top-level (its message r1), someone else's s1 with r2, and the owner's m3
+    // together with s1 in one reply r3 (`msg send --reply-to m3,s1`).
+    channel.appendInbound({ id: "fake:c1:s1", kind: "messenger", source: "fake", chat: "c1", from: "u2", notOwner: true, at: w.clock, text: "@seori hi" });
+    channel.appendInbound({ id: "fake:c1:m3", kind: "messenger", source: "fake", chat: "c1", from: "u1", at: w.clock, text: "@seori and this" });
+    channel.appendLedger({ id: "fake:c1:m1", ev: "replied", at: w.clock, messageId: "r1" });
+    channel.appendLedger({ id: "fake:c1:s1", ev: "replied", at: w.clock, messageId: "r2" });
+    channel.appendLedger({ id: "fake:c1:m3", ev: "replied", at: w.clock, messageId: "r3" });
+    channel.appendLedger({ id: "fake:c1:s1", ev: "replied", at: w.clock, messageId: "r3" });
+    const under = (id: string, root: string) =>
+      channel.appendInbound({ id: `fake:c1:${id}`, kind: "messenger", source: "fake", chat: "c1", thread: root, root: `fake:c1:${root}`, rootBySeori: true, from: "u1", at: w.clock, text: "and then" });
+    under("f1", "r1"); // under seori's answer to the owner
+    under("f2", "r2"); // under seori's answer to someone else
+    under("f3", "r9"); // under a seori message the ledger has no reply for (a notice, an alert)
+    under("f5", "r3"); // under one reply that answered the owner and someone else
+    channel.appendInbound({ id: "fake:c1:f4", kind: "messenger", source: "fake", chat: "c1", thread: "r1", root: "fake:c1:r1", rootBySeori: true, from: "u2", notOwner: true, at: w.clock, text: "me too" });
+    expect([...channel.othersIds()].sort()).toEqual(["fake:c1:f2", "fake:c1:f3", "fake:c1:f4", "fake:c1:f5", "fake:c1:s1"]);
+    expect(worklogAdd(root, "and then", "fake:c1:f1", w.clock).source).toBe("fake:c1:f1");
+    const brief = join(root, "brief.md");
+    writeFileSync(brief, "Then.");
+    expect((await startLane(d, "then", brief, { thread: "fake:c1:f1" })).thread).toBe("fake:c1:f1");
+    await expect(startLane(d, "then-b", brief, { thread: "fake:c1:f2" })).rejects.toThrow("--thread fake:c1:f2 is not a stored message of the owner's alone");
   });
 
   test("lead offline is not raised while a live consumer holds the lock, or for a replied id", async () => {

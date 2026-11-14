@@ -249,6 +249,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           ...(m.thread !== undefined ? { thread: m.thread } : {}),
           ...(m.root !== undefined ? { root: m.root } : {}),
           ...(m.rootByOwner ? { rootByOwner: true as const } : {}),
+          ...(m.rootBySeori ? { rootBySeori: true as const } : {}),
           from: m.from,
           ...(notOwner ? { notOwner: true as const } : {}),
           at: m.at,

@@ -143,12 +143,12 @@ describe("progressDue with progressEveryMin set", () => {
 });
 
 describe("threadTarget", () => {
-  test("answers a stored message in its chat, under its topic or thread", () => {
+  test("attaches a post to a stored message in its chat, under its topic or thread", () => {
     expect(threadTarget({ id: "fake:c1:m1", kind: "messenger", source: "fake", chat: "c1", thread: "t7", from: "u1", at: 1, text: "hi" })).toEqual({
       source: "fake",
-      target: { chat: "c1", thread: "t7", replyTo: "m1" },
+      target: { chat: "c1", thread: "t7", replyTo: "m1", attached: true },
     });
-    expect(threadTarget({ id: "slack:C9:1.2:3", kind: "messenger", source: "slack", chat: "C9", from: "U1", at: 1, text: "hi" })).toEqual({ source: "slack", target: { chat: "C9", replyTo: "1.2:3" } });
+    expect(threadTarget({ id: "slack:C9:1.2:3", kind: "messenger", source: "slack", chat: "C9", from: "U1", at: 1, text: "hi" })).toEqual({ source: "slack", target: { chat: "C9", replyTo: "1.2:3", attached: true } });
   });
 });
 
@@ -163,7 +163,7 @@ describe("progressTick", () => {
     expect(await progressTick(d)).toEqual([{ lane: "fix-a", action: "posted", detail: "via messenger" }]);
     expect(w.notified).toHaveLength(1);
     expect(w.notified[0]!.config).toEqual(FAKE);
-    expect(w.notified[0]!.target).toEqual({ chat: "c1", replyTo: "m1" });
+    expect(w.notified[0]!.target).toEqual({ chat: "c1", replyTo: "m1", attached: true });
     expect(w.notified[0]!.text).toBe(`${PROGRESS_HEADER}tests pass in <pane>`);
     const l = d.store.lane("fix-a")!;
     expect(l.posted).toEqual({ at: w.clock, text: "tests pass in hc:t9" });

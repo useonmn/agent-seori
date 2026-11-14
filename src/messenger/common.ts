@@ -95,7 +95,7 @@ export function splitText(text: string, limit: number): string[] {
 /**
  * Ids are `<source>:<chat>:<message id>`. An edit of a message is a new id `<source>:<chat>:<message id>:edit:<stamp>`
  * (the stamp is the platform's edit time), so the daemon's dedupe keeps it and the lead sees the correction; a reply to
- * either id threads under the original message.
+ * either id answers the original message.
  */
 export const messageId = (source: string, chat: string, message: string): string => `${source}:${chat}:${message}`;
 export const editId = (source: string, chat: string, message: string, stamp: string): string => `${source}:${chat}:${message}:edit:${stamp}`;

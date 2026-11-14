@@ -16,9 +16,13 @@ export type MessengerRow = {
   readonly source: string;
   readonly chat: string;
   readonly thread?: string;
-  /** A reply in a thread outside DMs: the id of the thread's first message, and whether the owner wrote it (InboundMessage). */
+  /**
+   * A reply in a thread outside DMs: the id of the thread's first message, and whether the platform says the owner
+   * (`rootByOwner`) or seori itself (`rootBySeori`) wrote it (InboundMessage).
+   */
   readonly root?: string;
   readonly rootByOwner?: true;
+  readonly rootBySeori?: true;
   readonly from: string;
   /** Sent by someone other than the owner (the messenger's `others` opt-in); absent for the owner. */
   readonly notOwner?: true;
@@ -52,13 +56,36 @@ const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.
 
 /**
  * The ids that are not the owner's alone, denied by default: everything except the owner's own messages that are a DM, a
- * top-level message or a thread's first message (no `root`), or a reply in a thread whose first message the platform
- * says the owner wrote (`rootByOwner`). A reply under someone else's message, or under one of unknown author, is shared:
- * whoever else is in that thread would see what is posted there. Nothing is inferred from which rows happen to be stored.
+ * top-level message or a thread's first message (no `root`), a reply in a thread whose first message the platform
+ * says the owner wrote (`rootByOwner`), or a reply in a thread whose first message the platform says seori wrote
+ * (`rootBySeori`) when the ledger shows that message answered only messages of the owner's alone (on Slack seori
+ * answers a top-level message top-level, so the owner's follow-up thread hangs under seori's answer). A reply under
+ * someone else's message, or under one of unknown author, is shared: whoever else is in that thread would see what is
+ * posted there. Nothing is inferred from which rows happen to be stored.
  */
-function othersOf(rows: readonly InboundRow[]): Set<string> {
-  const ownerAlone = (row: InboundRow): boolean => row.kind === "messenger" && !nonOwner(row) && (row.root === undefined || row.rootByOwner === true);
-  return new Set(rows.filter((row) => row.kind === "messenger" && !ownerAlone(row)).map((row) => row.id));
+function othersOf(rows: readonly InboundRow[], ledger: () => readonly LedgerEvent[]): Set<string> {
+  const messengers = rows.filter((row): row is MessengerRow => row.kind === "messenger");
+  const plain = (row: MessengerRow): boolean => !nonOwner(row) && (row.root === undefined || row.rootByOwner === true);
+  let answers: Set<string> | undefined;
+  /** Whether `root` is `<source>:<chat>:<message id>` of a reply seori sent only to messages of the owner's alone. */
+  const answersOwner = (root: string): boolean => {
+    if (answers === undefined) {
+      const byId = new Map(messengers.map((row) => [row.id, row]));
+      const owner = new Set<string>();
+      // One reply may answer several ids (`msg send --reply-to a,b`): answering anyone else as well makes it shared.
+      const shared = new Set<string>();
+      for (const e of ledger()) {
+        if (e.ev !== "replied") continue;
+        const row = byId.get(e.id);
+        if (row) (plain(row) ? owner : shared).add(`${row.source}:${row.chat}:${e.messageId}`);
+      }
+      answers = new Set([...owner].filter((key) => !shared.has(key)));
+    }
+    return answers.has(root);
+  };
+  const ownerAlone = (row: MessengerRow): boolean =>
+    plain(row) || (!nonOwner(row) && row.rootBySeori === true && row.root !== undefined && answersOwner(row.root));
+  return new Set(messengers.filter((row) => !ownerAlone(row)).map((row) => row.id));
 }
 
 /**
@@ -212,13 +239,13 @@ export class Channel {
   inbound(view: ChannelView = {}): InboundRow[] {
     const rows = readJsonl<InboundRow>(this.inboundPath);
     if (view.withOthers === true) return rows;
-    const others = othersOf(rows);
+    const others = othersOf(rows, () => this.ledger());
     return rows.filter((row) => !others.has(row.id));
   }
 
   /** Ids that are not the owner's alone (see othersOf): where only the owner's message or thread may go, refuse them. */
   othersIds(): Set<string> {
-    return othersOf(this.inbound({ withOthers: true }));
+    return othersOf(this.inbound({ withOthers: true }), () => this.ledger());
   }
 
   appendLedger(e: LedgerEvent): void {
