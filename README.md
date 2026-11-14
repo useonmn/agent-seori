@@ -55,9 +55,38 @@ seori up
 # UP lead=hc:t1 duty=hc:t2 units=seori-seori-1a2b3c4d-daemon.service,seori-seori-1a2b3c4d-duty.service,seori-seori-1a2b3c4d-hourly.service home=~/.seori name=seori
 ```
 
-`seori up` opens two terminals, the lead (named after the instance, `seori` by default) and the duty session (`seori-duty`), both labelled `seori.group=<name>`. Their working directory is `$SEORI_HOME` unless you pass `--cwd`. On Linux the daemon, the duty loop and the hourly loop run as `systemd --user` units named `seori-<name>-<hash>-daemon`, `seori-<name>-<hash>-duty` and `seori-<name>-<hash>-hourly` (`<hash>` is 8 hex digits of `$SEORI_HOME`'s path); they are enabled, so they come back after a reboot or a WSL restart. On macOS the same three processes run in hc terminals of the group. `seori up` waits for the daemon's heartbeat before it starts the loops, and a second `seori up` prints `ALREADY UP` and opens nothing.
+`seori up` opens two terminals, the lead (named after the instance, `seori` by default) and the duty session (`seori-duty`), both labelled `seori.group=<name>`. Their working directory is `$SEORI_HOME` unless you pass `--cwd`. On Linux the daemon, the duty loop and the hourly loop run as `systemd --user` units named `seori-<name>-<hash>-daemon`, `seori-<name>-<hash>-duty` and `seori-<name>-<hash>-hourly` (`<hash>` is 8 hex digits of `$SEORI_HOME`'s path); they are enabled, so they come back after a reboot or a WSL restart. On macOS the same three processes run in hc terminals of the group. `seori up` waits for the daemon's heartbeat before it starts the loops.
 
-`seori down` stops the processes, disables and removes the units and closes every terminal in the group, lanes included. Run it from a shell outside the group: run from inside the lead's terminal, it closes that terminal last and its own output stops there.
+`seori up` is safe to run again at any time, and what it does depends on what is missing. With both the lead and the duty pane live it prints `ALREADY UP ... nothing opened` and opens nothing, however much else is running. When either pane is gone while the home is still there (its units, or the other pane; after a reboot, an hc core restart, or a closed pane), it reopens exactly the missing panes and prints `REOPENED lead,duty lead=hc:t9 duty=hc:t10 running=...` (or `REOPENED duty ...` when only the duty pane was gone); the units are left alone, never restarted. That is the case that used to print `nothing opened` and leave you with no lead until you ran `seori down` and then `seori up`. Two `seori up` of one home at the same time (the logon hook and one typed by hand) never both open: the second prints `UP BUSY ... nothing opened` and exits 0.
+
+Every pane is an hc terminal without `keep`, so a reboot or an hc restart ends it: on Linux only the systemd units come back, and on macOS nothing does. The panes come back only when something runs `seori up` at logon. `seori autostart install` is that something:
+
+```sh
+seori autostart install
+# AUTOSTART seori-seori-1a2b3c4d-boot.service enabled in ~/.config/systemd/user: it runs `seori up --wait-hc` once at logon
+```
+
+It writes a `systemd --user` oneshot (`Type=oneshot`, no `Restart=`; enabled, not started) that runs `seori up --wait-hc --cwd DIR` once per logon, where DIR is the install's `--cwd` (default: the cwd this home's units already run in, else `$SEORI_HOME`), so the agents come back where you started them. `--wait-hc` polls `hc server status` until the core answers (no fixed sleep, up to 10 minutes). hc 0.1.20 starts a core on demand even for `status`, so a plain poll usually brings one up; when a poll still finds none, the hook runs `hc server start` once and keeps polling, which covers an hc whose on-demand start is unavailable (an older hc without the subcommand, or a state dir it cannot write). It never starts a core that already answers, and never more than once. If no core answers in time it prints one `HC UNAVAILABLE` line naming what it waited for and what it tried — `hc server status` exited 5 with hc's own reason, and `hc server start` succeeded or failed with its reason — and exits 0, so the boot is reported rather than retried in a loop; the daemon and loops keep running either way. That line separates a broken seori from an hc that never came up. When even `hc server start` cannot bring a core back, the line carries hc's own message (for example `cannot start core: Permission denied (os error 13)`), which is the next thing to fix. Re-running the install is harmless, `seori autostart status` shows whether the hook is there, `seori down all` removes it, and `seori restart` keeps it. Lane agents are never reopened at logon: their records stay, so a closed lane starts again by key with `seori start`.
+
+`seori restart` is the way a lead or duty session restarts the home from inside its own pane:
+
+```sh
+seori restart --follow
+# RESTARTING detached; this pane is closed by the down. The new refs and every step land in /home/you/.seori/restart.log (seori restart --follow prints them as they come)
+# RESTART_PID 41233
+# RESTART_BEGIN home=/home/you/.seori cwd=/home/you/src
+# STOPPED duty pid=41221
+# ...
+# UP lead=hc:t28 duty=hc:t29 units=...,... home=/home/you/.seori name=seori
+# RESTART_DONE
+# RESTART_EXIT=0
+```
+
+`seori down all` closes the terminal the command runs in, so a restart cannot be its own pane's child: the command starts a detached worker that survives the pane being closed, then reports where that worker writes. It tries `setsid --fork`, then `systemd-run --user` (with `PATH` and the caller's `SEORI_*` and `HC_*` variables passed on, since a transient unit gets the user manager's environment; the messenger tokens never are), then `nohup` with SIGHUP ignored, and takes the first that starts. On macOS, which has no `setsid`, that is `nohup`: the worker stays in the pane's session and process group, so it outlives a close that hangs the pane up (SIGHUP) but not one that kills the whole process group; no test closes a real hc pane, so if a restart from a macOS pane dies with it, run `seori restart` from a shell outside the group. One restart of a home runs at a time: the worker holds `$SEORI_HOME/run/restart.pid`, and a second `seori restart` is refused while it runs. The worker checks that hc answers, runs `seori down all --keep-autostart` (a restart keeps the logon hook), and runs the up only once the down has finished; every step and the final exit code go to `$SEORI_HOME/restart.log`, because the pane that asked is gone by then. Without `--cwd` the up opens the agents where the home's units run (the cwd its last `seori up` or `autostart install` was given), else in `$SEORI_HOME`. `--follow` prints that log until the worker ends. Without any way to detach (no `setsid`, `systemd-run` or `nohup`) it refuses, non-zero, before stopping anything. A restart closes every lane pane of the home, so it is refused while a lane is `working`; `--force` goes ahead and names the keys it ended, whose records stay and can be started again. Never hand-roll a restart script: this is the only supported way, because it is the only one that handles its own pane closing.
+
+After `seori up` or `seori restart` opens a new lead, seori hands it a start-up line: run `seori boot`, then post one short line to the owner (the thread of the oldest open worklog item, else the owner's direct message) saying seori is back, with the open item count and the lanes still open. The owner therefore hears from a restarted seori without typing anything; `prompts/lead.md` says the same, so a lead started by hand does it too.
+
+`seori down` stops the processes, disables and removes the units and closes every terminal in the group, lanes included. Run it from a shell outside the group: run from inside the lead's terminal, it closes that terminal last and its own output stops there. `down all` also removes the logon hook, unless given `--keep-autostart` (what `seori restart` runs); `down duty`, `down loop` and `down daemon` leave it in place.
 
 Talk to the lead. It writes a brief and opens lanes itself, and you can do the same from the shell:
 
@@ -94,10 +123,25 @@ A session you started yourself can join seori too. `seori adopt <key> --ref hc:t
 ## Commands
 
 ```
-seori up [--cwd DIR]                         start this home's lead, duty, duty loop, hourly loop and daemon (once per home):
+seori up [--cwd DIR] [--wait-hc]             start this home's lead, duty, duty loop, hourly loop and daemon (once per home):
                                             lead and duty terminals labelled seori.group=<name> (cwd default $SEORI_HOME);
                                             daemon, duty loop and hourly loop as systemd --user units
-                                            seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS
+                                            seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS.
+                                            ALREADY UP (nothing opened) while the lead and duty panes are live; when either
+                                            is gone (a reboot, an hc restart) it reopens exactly the missing panes and leaves
+                                            the running units alone; UP BUSY (exit 0, nothing opened) while another up of
+                                            this home is opening it; --wait-hc waits for hc first (the logon hook)
+seori restart [--cwd DIR] [--force] [--follow]
+                                            down then up for this home, safe from inside the lead or duty pane: the
+                                            work runs in a detached child (setsid/systemd-run/nohup), because down closes the
+                                            caller's pane. Refused while a lane is working unless --force (which names
+                                            the keys it ended), and while another restart of this home runs; keeps the
+                                            logon hook; DIR defaults to the cwd this home's units run in, else
+                                            $SEORI_HOME; new refs go to $SEORI_HOME/restart.log, --follow prints them
+seori autostart install [--cwd DIR]          write and enable the logon hook (a systemd --user oneshot running
+                                            seori up --wait-hc --cwd DIR), so the lead and duty panes come back after a
+                                            reboot; DIR defaults to the cwd this home's units run in, else $SEORI_HOME
+seori autostart status                       whether that hook is installed
 seori role <lead|duty> [REF]                 register a session (hc:t7) as lead or duty (default: this one)
 seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal, agent session, lessons + brief + lane rules
             [--done "SIGNALS"] [--thread ID] [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--force]
@@ -142,8 +186,10 @@ seori heavy <label> -- <cmd...>              run a heavy command when load is lo
 seori status
 seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
 seori daemon-loop                            run the daemon and restart it when it crashes (seori up's daemon unit or pane)
-seori down [duty|loop|daemon|all]            stop the duty loop, hourly loop and daemon (default all); all also disables
-                                            the systemd units and closes the seori.group terminals; exit 1 if a process
+seori down [duty|loop|daemon|all] [--keep-autostart]
+                                            stop the duty loop, hourly loop and daemon (default all); all also disables
+                                            the systemd units and the logon hook (kept with --keep-autostart, as seori
+                                            restart does) and closes the seori.group terminals; exit 1 if a process
                                             still runs after 30 s
 seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
 seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
@@ -592,7 +638,7 @@ Each seori is one `$SEORI_HOME`. Its lanes, messages, daemon, loops, watches, wo
 
 - **Name.** `name` in the home's `config.json` is its `seori.group` label on hc and part of its systemd unit names. The first instance needs nothing (the default is `seori`); give every other one its own name.
 - **Agent memory.** omp's memory is one database per machine, so every home other than `~/.seori` gets `mnemopi.dbPath` set to `$SEORI_HOME/omp/memories/mnemopi.db` in its `prompts/agent-omp.yml`, and `~/.seori` keeps omp's own database.
-- **Once per home.** `seori up` in a home whose lead, loops or daemon are already running prints `ALREADY UP name=... home=...; nothing opened` and exits 0. Stop one instance with `seori down` under that home's `SEORI_HOME`; the others keep running.
+- **Once per home.** `seori up` in a home whose lead and duty panes are already live prints `ALREADY UP name=... home=... lead=hc:tN running=...; nothing opened` and exits 0. A home that lost a pane while the rest of it kept running gets the missing panes back (`REOPENED ...`), and a second `seori up` while one is opening the home prints `UP BUSY ...` and opens nothing; nothing of the home is ever opened twice. Stop one instance with `seori down` under that home's `SEORI_HOME`; the others keep running.
 
 To add a second instance (here called `seori-two` in `~/seori-two`):
 
@@ -604,7 +650,7 @@ To add a second instance (here called `seori-two` in `~/seori-two`):
    ```
 2. Give it its own bot. Create a new bot or app for it ([messengers.md](skills/seori-mode/references/messengers.md)): one bot can't serve two daemons. Write its tokens into `$SEORI_HOME/secrets.json`, then, in the same shell, `seori msg check <source>` and `seori msg pair <source> --write`. Don't set `SEORI_*_TOKEN` variables for your whole account: they override every home's `secrets.json`.
 3. Start it: `seori up --cwd ~/src` in that shell. Its terminals carry `seori.group=seori-two` and its units are named `seori-seori-two-<hash>-*`, where `<hash>` is 8 hex digits of the home's path, so two homes never share units. `seori down` also removes this home's units of the older `seori-<name>-*` naming.
-4. Autostart. On Linux the units are enabled, so the daemon and loops come back on their own after a reboot; run `seori up` again to reopen the lead and duty terminals (a second run is harmless). On macOS, run the same two lines (`export SEORI_HOME=...; seori up --cwd ...`) from a login item once hc is up.
+4. Autostart. On Linux the units are enabled, so the daemon and loops come back on their own after a reboot, but the lead and duty panes do not: install the logon hook once, in that home's shell, with `seori autostart install --cwd ~/src` (a `systemd --user` oneshot running `seori up --wait-hc --cwd ~/src`, named `seori-seori-two-<hash>-boot.service`). From then on a reboot brings the panes back by itself, in the same cwd as step 3. The hook does not depend on something else having started hc: it polls `hc server status`, which on hc 0.1.20 starts a core on demand, and runs `hc server start` once if a poll still finds none. Where even that cannot bring a core up, it reports `HC UNAVAILABLE` in the journal with hc's own reason and opens nothing, so check `systemctl --user status` and `hc server status` there. `seori down all` removes the hook with the rest; `seori restart` keeps it. On macOS, put `seori up --wait-hc --cwd ~/src` in a login item; it waits for hc and starts it the same way rather than failing when hc is late.
 
 Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell you use for that instance. Sessions and units that seori starts already have it.
 

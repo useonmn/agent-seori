@@ -35,17 +35,20 @@ const readPid = (path: string): number | undefined => {
   }
 };
 
+/** A record clearly older than this boot names a pid that may belong to someone else now (macOS reuses pids freely). */
+function recordedBeforeBoot(path: string): boolean {
+  try {
+    return statSync(path).mtimeMs < bootCutoff();
+  } catch {
+    return true;
+  }
+}
+
 /** The pid of a live duty loop already recorded in this home, or undefined (no record, this pid, a dead pid, or a pre-boot record). */
 function otherLiveLoop(root: string, name: Runner, pid: number): number | undefined {
   const path = recordPath(root, name);
   const other = readPid(path);
-  if (other === undefined || other === pid || !pidAlive(other)) return undefined;
-  try {
-    // A record clearly older than this boot names a pid that may belong to someone else now.
-    if (statSync(path).mtimeMs < bootCutoff()) return undefined;
-  } catch {
-    return undefined;
-  }
+  if (other === undefined || other === pid || !pidAlive(other) || recordedBeforeBoot(path)) return undefined;
   return other;
 }
 
@@ -96,11 +99,12 @@ function unrefInterval(tick: () => void, ms: number): () => void {
   return () => clearInterval(timer);
 }
 
-/** The runners whose record names a live pid: what `seori up` finds already running in a home. */
+/** The runners whose record names a live pid and was written this boot: what `seori up` finds already running in a home. */
 export function liveRunners(root: string, alive: (pid: number) => boolean = pidAlive): Runner[] {
   return RUNNERS.filter((name) => {
-    const pid = readPid(recordPath(root, name));
-    return pid !== undefined && alive(pid);
+    const path = recordPath(root, name);
+    const pid = readPid(path);
+    return pid !== undefined && alive(pid) && !recordedBeforeBoot(path);
   });
 }
 

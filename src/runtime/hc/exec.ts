@@ -43,17 +43,31 @@ const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 const str = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
 
-function errorOf(argv: readonly string[], result: ExecResult): HcError {
+/** hc's error JSON from a failed call: `{error:{kind,message,hint}}` on stderr (or stdout), else whatever it printed. */
+const errorJson = (result: ExecResult): Record<string, unknown> => {
   const raw = result.stderr.trim() || result.stdout.trim();
-  let error: Record<string, unknown> = {};
   try {
-    error = asRecord(asRecord(JSON.parse(raw))["error"]);
+    return asRecord(asRecord(JSON.parse(raw))["error"]);
   } catch {
     // Not JSON: an old or broken hc, or the process died; fall back to the exit code.
+    return {};
   }
+};
+
+/**
+ * hc's own message from a failed call: its JSON `error.message`, else its raw output, else "no output". A caller that
+ * reports a failure to a human wants this, not the JSON envelope around it.
+ */
+export function hcReason(result: ExecResult): string {
+  const raw = result.stderr.trim() || result.stdout.trim();
+  return str(errorJson(result)["message"]) ?? (raw || "no output");
+}
+
+function errorOf(argv: readonly string[], result: ExecResult): HcError {
+  const error = errorJson(result);
   const kind = str(error["kind"]) ?? KIND_BY_EXIT[result.code];
   const hint = str(error["hint"]) ?? str(asRecord(error["data"])["hint"]);
-  return new HcError(argv, result, kind, hint, str(error["message"]) ?? (raw || "no output"));
+  return new HcError(argv, result, kind, hint, hcReason(result));
 }
 
 /**

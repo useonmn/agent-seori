@@ -16,16 +16,26 @@ type Env = Readonly<Record<string, string | undefined>>;
 export const UNIT_KINDS = ["daemon", "duty", "hourly"] as const;
 export type UnitKind = (typeof UNIT_KINDS)[number];
 
-const COMMAND: Readonly<Record<UnitKind, readonly string[]>> = {
+/**
+ * The logon hook (`seori autostart install`): a oneshot that runs `seori up --wait-hc` once, so the lead and duty
+ * panes come back after a reboot. It is a boot hook, not a runner: it is not in RUNNERS or liveRunners, so it never
+ * counts as this home being up, and it has no Restart= (a boot hook that restarts itself is a loop waiting to happen).
+ */
+export const BOOT_KIND = "boot";
+export type UnitSpecKind = UnitKind | typeof BOOT_KIND;
+
+const COMMAND: Readonly<Record<UnitSpecKind, readonly string[]>> = {
   daemon: ["daemon-loop"],
   duty: ["duty", "--interval", "60"],
   hourly: ["loop"],
+  boot: ["up", "--wait-hc"],
 };
 
-const DESCRIPTION: Readonly<Record<UnitKind, string>> = {
+const DESCRIPTION: Readonly<Record<UnitSpecKind, string>> = {
   daemon: "messenger daemon",
   duty: "duty loop",
   hourly: "hourly loop",
+  boot: "logon autostart (up --wait-hc)",
 };
 
 /** Variables a unit passes on from the `seori up` that wrote it, when set there (never the caller's HC_TERMINAL_*). */
@@ -55,7 +65,7 @@ export function unitInstance(name: string): string {
 export const homeTag = (home: string): string => createHash("sha256").update(resolve(home)).digest("hex").slice(0, 8);
 
 /** seori-<instance>-<homeTag>-<kind>.service */
-export const unitName = (instance: string, home: string, kind: UnitKind): string =>
+export const unitName = (instance: string, home: string, kind: UnitSpecKind): string =>
   `seori-${unitInstance(instance)}-${homeTag(home)}-${kind}.service`;
 
 /** The name earlier versions gave a unit (no home hash); `seori down` removes such units when they belong to its home. */
@@ -100,8 +110,11 @@ export type UnitSpec = {
   readonly env: Env;
 };
 
-/** The unit file text for one resident process. */
-export function unitFile(spec: UnitSpec, kind: UnitKind): string {
+/**
+ * The unit file text for one resident process, or for the logon hook. The boot hook is a oneshot with no Restart=: it
+ * runs `seori up --wait-hc` once at logon and ends (exit 0 also when hc is not up yet, which it says on stdout).
+ */
+export function unitFile(spec: UnitSpec, kind: UnitSpecKind): string {
   const vars: [string, string][] = [["SEORI_HOME", spec.home]];
   const path = unitPath(spec.env["PATH"] ?? "");
   if (path) vars.push(["PATH", path]);
@@ -116,20 +129,32 @@ export function unitFile(spec: UnitSpec, kind: UnitKind): string {
   oneLine("the working directory", spec.cwd);
   oneLine("the bun path", spec.bun);
   oneLine("the cli path", spec.cli);
+  const boot = kind === BOOT_KIND;
   return [
     "[Unit]",
     `Description=seori ${spec.instance} ${DESCRIPTION[kind]} (SEORI_HOME=${spec.home.replace(/%/g, "%%")})`,
+    // The hook waits for hc itself (up --wait-hc polls the core), so it needs no ordering against the graphical session.
     "",
     "[Service]",
-    "Type=simple",
+    `Type=${boot ? "oneshot" : "simple"}`,
     ...vars.map(([k, v]) => `Environment=${envWord(`${k}=${v}`)}`),
     // WorkingDirectory= takes the rest of the line as the path: systemd rejects a quoted value as "not absolute".
     `WorkingDirectory=${spec.cwd.replace(/%/g, "%%")}`,
-    `ExecStart=${[spec.bun, spec.cli, ...COMMAND[kind]].map(execWord).join(" ")}`,
-    "Restart=on-failure",
-    "RestartSec=2",
-    // A deliberate stop (Ctrl-C 130, SIGTERM or `seori down` 143) is not a failure to restart from.
-    "SuccessExitStatus=130 143",
+    // The hook passes its cwd on: `up` opens its agents in $SEORI_HOME unless told otherwise, whatever the unit's cwd.
+    `ExecStart=${[spec.bun, spec.cli, ...COMMAND[kind], ...(boot ? ["--cwd", spec.cwd] : [])].map(execWord).join(" ")}`,
+    ...(boot
+      ? [
+          // A boot hook that restarts itself is a loop: it runs once per logon and ends. `up --wait-hc` already answers
+          // exit 0 when hc never came up, so a failure here is a real one and is left to systemd to record.
+          "Restart=no",
+          "TimeoutStartSec=infinity",
+        ]
+      : [
+          "Restart=on-failure",
+          "RestartSec=2",
+          // A deliberate stop (Ctrl-C 130, SIGTERM or `seori down` 143) is not a failure to restart from.
+          "SuccessExitStatus=130 143",
+        ]),
     "",
     "[Install]",
     "WantedBy=default.target",
@@ -177,7 +202,12 @@ const sameHome = (a: string | undefined, b: string): boolean => a !== undefined 
  * that name that runs another SEORI_HOME is refused, never overwritten.
  */
 export function writeUnits(dir: string, spec: UnitSpec): string[] {
-  const files = UNIT_KINDS.map((kind) => [unitName(spec.instance, spec.home, kind), unitFile(spec, kind)] as const);
+  return writeKinds(dir, spec, UNIT_KINDS);
+}
+
+/** Writes the unit files of `kinds` (writeUnits' rule for another home's file applies to each). */
+function writeKinds(dir: string, spec: UnitSpec, kinds: readonly UnitSpecKind[]): string[] {
+  const files = kinds.map((kind) => [unitName(spec.instance, spec.home, kind), unitFile(spec, kind)] as const);
   for (const [name] of files) {
     const other = unitHome(dir, name);
     if (other !== undefined && !sameHome(other, spec.home)) {
@@ -190,12 +220,48 @@ export function writeUnits(dir: string, spec: UnitSpec): string[] {
 }
 
 /**
+ * Writes the logon hook's unit and enables it, without starting it: it is a boot hook, so what it does at an install is
+ * become part of the next logon, not open panes now (`seori up` does that). Returns its name; a unit of that name that
+ * runs another home is refused by writeKinds.
+ */
+export async function installBootUnit(dir: string, spec: UnitSpec, ctl: Systemctl): Promise<string> {
+  const [name] = writeKinds(dir, spec, [BOOT_KIND]);
+  await ctl(["daemon-reload"]);
+  await ctl(["enable", name!]);
+  return name!;
+}
+
+/** Whether the home's logon hook is installed in `dir`. */
+export function bootUnitInstalled(dir: string, instance: string, home: string): string | undefined {
+  const name = unitName(instance, home, BOOT_KIND);
+  return sameHome(unitHome(dir, name), home) ? name : undefined;
+}
+
+/**
+ * The working directory this home's units run in (the `--cwd` its last `seori up` or `autostart install` was given), read
+ * from the first of them installed in `dir`; undefined when none is. A file of another home under the name is not read.
+ */
+export function unitCwd(dir: string, instance: string, home: string): string | undefined {
+  const kinds: readonly UnitSpecKind[] = [...UNIT_KINDS, BOOT_KIND];
+  for (const kind of kinds) {
+    const name = unitName(instance, home, kind);
+    if (!sameHome(unitHome(dir, name), home)) continue;
+    const m = /^WorkingDirectory=(.+)$/m.exec(readFileSync(join(dir, name), "utf8"));
+    if (m) return m[1]!.replace(/%%/g, "%");
+  }
+  return undefined;
+}
+
+/**
  * The unit files of the home's instance that exist in `dir`, of the given kinds: the current names, and the names
  * earlier versions used (legacyUnitName) when that file runs this home.
  */
-export function installedUnits(dir: string, instance: string, home: string, kinds: readonly UnitKind[] = UNIT_KINDS): string[] {
+export function installedUnits(dir: string, instance: string, home: string, kinds: readonly UnitSpecKind[] = UNIT_KINDS): string[] {
   const current = kinds.map((kind) => unitName(instance, home, kind)).filter((name) => existsSync(join(dir, name)));
-  const legacy = kinds.map((kind) => legacyUnitName(instance, kind)).filter((name) => sameHome(unitHome(dir, name, true), home));
+  // The names earlier versions used exist only for the three resident processes, never for the logon hook.
+  const legacy = kinds
+    .flatMap((kind) => (kind === BOOT_KIND ? [] : [legacyUnitName(instance, kind)]))
+    .filter((name) => sameHome(unitHome(dir, name, true), home));
   return [...current, ...legacy];
 }
 
@@ -205,7 +271,7 @@ export function installedUnits(dir: string, instance: string, home: string, kind
  * With no reachable user manager nothing can run the units: stop, disable and reload are skipped, the files are still
  * removed (REMOVED UNIT lines), so `seori down` and `seori uninstall` always finish.
  */
-export async function removeUnits(dir: string, instance: string, home: string, kinds: readonly UnitKind[], ctl: Systemctl): Promise<string[]> {
+export async function removeUnits(dir: string, instance: string, home: string, kinds: readonly UnitSpecKind[], ctl: Systemctl): Promise<string[]> {
   const names = installedUnits(dir, instance, home, kinds);
   if (names.length === 0) return [];
   // A unit that never loaded (a bad file, or one already stopped by hand) makes `stop` fail with "not loaded"; that
