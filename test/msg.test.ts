@@ -4,7 +4,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, type MessengerRow } from "../src/channel.ts";
 import { Refusal } from "../src/harness.ts";
-import { SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "../src/messenger/adapter.ts";
+import { SendUncertain, type MessengerAdapter, type MessengerConfig, type Reaction, type SendTarget } from "../src/messenger/adapter.ts";
 import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "../src/msg.ts";
 import { noActions } from "./fake.ts";
 
@@ -14,7 +14,10 @@ function setup() {
   const root = mkdtempSync(join(tmpdir(), "seori-msg-"));
   const channel = new Channel(root);
   const sent: { source: string; target: SendTarget; text: string }[] = [];
+  const reacted: { source: string; target: SendTarget; message: string; reaction: Reaction }[] = [];
+  const warned: string[] = [];
   let mode: "ok" | "uncertain" | "error" = "ok";
+  let reactFails = false;
   let n = 0;
   const adapterFor = (c: MessengerConfig): MessengerAdapter => ({
     ...noActions,
@@ -26,16 +29,23 @@ function setup() {
       if (mode === "error") throw new Error("403 forbidden");
       return { messageId: `m${++n}` };
     },
+    react: async (target, message, reaction) => {
+      if (reactFails) throw new Error("missing_scope");
+      reacted.push({ source: c.source, target, message, reaction });
+    },
     check: async () => "stub",
   });
-  const d: MsgDeps = { adapterFor, configs: [{ source: "fake", owner: "u1" }, { source: "tg", owner: "u1" }], now: () => T0 + 1000 };
+  const d: MsgDeps = { adapterFor, configs: [{ source: "fake", owner: "u1" }, { source: "tg", owner: "u1" }], now: () => T0 + 1000, warn: (l) => warned.push(l) };
   const add = (id: string, o: Partial<MessengerRow> = {}) => {
     const [source, chat] = id.split(":");
     channel.appendInbound({ id, kind: "messenger", source: source!, chat: chat!, from: "u1", at: T0, text: `text of ${id}`, ...o });
   };
   const addWatch = (watchId: string, seq: number, text = `event ${seq}`) =>
     channel.appendInbound({ id: `watch:${watchId}:${seq}`, kind: "watch", watchId, name: "ci", at: T0, text });
-  return { root, channel, sent, d, add, addWatch, setMode: (m: typeof mode) => (mode = m) };
+  return {
+    root, channel, sent, reacted, warned, d, add, addWatch,
+    setMode: (m: typeof mode) => (mode = m), failReactions: () => (reactFails = true),
+  };
 }
 
 describe("msg send --reply-to", () => {
@@ -213,12 +223,12 @@ describe("msg close and list", () => {
     const { root, channel, d, add } = setup();
     add("fake:c1:100");
     add("fake:c1:101");
-    expect(() => msgClose(root, "fake:c1:999", "x", T0)).toThrow("unknown message id");
+    await expect(msgClose(root, "fake:c1:999", "x", d)).rejects.toThrow("unknown message id");
     await msgSend(root, { replyTo: ["fake:c1:100"], text: "hi" }, d);
-    expect(() => msgClose(root, "fake:c1:100", "x", T0)).toThrow("already replied");
-    msgClose(root, "fake:c1:101", "handled in person", T0 + 5);
+    await expect(msgClose(root, "fake:c1:100", "x", d)).rejects.toThrow("already replied");
+    await msgClose(root, "fake:c1:101", "handled in person", { ...d, now: () => T0 + 5 });
     expect(channel.ledger().at(-1)).toEqual({ id: "fake:c1:101", ev: "closed", at: T0 + 5, why: "handled in person" });
-    expect(() => msgClose(root, "fake:c1:101", "x", T0)).toThrow("already closed");
+    await expect(msgClose(root, "fake:c1:101", "x", d)).rejects.toThrow("already closed");
   });
 
   test("list shows open ids by default and every id with all, with state, age, sender and escaped text", async () => {
@@ -258,8 +268,54 @@ describe("msg close and list", () => {
     expect(channel.ledger()).toEqual([]);
 
     expect(msgList(root, {}, T0)[1]).toBe(`watch:w1:1  open  0m  watch  ci  ${JSON.stringify("[watch ci w1] build failed")}`);
-    msgClose(root, "watch:w1:1", "handled", T0 + 5);
+    await msgClose(root, "watch:w1:1", "handled", { ...d, now: () => T0 + 5 });
     expect(channel.ledger()).toEqual([{ id: "watch:w1:1", ev: "closed", at: T0 + 5, why: "handled" }]);
     expect(msgList(root, {}, T0).map((l) => l.split("  ")[0])).toEqual(["fake:c1:100"]);
+  });
+});
+
+describe("the check mark when a message is answered", () => {
+  test("a reply swaps the eyes for the check mark on every id it answers; an --ack reply keeps them until the result", async () => {
+    const { root, reacted, d, add } = setup();
+    add("fake:c1:100", { thread: "t9" });
+    add("fake:c1:101");
+    add("fake:c1:102:edit:7");
+
+    expect(await msgSend(root, { replyTo: ["fake:c1:100"], text: "On it.", ack: true }, d)).toMatchObject({ status: "SENT" });
+    expect(reacted).toEqual([]);
+    await msgSend(root, { replyTo: ["fake:c1:100"], text: "Done: PR merged.", again: true }, d);
+    expect(reacted).toEqual([{ source: "fake", target: { chat: "c1", thread: "t9" }, message: "100", reaction: "answered" }]);
+
+    // An edit's id marks the message it edits.
+    await msgSend(root, { replyTo: ["fake:c1:101", "fake:c1:102:edit:7"], text: "both" }, d);
+    expect(reacted.slice(1).map((r) => r.message)).toEqual(["101", "102"]);
+  });
+
+  test("a reply that is not out (held or failed) leaves the eyes; one whose reaction fails still counts as sent", async () => {
+    const { root, channel, reacted, warned, d, add, setMode, failReactions } = setup();
+    add("fake:c1:100");
+    add("fake:c1:101");
+    add("fake:c1:102");
+    setMode("uncertain");
+    expect(await msgSend(root, { replyTo: ["fake:c1:100"], text: "hi" }, d)).toMatchObject({ status: "HELD" });
+    setMode("error");
+    await expect(msgSend(root, { replyTo: ["fake:c1:101"], text: "hi" }, d)).rejects.toThrow("403 forbidden");
+    expect(reacted).toEqual([]);
+
+    setMode("ok");
+    failReactions();
+    expect(await msgSend(root, { replyTo: ["fake:c1:102"], text: "hi" }, d)).toMatchObject({ status: "SENT", ids: ["fake:c1:102"] });
+    expect(channel.ledger().at(-1)).toMatchObject({ id: "fake:c1:102", ev: "replied" });
+    expect(warned).toEqual(["seori: fake:c1:102 is answered, but its check mark could not be set: missing_scope"]);
+  });
+
+  test("close gives a messenger message the check mark, a watch event none; --ack needs --reply-to", async () => {
+    const { root, reacted, d, add, addWatch } = setup();
+    add("tg:c5:300");
+    addWatch("w1", 1);
+    await msgClose(root, "tg:c5:300", "handled in person", d);
+    await msgClose(root, "watch:w1:1", "seen", d);
+    expect(reacted).toEqual([{ source: "tg", target: { chat: "c5" }, message: "300", reaction: "answered" }]);
+    await expect(msgSend(root, { to: parseTo("tg:c5"), text: "heads up", ack: true }, d)).rejects.toThrow("--ack");
   });
 });

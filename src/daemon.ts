@@ -5,6 +5,7 @@ import { defaultDeps, type Deps } from "./harness.ts";
 import { spawnExec } from "./runtime/index.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { type InboundMessage, loadMessengers, type MessengerAdapter, type MessengerConfig } from "./messenger/adapter.ts";
+import { messageId, upstreamMessage } from "./messenger/common.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
 import { refFromText } from "./refs.ts";
 import { lockFile, Store } from "./store.ts";
@@ -71,7 +72,9 @@ export type DaemonEvent =
   | { readonly ev: "duplicate"; readonly id: string }
   | { readonly ev: "dropped"; readonly id: string; readonly from: string }
   | { readonly ev: "error"; readonly source: string; readonly detail: string }
-  | { readonly ev: "idle"; readonly detail: string };
+  | { readonly ev: "idle"; readonly detail: string }
+  /** The eyes reaction went onto a stored message. */
+  | { readonly ev: "reacted"; readonly id: string };
 
 export const daemonLine = (e: DaemonEvent): string => {
   switch (e.ev) {
@@ -85,6 +88,8 @@ export const daemonLine = (e: DaemonEvent): string => {
       return `DAEMON ${e.source} error: ${e.detail}`;
     case "idle":
       return `DAEMON ${e.detail}`;
+    case "reacted":
+      return `DAEMON eyes on ${e.id}`;
   }
 };
 
@@ -232,9 +237,10 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
 
     const runOne = async (config: MessengerConfig): Promise<void> => {
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.
-      const onMessage = async (m: InboundMessage): Promise<void> => {
+      const onMessage = async (adapter: MessengerAdapter, m: InboundMessage): Promise<void> => {
         const notOwner = m.from !== config.owner;
         if (notOwner && config.others !== true) return emit({ ev: "dropped", id: m.id, from: m.from });
+        const known = channel.hasMessage(messageId(m.source, m.chat, upstreamMessage(m)));
         const stored = channel.appendInbound({
           id: m.id,
           kind: "messenger",
@@ -249,6 +255,15 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           text: m.text,
         });
         emit({ ev: stored ? "stored" : "duplicate", id: m.id });
+        // Eyes once per upstream message, through the adapter that received it: not for a redelivery or an edit of a
+        // message already stored. Not awaited: the lead already has the message, and a slow or refused reaction must
+        // not hold the adapter's acknowledgement upstream.
+        if (stored && !known) {
+          adapter.react({ chat: m.chat, ...(m.thread !== undefined ? { thread: m.thread } : {}) }, upstreamMessage(m), "read").then(
+            () => emit({ ev: "reacted", id: m.id }),
+            (e: unknown) => emit({ ev: "error", source: config.source, detail: `could not put the eyes on ${m.id}: ${errorText(e)}` }),
+          );
+        }
         // A message got through, so receive works: end any failure streak at once.
         if (failing) {
           failing = false;
@@ -267,7 +282,8 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
         }, HEALTHY_AFTER_MS);
         let delay = restartDelayMs;
         try {
-          await adapterFor(config, root).receive(signal, onMessage);
+          const adapter = adapterFor(config, root);
+          await adapter.receive(signal, (m) => onMessage(adapter, m));
           if (signal.aborted) break;
           emit({ ev: "error", source: config.source, detail: `receive returned early; restarting in ${delay} ms` });
         } catch (e) {

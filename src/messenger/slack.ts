@@ -1,4 +1,4 @@
-import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
+import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type Reaction, type SendTarget, SendUncertain } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
 
 // Slack over Socket Mode: a bot token (xoxb-) for the Web API and an app-level token (xapp-, connections:write) to open
@@ -734,6 +734,22 @@ export class SlackAdapter implements MessengerAdapter {
     } catch (e) {
       throw this.fatal(e, false) ?? e;
     }
+  }
+
+  /** reactions.add / reactions.remove (bot scope reactions:write); the check mark goes on before the eyes come off. */
+  async react(target: SendTarget, message: string, reaction: Reaction): Promise<void> {
+    const token = this.botToken();
+    const call = async (method: "reactions.add" | "reactions.remove", name: string, harmless: string): Promise<void> => {
+      try {
+        await this.api(method, token, { channel: target.chat, timestamp: message, name }, "POST", undefined, ACTION_MAX_RETRY_AFTER_MS);
+      } catch (e) {
+        if (e instanceof SlackApiError && e.error === harmless) return;
+        throw this.fatal(e, false) ?? e;
+      }
+    };
+    if (reaction === "read") return call("reactions.add", "eyes", "already_reacted");
+    await call("reactions.add", "white_check_mark", "already_reacted");
+    await call("reactions.remove", "eyes", "no_reaction");
   }
 
   async check(): Promise<string> {

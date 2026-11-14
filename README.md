@@ -12,7 +12,7 @@ seori's design is based on [dori-superagent](https://github.com/sisyphuslabs/dor
 curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh | bash
 ```
 
-Then open an hc terminal, run omp in it and say `seori mode` (or `서리 모드`). The seori-mode skill walks you through the rest and stops wherever it needs your choice or your hand: a name for the bot, the install, which messenger (Telegram, Slack or Discord), creating the bot with you in the browser, `secrets.json` and `seori msg check`, pairing you as the owner with `seori msg pair`, a first greeting through the bot, `seori up`, and an onboarding that, with your consent, reads your tools read-only into the agent's memory and into your [owner profile](#owner-profile), a file you can open and edit. Once seori is set up, saying `seori mode` again runs `seori boot` and reports what it lists. See [seori mode skill](#seori-mode-skill).
+Then open an hc terminal, run omp in it and say `seori mode` (or `서리 모드`). The seori-mode skill walks you through the rest and stops wherever it needs your choice or your hand: a name for the bot, the install, which messenger (Telegram, Slack or Discord), creating the bot with you in the browser, `secrets.json` and `seori msg check`, pairing you as the owner with `seori msg pair`, a first greeting through the bot, `seori up`, and an onboarding that, with your consent, reads your tools read-only into the agent's memory. Once seori is set up, saying `seori mode` again runs `seori boot` and reports what it lists. See [seori mode skill](#seori-mode-skill).
 
 ## What it is
 
@@ -26,7 +26,7 @@ Roles:
 - Hourly loop: `seori loop`, a process that syncs the backlog, audits missed work, starts the next item and asks open questions through the lead. Design: [docs/hourly-loop.md](docs/hourly-loop.md).
 - Daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead, and runs the watches agents arm. See [Messenger channel](#messenger-channel) and [Watches](#watches).
 
-How the lead talks to you: it reacts with eyes to each of your messages and handles it, reading the message you replied to first (on Telegram a bot cannot fetch an older message, so it sees only the text of your reply). Each job gets one thread with one status message it edits in place (⏳ while working, ✅ when done) and a status emoji at the start of the thread name (🔄 working, ⏸ waiting, ✅ done); when the job is done it removes the reaction and closes the thread, and if you write there again it reopens the thread and the job's lane. A reply is one message that grows by editing, not a burst of messages. seori itself only sends and edits messages; reactions, reading a replied-to message, thread names and closing, and finished files go through the optional agent-messenger's bot commands (otherwise the lead skips them, and posts a file's path or link). Apart from those status markers it writes no emojis, and it sends as the bot.
+How the lead talks to you: seori puts the eyes reaction on each of your messages the moment it reaches the lead, and swaps it for a check mark once the lead has answered (see [Reactions](#reactions)); the lead reads the message you replied to first (on Telegram a bot cannot fetch an older message, so it sees only the text of your reply). Each job gets one thread with one status message it edits in place (⏳ while working, ✅ when done) and a status emoji at the start of the thread name (🔄 working, ⏸ waiting, ✅ done); when the job is done its result reply sets the check mark and the lead closes the thread, and if you write there again it reopens the thread and the job's lane. A reply is one message that grows by editing, not a burst of messages. seori itself sends and edits messages and sets those two reactions; reading a replied-to message, thread names and closing, and finished files go through the optional agent-messenger's bot commands (otherwise the lead skips them, and posts a file's path or link). Apart from those status markers it writes no emojis, and it sends as the bot.
 
 The runtime gives every session a terminal and reports the agent's state in it (idle, working, blocked). seori reads that state before it does anything to a session. The runtime is hc (herdr-core) and the agent is always omp. [docs/runtime.md](docs/runtime.md) explains what seori does on hc. For a home last used with herdr, it also says which leftover records are skipped. Live ones are named on every duty pass as a `DUTY ERROR` line until the file is removed.
 
@@ -205,14 +205,17 @@ seori down [duty|loop|daemon|all] [--keep-autostart]
                                             still runs after 30 s
 seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
 seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
-seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack]
                                             answer messenger messages (one reply per id) or send a notice; it goes out
                                             at once, so answer as soon as you have written it; --again sends another
-                                            reply to an id already answered (a correction)
+                                            reply to an id already answered (a correction, a job's result); the eyes
+                                            seori put on the message become a check mark, except with --ack (a job's
+                                            acknowledgement, its status message, which keeps the eyes)
 seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                             edit a message seori sent: --reply-of edits seori's first reply to that
                                             lead channel message; MID is the message= send printed
-seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
+seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no
+                                            reply; a messenger message gets the check mark
 seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                             columns: id  state  age  kind  sender-or-watch-name  text
 seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
@@ -396,21 +399,10 @@ seori worklog list --open
 
 The lead's rules: `add` the moment a request arrives, `next` and `note` as it moves, `close --result` with what came of it.
 
-## Owner profile
-
-`$SEORI_HOME/owner.md` (`~/.seori/owner.md` by default) is your profile as the lead knows it: who you are, how you want to be addressed and written to, your work and projects, your tools and accounts (their names and where they live, never a secret), and the standing preferences and rules you gave. It is a short markdown file of plain facts under the sections Who, Addressing and writing, Work and projects, Tools and accounts, and Preferences and rules.
-
-- Onboarding writes its summary into it. After that the lead keeps it current: when it learns a durable fact or preference about you, it updates the file as well as its memory, replacing the line the new fact supersedes so the newest decision is the one written.
-- It is your document: open it and edit it whenever you like. The lead reads it at the start of every session (see [Boot](#boot)), and what the file says wins over memory.
-- Secrets and other people's private messages never go into it, and people other than you never see anything in it.
-
-seori itself never creates or rewrites the file; only the lead and onboarding write it, and `seori boot` only reads it.
-
 ## Boot
 
 `seori boot` is the read-only check the lead runs after a restart, a `/new` or a compaction, before acting on what it remembers. It changes nothing: no lane or role is written, nothing is relaunched, no watch is stopped, no message is closed, and no lane, role, watch or message record is written (an unused home only gets its empty state directories). Its lines, in order:
 
-- `OWNER` with the [owner profile](#owner-profile) below it, each of its lines indented by two spaces so none of them can pass for a boot line. Only the first 8000 characters are shown, cut at a line break, with an `OWNER truncated` line pointing at the file for the rest. A missing file is one line, `OWNER none: no profile at <path> yet`, and not a failure; a file that is there but cannot be read is `OWNER unreadable` and makes the boot incomplete. The profile comes first because it frames everything below it, and the start-up line a new lead gets already runs `seori boot`, so the profile lands in every new lead's context without a separate step;
 - `CONFIG` (ok, defaults or invalid) and `MESSENGERS`;
 - `LEAD` and `DUTY` with their pane and status;
 - `PANES` (a summary), `VANISHED` for an open lane whose pane is gone (its record is kept, nothing is relaunched), `UNREGISTERED` for an agent pane that no role and no open lane owns;
@@ -468,7 +460,7 @@ Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuse
 |---|---|---|---|
 | `telegram` | a bot from @BotFather; send it `/start` once in a DM. For groups or forum topics, turn privacy mode off (`/setprivacy`) | your numeric user id | `SEORI_TELEGRAM_TOKEN` |
 | `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write`, `im:history` and `reactions:write` (plus `app_mentions:read`, `channels:history` for channels, and `users:read` for `others`), bot event `message.im`, and the Messages tab enabled | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
-| `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only), turn off Public Bot (needed for `others`), and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
+| `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only), turn off Public Bot (needed for `others`), invite it with Add Reactions and Read Message History (seori's reactions in server channels), and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check` asks each configured messenger who its bot is, which proves the tokens work: it prints `OK <source>: <who the bot is>` or `FAIL <source>: <why>` per messenger and exits 1 when any fails. `seori msg check <source>` checks that one source, and works before `messengers.json` has an entry for it: only its token matters.
 
@@ -517,6 +509,18 @@ How a message travels:
 3. The lead answers with `seori msg send --reply-to <id> --text '...'`, or `seori msg close <id> --why '...'` when no answer is needed. The reply goes out at once, as soon as the lead has written it. Only a reply the messenger accepted, or a close, ends an id. A second reply to the same id is refused unless it passes `--again`; a reply that may or may not have arrived (a timeout after sending) is recorded and not retried until you check the chat and pass `--again`.
 4. An id that is still unanswered is delivered again, up to 3 deliveries in total; after that it is given up. Only a reply the messenger accepted, or a close, answers an id, so it is not delivered again.
 5. The lead's omp runs omp's advisor, which is opt-in and off by default; seori turns it on for its own lead (`advisor.enabled: true` in `$SEORI_HOME/prompts/lead-omp.yml`). The lead does not wait for it: the reply is already out when the advisor reviews the turn, and when it raises a concern the lead sends the correction at once as its own message with `--again`.
+
+### Reactions
+
+seori shows on the message itself where it stands. The moment the daemon has stored a message for the lead, it puts the eyes reaction on it; messages it drops get none, and a message received again, or an edit of a message already stored, gets no second one. When the lead answers, the eyes are replaced by a check mark: a reply with `seori msg send --reply-to`, or `seori msg close`. A job's first reply is only its acknowledgement (the status message the lead keeps editing), so the lead sends it with `--ack`, which leaves the eyes in place; the job's result reply (`--again`, without `--ack`) sets the check mark. Editing a message never changes a reaction.
+
+| platform | eyes | check mark | needs |
+|---|---|---|---|
+| Slack | `eyes` | `white_check_mark` (added, then the eyes removed) | bot scope `reactions:write` |
+| Discord | 👀 | ✅ (added, then the eyes removed) | Add Reactions and Read Message History in server channels |
+| Telegram | 👀 | 👌, replacing the eyes: ✅ is not among Telegram's allowed reactions | nothing more |
+
+A reaction that fails (a missing scope or permission, a rate limit) is logged, in the daemon's log for the eyes and on stderr of `seori msg` for the check mark, and never holds up the message or the reply.
 
 ### Corrections
 
@@ -669,7 +673,7 @@ To uninstall, run `seori down` (it stops the processes, removes the systemd unit
 
 ## State
 
-JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, the host guard state (`duty/guard.json`), the stall history (`duty/supervision.json`) and the pane-health spells (`duty/panes.json`), `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `checkpoints/` for each lane's checkpoint journal (`<key>.jsonl`), `heavy/` for the heavy slot locks (`<n>.lock`), `lessons.jsonl`, `worklog.jsonl` and the `worklog.md` rendered from it, `owner.md` (the [owner profile](#owner-profile), markdown), `config.json`, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
+JSON and JSONL files on disk under `~/.seori` (or `$SEORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, `backlog/` and `loop/` for the hourly loop, `duty/` for the duty loop's stop file, the host guard state (`duty/guard.json`), the stall history (`duty/supervision.json`) and the pane-health spells (`duty/panes.json`), `lead/` for the lead channel (stored messenger messages, watch events for the lead, and their ledger), `messenger/` for the daemon's lock and heartbeat and each messenger's cursor and health file (and the fake messenger), `watches/` for the watches and their event logs, `checkpoints/` for each lane's checkpoint journal (`<key>.jsonl`), `heavy/` for the heavy slot locks (`<n>.lock`), `lessons.jsonl`, `worklog.jsonl` and the `worklog.md` rendered from it, `config.json`, `messengers.json`, and `secrets.json` (mode 600). Besides the omp sessions, the only long-running processes are the duty loop, the hourly loop and the daemon (with the commands of command watches). The only runtime dependency is Bun.
 
 ## Several instances on one PC
 

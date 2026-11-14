@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { extname, join } from "node:path";
-import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type SendTarget, SendUncertain } from "./adapter.ts";
+import { ACTION_MAX_RETRY_AFTER_MS, ADAPTER_OUTAGE_MS, type InboundMessage, type MessengerAdapter, type MessengerConfig, type Reaction, type SendTarget, SendUncertain } from "./adapter.ts";
 import { attachmentLine, CursorFile, editId, HttpError, httpJson, messageId, replyTarget, retryAfterMs, secret, splitText } from "./common.ts";
 import type { VoiceTranscriber } from "./voice.ts";
 
@@ -308,6 +308,15 @@ export class TelegramAdapter implements MessengerAdapter {
     if (text.length > TEXT_LIMIT) throw new Error(`telegram (${this.source}): an edited message holds at most ${TEXT_LIMIT} characters, got ${text.length}`);
     const body = { chat_id: target.chat, message_id: Number(message), text, link_preview_options: { is_disabled: true } };
     await this.act("editMessageText", body, /message is not modified/);
+  }
+
+  /**
+   * setMessageReaction replaces the bot's reaction on the message, so the check mark takes the eyes' place in one call.
+   * The check mark is 👌: ✅ is not among the emoji Telegram allows as a reaction.
+   */
+  async react(target: SendTarget, message: string, reaction: Reaction): Promise<void> {
+    const emoji = reaction === "read" ? "👀" : "👌";
+    await this.act("setMessageReaction", { chat_id: target.chat, message_id: Number(message), reaction: [{ type: "emoji", emoji }] }, /not modified/i);
   }
 
   async check(): Promise<string> {

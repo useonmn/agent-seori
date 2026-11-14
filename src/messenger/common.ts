@@ -106,6 +106,9 @@ export function replyTarget(rest: string): string {
   return i >= 0 ? rest.slice(0, i) : rest;
 }
 
+/** The upstream message a stored id names (`<source>:<chat>:<message id>`, an edit's id too): what a reaction goes on. */
+export const upstreamMessage = (m: { readonly id: string; readonly source: string; readonly chat: string }): string => replyTarget(m.id.slice(m.source.length + m.chat.length + 2));
+
 /** One line per attachment appended to the message text; files are referenced, never downloaded. */
 export function attachmentLine(name: string, detail: string, ref: string): string {
   return `[attachment: ${name}${detail ? ` (${detail})` : ""} ${ref}]`;

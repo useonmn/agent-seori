@@ -6,7 +6,7 @@ import { Channel } from "../src/channel.ts";
 import { daemonLoop } from "../src/cli.ts";
 import { down, DOWN_GROUPS, recordPath } from "../src/down.ts";
 import { type DaemonEvent, daemonLine, daemonLockPath, heartbeatPath, MAX_RESTART_DELAY_MS, readHealth, restartDelay, runDaemon } from "../src/daemon.ts";
-import type { InboundMessage, MessengerAdapter, MessengerConfig } from "../src/messenger/adapter.ts";
+import type { InboundMessage, MessengerAdapter, MessengerConfig, Reaction, SendTarget } from "../src/messenger/adapter.ts";
 import { FakeAdapter } from "../src/messenger/fake.ts";
 import { noActions } from "./fake.ts";
 import { adapterFor } from "../src/messenger/index.ts";
@@ -63,10 +63,11 @@ describe("runDaemon", () => {
     fakeIn(root, { msgId: "1", chat: "c", thread: "t", from: "stranger", text: "let me in", at: 3 });
     fakeIn(root, { msgId: "2", chat: "c", thread: "t", from: "u1", text: "hello lead", at: 4 });
     const d = start(root, { adapterFor: fakePoll });
-    await until("stored", () => d.events.some((e) => e.ev === "stored"));
+    await until("eyes on the stored message", () => d.events.some((e) => e.ev === "reacted"));
     await d.stop();
     expect(new Channel(root).inbound()).toEqual([{ id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", thread: "t", from: "u1", at: 4, text: "hello lead" }]);
-    expect(d.lines()).toEqual(["DAEMON dropped fake:c:1 from stranger", "DAEMON stored fake:c:2"]);
+    expect(d.lines()).toEqual(["DAEMON dropped fake:c:1 from stranger", "DAEMON stored fake:c:2", "DAEMON eyes on fake:c:2"]);
+    expect(new FakeAdapter(root).actions().map(({ at: _at, ...r }) => r)).toEqual([{ action: "react", chat: "c", thread: "t", message: "2", reaction: "read" }]);
     expect(new FakeAdapter(root).offset()).toBe(2);
   });
 
@@ -101,14 +102,17 @@ describe("runDaemon", () => {
       check: async () => "stub",
     };
     const d = start(root, { adapterFor: () => replaying });
-    await until("second message", () => d.events.some((e) => e.ev === "stored" && e.id === "x:c:2"));
+    await until("eyes on the second message", () => d.events.some((e) => e.ev === "reacted" && e.id === "x:c:2"));
     await d.stop();
     expect(new Channel(root).inbound().map((r) => r.id)).toEqual(["x:c:1", "x:c:2"]);
+    // The replayed copy gets no second eyes.
     expect(d.lines()).toEqual([
       "DAEMON stored x:c:1",
+      "DAEMON eyes on x:c:1",
       "DAEMON x error: crashed before offset commit; restarting in 5 ms",
       "DAEMON duplicate x:c:1",
       "DAEMON stored x:c:2",
+      "DAEMON eyes on x:c:2",
     ]);
   });
 
@@ -138,6 +142,56 @@ describe("runDaemon", () => {
     expect(readHealth(root, "flaky")).toBeUndefined();
     expect(readHealth(root, "nosuch")).toMatchObject({ error: "messenger nosuch is not supported" });
     expect(readHealth(root, "fake")).toBeUndefined();
+  });
+
+  test("puts the eyes on a message once, when first stored: never on a dropped one, a redelivery or an edit of a stored one", async () => {
+    const root = home([{ source: "x", owner: "u1" }]);
+    const reactions: { target: SendTarget; message: string; reaction: Reaction }[] = [];
+    const adapter: MessengerAdapter = {
+      ...noActions,
+      source: "x",
+      async receive(signal, onMessage) {
+        for (const m of [msg("x:c:1"), msg("x:c:1"), msg("x:c:1:edit:5"), msg("x:c:2", "stranger"), msg("x:c:3:edit:9"), { ...msg("x:c:4"), thread: "t" }]) await onMessage(m);
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      react: async (target, message, reaction) => void reactions.push({ target, message, reaction }),
+      send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
+    };
+    const d = start(root, { adapterFor: () => adapter });
+    await until("eyes on the last message", () => d.events.some((e) => e.ev === "reacted" && e.id === "x:c:4"));
+    await d.stop();
+    // x:c:3:edit:9 edits a message that was never stored (sent before seori, or not addressed to it): it gets the eyes.
+    expect(reactions).toEqual([
+      { target: { chat: "c" }, message: "1", reaction: "read" },
+      { target: { chat: "c" }, message: "3", reaction: "read" },
+      { target: { chat: "c", thread: "t" }, message: "4", reaction: "read" },
+    ]);
+    expect(new Channel(root).inbound().map((r) => r.id)).toEqual(["x:c:1", "x:c:1:edit:5", "x:c:3:edit:9", "x:c:4"]);
+  });
+
+  test("a reaction the messenger refuses is logged, and delivery goes on", async () => {
+    const root = home([{ source: "x", owner: "u1" }]);
+    const adapter: MessengerAdapter = {
+      ...noActions,
+      source: "x",
+      async receive(signal, onMessage) {
+        await onMessage(msg("x:c:1"));
+        await onMessage(msg("x:c:2"));
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r()));
+      },
+      react: async () => {
+        throw new Error("missing_scope");
+      },
+      send: async () => ({ messageId: "1" }),
+      check: async () => "stub",
+    };
+    const d = start(root, { adapterFor: () => adapter });
+    await until("both refusals logged", () => d.events.filter((e) => e.ev === "error").length === 2);
+    await d.stop();
+    expect(new Channel(root).inbound().map((r) => r.id)).toEqual(["x:c:1", "x:c:2"]);
+    expect(d.lines()).toContain("DAEMON x error: could not put the eyes on x:c:1: missing_scope");
+    expect(readHealth(root, "x")).toBeUndefined();
   });
 
   test("a messenger that keeps failing is restarted less and less often, up to 10 min apart", () => {

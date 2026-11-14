@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { Channel, type InboundRow } from "../src/channel.ts";
 import { Refusal, type Deps } from "../src/harness.ts";
@@ -43,10 +44,14 @@ describe("seori msg edit", () => {
 
   test("--reply-of edits seori's first reply to that message, wherever it went out", async () => {
     const { d, fake } = setup();
-    expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "Fix login, 0m"], d)).out).toBe("SENT fake:c1:1 message=1");
+    expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--ack", "--text", "Fix login, 0m"], d)).out).toBe("SENT fake:c1:1 message=1");
     expect((await run(["msg", "send", "--reply-to", "fake:c1:1", "--again", "--text", "the result"], d)).out).toBe("SENT fake:c1:1 message=2");
     expect(await run(["msg", "edit", "--reply-of", "fake:c1:1", "--text", "Fix login: done"], d)).toEqual({ code: 0, out: "EDITED fake:c1:1 message=1" });
-    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([{ action: "edit", chat: "c1", message: "1", text: "Fix login: done" }]);
+    // The --ack reply kept the eyes; the result set the check mark; the edit set none.
+    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([
+      { action: "react", chat: "c1", message: "1", reaction: "answered" },
+      { action: "edit", chat: "c1", message: "1", text: "Fix login: done" },
+    ]);
     await expect(main(["msg", "edit", "--reply-of", "fake:c1:2", "--text", "x"], d)).rejects.toThrow(/no reply to fake:c1:2 has been sent/);
     await expect(main(["msg", "edit", "--reply-of", "fake:c1:1", "--to", "fake:c1", "--message", "1", "--text", "x"], d)).rejects.toThrow(/exactly one of --reply-of ID or --to/);
   });
@@ -114,6 +119,27 @@ describe("seori msg", () => {
     expect(open.map((l) => l.split("  ")[0])).toEqual(["fake:c1:2", "fake:c1:3"]);
     const all = (await run(["msg", "list", "--all"], d)).out.split("\n");
     expect(all.map((l) => l.split("  ").slice(0, 2))).toEqual([["fake:c1:1", "closed"], ["fake:c1:2", "open"], ["fake:c1:3", "open"]]);
+  });
+
+  test("msg close sets the check mark; a refused reaction or a broken messengers.json still closes, with a warning", async () => {
+    const { d, fake, channel, root } = setup();
+    expect(await run(["msg", "close", "fake:c1:2", "--why", "handled in person"], d)).toEqual({ code: 0, out: "CLOSED fake:c1:2" });
+    expect(fake.actions().map(({ at: _at, ...r }) => r)).toEqual([{ action: "react", chat: "c1", message: "2", reaction: "answered" }]);
+    writeFileSync(fake.sendModePath, "error");
+    const err = console.error;
+    const warned: string[] = [];
+    console.error = (...args: unknown[]) => void warned.push(args.join(" "));
+    try {
+      expect(await run(["msg", "close", "fake:c1:3", "--why", "x"], d)).toEqual({ code: 0, out: "CLOSED fake:c1:3" });
+      writeFileSync(join(root, "messengers.json"), "{ broken");
+      expect(await run(["msg", "close", "fake:c1:1", "--why", "x"], d)).toEqual({ code: 0, out: "CLOSED fake:c1:1" });
+    } finally {
+      console.error = err;
+    }
+    expect(warned[0]).toBe("seori: fake:c1:3 is answered, but its check mark could not be set: fake messenger: reaction failed (send-mode error)");
+    expect(warned[1]).toStartWith("seori: fake:c1:1 is answered, but its check mark could not be set: ");
+    expect(warned[1]).toContain("not valid JSON");
+    expect(channel.states().filter((s) => s.closed).map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2", "fake:c1:3"]);
   });
 
   test("list prints EMPTY when nothing is open", async () => {
