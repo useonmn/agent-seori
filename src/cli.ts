@@ -44,6 +44,7 @@ import {
   type UnitSpecKind,
 } from "./systemd.ts";
 import { detachArgv, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript } from "./restart.ts";
+import { hcReason } from "./runtime/hc/exec.ts";
 
 const USAGE = `seori - a proactive multi-session harness for omp on hc
 
@@ -319,36 +320,115 @@ export const HC_WAIT_MS = 10 * 60_000;
 /** How often it asks. A core that starts while the hook waits is picked up within this. */
 export const HC_POLL_MS = 2_000;
 
+/** What became of the one `hc server start` a wait may attempt: not attempted (the core already answered), or its result. */
+export type HcStartAttempt = { readonly tried: false } | { readonly tried: true; readonly ok: boolean; readonly why?: string };
+
+/** The wait's outcome: whether the core answered, what starting it did, and the last status hc gave. */
+export type HcWaitResult = {
+  readonly up: boolean;
+  readonly start: HcStartAttempt;
+  /** The last `hc server status` exit code, or undefined when the call itself failed. */
+  readonly statusCode?: number;
+  /** hc's own words from that status (its JSON `error.message`), when it gave any. */
+  readonly statusWhy?: string;
+  /** How long it waited (ms by the injected clock). */
+  readonly waitedMs: number;
+};
+
 /**
- * Whether the hc core answers right now: `hc server status` exits 0 for a live core, 5 (unavailable) when there is none
- * or the socket moved. Any other failure counts as not up, so a broken hc reports as a core that did not come up.
+ * Starts the hc core once, for the logon path. Idempotent on a live core (hc answers with the same core), so this is
+ * only ever called after a status showed no core. A failure is reported, never thrown: a slow core may still come up.
  */
-export async function hcAnswers(d: Deps): Promise<boolean> {
+async function hcStart(d: Deps): Promise<Extract<HcStartAttempt, { tried: true }>> {
   try {
-    const r = await d.exec("hc", ["--json", "server", "status"]);
-    return r.code === 0;
-  } catch {
-    return false;
+    const r = await d.exec("hc", ["--json", "server", "start"]);
+    if (r.code === 0) return { tried: true, ok: true };
+    // hc's own sentence, not its JSON envelope: this line ends up in the journal for a human to read.
+    return { tried: true, ok: false, why: hcReason(r) };
+  } catch (e) {
+    return { tried: true, ok: false, why: e instanceof Error ? e.message : String(e) };
   }
 }
 
 /**
  * The logon path's wait: polls the core (no fixed sleep, so a core that is already up costs one call) until it answers or
- * `waitMs` passes by the clock. Returns false when it never answered, which the caller reports and ends on.
+ * `waitMs` passes by the clock. hc 0.1.20 starts a core on demand even for `status`, so this poll usually brings one up by
+ * itself; when a poll still finds none (an hc whose on-demand start is unavailable: no `server start`, or a state dir it
+ * cannot write) the wait runs `hc server start` exactly once and keeps polling, because the hook's job is to bring seori
+ * back and seori needs a core. It never starts a core that answers, and never twice. The outcome carries the last status
+ * and the start attempt, so the caller can say what was tried rather than only that it failed.
  */
-export async function waitForHc(d: Deps, waitMs: number = HC_WAIT_MS, log: (line: string) => void = console.error): Promise<boolean> {
-  const start = d.now();
+export async function waitForHcResult(
+  d: Deps, waitMs: number = HC_WAIT_MS, log: (line: string) => void = console.error,
+): Promise<HcWaitResult> {
+  const began = d.now();
   let told = false;
+  let start: HcStartAttempt = { tried: false };
+  let statusCode: number | undefined;
+  let statusWhy: string | undefined;
   for (;;) {
-    if (await hcAnswers(d)) return true;
-    const waited = d.now() - start;
-    if (waited >= waitMs) return false;
-    if (!told) {
+    try {
+      const r = await d.exec("hc", ["--json", "server", "status"]);
+      statusCode = r.code;
+      if (r.code === 0) return { up: true, start, statusCode, waitedMs: d.now() - began };
+      // "no output" is hcReason's placeholder for silence: not a reason, so leave the line to the exit code alone.
+      const why = hcReason(r);
+      statusWhy = why === "no output" ? undefined : why;
+    } catch {
+      statusCode = undefined;
+      statusWhy = undefined;
+    }
+    const waited = d.now() - began;
+    if (waited >= waitMs) {
+      return {
+        up: false,
+        start,
+        ...(statusCode === undefined ? {} : { statusCode }),
+        ...(statusWhy === undefined ? {} : { statusWhy }),
+        waitedMs: waited,
+      };
+    }
+    if (!start.tried) {
+      // Still no core: run the explicit start once. hc may already have spawned one on demand, in which case this is a
+      // no-op that answers with that same core.
+      const attempted = await hcStart(d);
+      start = attempted;
+      log(attempted.ok
+        ? "no hc core yet: started it with `hc server start`, waiting for it to answer..."
+        : `no hc core yet, and \`hc server start\` failed (${attempted.why}); still waiting for a core to answer...`);
+    } else if (!told) {
       told = true;
       log(`waiting for hc (herdr-core) to start; seori up opens nothing until the core answers...`);
     }
     await d.sleep(HC_POLL_MS);
   }
+}
+
+/** waitForHcResult's boolean form, for callers that only need whether the core came up. */
+export async function waitForHc(d: Deps, waitMs: number = HC_WAIT_MS, log: (line: string) => void = console.error): Promise<boolean> {
+  return (await waitForHcResult(d, waitMs, log)).up;
+}
+
+/**
+ * The line a logon hook prints when no core answered: both things that were tried, so a user can tell a broken seori
+ * from an hc that never started. Never names the unit of another home: the daemon and loops are this home's own.
+ */
+export function hcUnavailableLine(r: HcWaitResult): string {
+  const mins = Math.round(r.waitedMs / 60_000);
+  const waited = r.waitedMs >= 60_000 ? `${mins} min` : `${Math.round(r.waitedMs / 1000)} s`;
+  // A code says how hc failed, not why: 5 is "no core" only when hc itself could run, and a mismatch or a core that
+  // cannot start also exit 5. Quote hc's own words when it gave any, and never claim a reason hc did not give.
+  const status = r.statusCode === undefined
+    ? "`hc server status` could not run"
+    : r.statusWhy === undefined
+      ? `\`hc server status\` exited ${r.statusCode}`
+      : `\`hc server status\` exited ${r.statusCode} (${r.statusWhy})`;
+  // `tried: false` only reaches this line when the wait ended before its first start (a zero or tiny --wait-ms): saying
+  // it "was not needed" would blame the core, so name the real reason.
+  const start = !r.start.tried
+    ? "`hc server start` was not attempted (the wait ended first)"
+    : r.start.ok ? "`hc server start` succeeded" : `\`hc server start\` failed: ${r.start.why}`;
+  return `HC UNAVAILABLE: waited ${waited} for the hc core to answer: ${status}, ${start}, still no answer; nothing opened. The daemon and loops are unaffected.`;
 }
 
 /**
@@ -361,10 +441,13 @@ export async function up(
 ): Promise<void> {
   const name = loadConfig(d.store.root).name;
   const cwd = cwdFlag === undefined ? d.store.root : resolve(cwdFlag);
-  if (opts.waitHc === true && !(await waitForHc(d, opts.waitMs))) {
-    // A logon hook runs this once: exit 0 with the reason, so a boot that finds no hc is reported, not retried in a loop.
-    out(`HC UNAVAILABLE: hc did not answer within ${Math.round((opts.waitMs ?? HC_WAIT_MS) / 1000)} s; nothing opened`);
-    return;
+  if (opts.waitHc === true) {
+    // The logon path: the hook runs this once, so a boot without a core is reported and exits 0, never retried in a loop.
+    const waited = await waitForHcResult(d, opts.waitMs);
+    if (!waited.up) {
+      out(hcUnavailableLine(waited));
+      return;
+    }
   }
   const plan = await upCheck(d, name);
   if (plan.kind === "healthy") {
@@ -591,10 +674,6 @@ async function homeTerminals(d: Deps, name: string): Promise<SessionRef[]> {
     .filter((s) => s.home === mine || (s.home === undefined && recorded.has(s.ref.id)))
     .map((s) => s.ref);
 }
-
-/** The boot hook's unit name (Linux): the logon autostart `seori autostart install` writes. */
-export const bootUnitName = (name: string, home: string): string => unitName(name, home, BOOT_KIND);
-
 /**
  * `seori restart [--force]`: down then up, safe from inside the lead or duty pane. The work runs in a detached child
  * (src/restart.ts), because `down all` closes the caller's pane and would otherwise kill the restart itself. This
@@ -640,17 +719,35 @@ export async function restart(
 }
 
 /** `seori restart --follow`: the same detached restart, then the log until the child logs its exit code. */
-async function followRestartLog(log: string, from: number, out: (line: string) => void, sleep: (ms: number) => Promise<void>, waitMs = RESTART_FOLLOW_MS): Promise<boolean> {
-  const deadline = Date.now() + waitMs;
+export async function followRestartLog(
+  log: string,
+  from: number,
+  out: (line: string) => void,
+  sleep: (ms: number) => Promise<void>,
+  waitMs = RESTART_FOLLOW_MS,
+  // The clock the deadline is measured by, so a test can drive it with its own sleep (as heartbeatSince does).
+  now: () => number = Date.now,
+): Promise<boolean> {
+  const deadline = now() + waitMs;
   let seen = from;
+  // A poll can land mid-line (a long UP line, or RESTART_EXIT itself half written): only complete lines are printed and
+  // matched, and the remainder is kept for the next read. Without this, an exit line split across two polls is never
+  // seen and a successful restart reports RESTART_UNFINISHED when the wait runs out.
+  let partial = "";
   for (;;) {
     const text = existsSync(log) ? readFileSync(log, "utf8") : "";
-    const fresh = text.slice(seen);
+    const chunk = partial + text.slice(seen);
     seen = text.length;
-    for (const line of fresh.split("\n").filter(Boolean)) out(line);
-    const exit = /^RESTART_EXIT=(\d+)$/m.exec(fresh);
+    const cut = chunk.lastIndexOf("\n");
+    const complete = cut < 0 ? "" : chunk.slice(0, cut);
+    partial = cut < 0 ? chunk : chunk.slice(cut + 1);
+    for (const line of complete.split("\n").filter(Boolean)) out(line);
+    const exit = /^RESTART_EXIT=(\d+)$/m.exec(complete);
     if (exit) return exit[1] === "0";
-    if (Date.now() >= deadline) {
+    if (now() >= deadline) {
+      // A log that ends without a final newline still carries its verdict: read the tail before giving up on it.
+      const tail = /^RESTART_EXIT=(\d+)$/m.exec(partial);
+      if (tail) return tail[1] === "0";
       out(`RESTART_UNFINISHED nothing conclusive in ${log} after ${Math.round(waitMs / 1000)} s; check it there`);
       return false;
     }

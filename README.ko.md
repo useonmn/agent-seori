@@ -65,7 +65,7 @@ seori autostart install
 # AUTOSTART seori-seori-1a2b3c4d-boot.service enabled in ~/.config/systemd/user: it runs `seori up --wait-hc` once at logon
 ```
 
-로그온마다 한 번 `seori up --wait-hc`를 실행하는 `systemd --user` oneshot(`Type=oneshot`, `Restart=` 없음, enable만 하고 시작하지는 않음)을 씁니다. `--wait-hc`는 `hc server status`를 폴링해서 코어가 답할 때까지 기다리므로(고정 sleep 없음, 최대 10분) hc가 늦게 뜨는 로그온에서도 리드가 뜹니다. hc가 끝내 답하지 않으면 `HC UNAVAILABLE ... nothing opened`를 출력하고 0으로 끝나므로, 부팅 실패가 보고될 뿐 루프로 재시도하지 않습니다. 설치를 다시 실행해도 무해하고, `seori autostart status`로 설치 여부를 보고, `seori down all`이 훅을 지웁니다. systemd가 없는 macOS에서는 로그인 항목에 `seori up --wait-hc`를 넣으세요. 레인 에이전트는 로그온 때 되살리지 않습니다: 기록이 남으므로 닫힌 레인은 키로 `seori start` 하면 됩니다.
+로그온마다 한 번 `seori up --wait-hc`를 실행하는 `systemd --user` oneshot(`Type=oneshot`, `Restart=` 없음, enable만 하고 시작하지는 않음)을 씁니다. `--wait-hc`는 `hc server status`를 폴링해서 코어가 답할 때까지 기다립니다(고정 sleep 없음, 최대 10분). hc 0.1.20은 `status`만 불러도 코어를 필요할 때 띄우므로 보통은 이 폴링만으로 코어가 뜹니다. 그래도 코어가 없으면 훅이 `hc server start`를 한 번 실행한 뒤 계속 기다립니다. 이는 hc의 즉석 기동을 쓸 수 없을 때(그 하위 명령이 없는 옛 hc, 상태 디렉터리에 쓸 수 없을 때)를 덮습니다. 이미 답하는 코어는 시작하지 않고, 한 번만 시작합니다. 코어가 끝내 답하지 않으면 무엇을 얼마나 기다렸고 무엇을 시도했는지(`hc server status` exit 5와 hc가 준 이유, `hc server start`의 성공 또는 실패 이유)를 한 줄 `HC UNAVAILABLE`로 남기고 0으로 끝나므로, 부팅 실패가 보고될 뿐 루프로 재시도하지 않습니다. 데몬과 루프는 어느 경우든 계속 돕니다. 이 줄은 seori가 멀쩡한지 hc가 안 뜬 것인지도 구분해 줍니다. `hc server start`로도 코어가 돌아오지 않으면 그 줄에 hc 자신의 메시지(예: `cannot start core: Permission denied (os error 13)`)가 그대로 실리므로, 그것이 다음에 고칠 것입니다. 설치를 다시 실행해도 무해하고, `seori autostart status`로 훅이 있는지 보고, `seori down all`이 훅을 지웁니다. 레인 에이전트는 로그온 때 되살리지 않습니다: 기록이 남으므로 닫힌 레인은 키로 `seori start` 하면 됩니다.
 
 `seori restart`는 리드나 듀티 세션이 자기 패널 안에서 홈을 재시작하는 방법입니다:
 
@@ -634,7 +634,7 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
    ```
 2. 봇을 따로 만듭니다. 새 봇이나 앱을 만들고([messengers.md](skills/seori-mode/references/messengers.md)), 봇 하나로 데몬 두 개를 섬길 수는 없습니다. 토큰은 `$SEORI_HOME/secrets.json`에 적고, 같은 셸에서 `seori msg check <source>`, `seori msg pair <source> --write`를 실행합니다. 계정 전체에 `SEORI_*_TOKEN` 변수를 두지 마세요. 모든 홈의 `secrets.json`보다 먼저 쓰입니다.
 3. 그 셸에서 `seori up --cwd ~/src`로 띄웁니다. 터미널에는 `seori.group=seori-two` 라벨이 붙고, 유닛 이름은 `seori-seori-two-<hash>-*`입니다. `<hash>`는 홈 경로의 16진수 8자리라서 두 홈이 유닛을 나눠 쓰는 일이 없습니다. `seori down`은 이 홈을 가리키는 예전 `seori-<name>-*` 이름의 유닛도 지웁니다.
-4. 자동 시작. Linux에서는 유닛이 enabled 상태라 재부팅 뒤 데몬과 루프가 저절로 다시 뜨지만, 리드·듀티 패널은 그렇지 않습니다. 그 홈의 셸에서 한 번 `seori autostart install`을 실행하세요(`seori up --wait-hc`를 한 번 도는 `systemd --user` oneshot이고, 이름은 `seori-seori-two-<hash>-boot.service`입니다). 그러면 재부팅 뒤 패널이 저절로 돌아오고, `seori down all`이 훅까지 함께 지웁니다. macOS에서는 로그인 항목에 `seori up --wait-hc`를 넣으세요. hc가 늦게 떠도 실패하지 않고 기다립니다.
+4. 자동 시작. Linux에서는 유닛이 enabled 상태라 재부팅 뒤 데몬과 루프가 저절로 다시 뜨지만, 리드·듀티 패널은 그렇지 않습니다. 그 홈의 셸에서 한 번 `seori autostart install`을 실행하세요(`seori up --wait-hc`를 한 번 도는 `systemd --user` oneshot이고, 이름은 `seori-seori-two-<hash>-boot.service`입니다). 그러면 재부팅 뒤 패널이 저절로 돌아옵니다. 이때 hc가 먼저 떠 있어야 하는 것은 아닙니다: 훅이 `hc server status`를 폴링하고(hc 0.1.20은 이것만으로 코어를 필요할 때 띄웁니다), 그래도 코어가 없으면 `hc server start`를 한 번 실행합니다. 그렇게도 코어가 뜨지 않으면 저널에 hc 자신의 이유와 함께 `HC UNAVAILABLE`을 남기고 아무것도 열지 않으니, 그때는 `systemctl --user status`와 `hc server status`를 확인하세요. `seori down all`이 훅까지 함께 지웁니다. macOS에서는 로그인 항목에 `seori up --wait-hc`를 넣으세요. hc가 늦게 떠도 같은 방식으로 기다리고 시작하며 실패하지 않습니다.
 
 모든 `seori` 명령은 `SEORI_HOME`에 있는 홈을 대상으로 하니, 그 인스턴스용으로 쓰는 셸마다 설정하세요. seori가 띄운 세션과 유닛에는 이미 들어 있습니다.
 
