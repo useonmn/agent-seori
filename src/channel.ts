@@ -77,7 +77,8 @@ function othersOf(rows: readonly InboundRow[], ledger: () => readonly LedgerEven
       for (const e of ledger()) {
         if (e.ev !== "replied") continue;
         const row = byId.get(e.id);
-        if (row) (plain(row) ? owner : shared).add(`${row.source}:${row.chat}:${e.messageId}`);
+        // A long reply went out in chunks: a thread under any of them hangs under this reply.
+        if (row) for (const m of [e.messageId, ...(e.laterChunks ?? [])]) (plain(row) ? owner : shared).add(`${row.source}:${row.chat}:${m}`);
       }
       answers = new Set([...owner].filter((key) => !shared.has(key)));
     }
@@ -100,7 +101,8 @@ export type ChannelView = { readonly withOthers?: boolean };
  * - entered: the delivered message appeared in the lead's conversation.
  * - sending: `seori msg send --reply-to` is about to call the messenger. Written first, so a process killed mid-send
  *   leaves a trace: a `sending` with no later `replied` or `send-failed` counts as uncertain (see IdState.uncertain).
- * - replied: `seori msg send --reply-to` got a message id back from the messenger. Closes the id.
+ * - replied: `seori msg send --reply-to` got a message id back from the messenger (`laterChunks`: the ids of the later
+ *   chunks of a split reply, where the messenger gives them). Closes the id.
  * - send-failed: the messenger definitely did not take the reply; settles the `sending` before it, the id stays open.
  * - closed: `seori msg close`, or the extension for a watch row the lead has seen (why "seen") or that gave up
  *   (why "gave-up"). Closes the id.
@@ -112,7 +114,7 @@ export type LedgerEvent =
   | { readonly id: string; readonly ev: "delivered"; readonly at: number; readonly attempt: number; readonly mode: "followUp" | "aside"; readonly session?: string }
   | { readonly id: string; readonly ev: "entered"; readonly at: number; readonly session?: string }
   | { readonly id: string; readonly ev: "sending"; readonly at: number }
-  | { readonly id: string; readonly ev: "replied"; readonly at: number; readonly messageId: string }
+  | { readonly id: string; readonly ev: "replied"; readonly at: number; readonly messageId: string; readonly laterChunks?: readonly string[] }
   | { readonly id: string; readonly ev: "send-failed"; readonly at: number; readonly detail: string }
   | { readonly id: string; readonly ev: "closed"; readonly at: number; readonly why: string }
   | { readonly id: string; readonly ev: "send-uncertain"; readonly at: number; readonly detail: string }

@@ -15,11 +15,18 @@ const DEFAULT_PING_INTERVAL_MS = 10_000;
 /** Slack sends hello right after the socket opens; without one by then the connection is retried. */
 const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
 /**
- * Threads per channel catch-up reads with conversations.replies (the most recently active), and how long they stay.
- * seori answers a top-level message top-level, so one exchange tracks about three roots (the request, the
- * acknowledgement, the result): the limit keeps about twenty exchanges.
+ * Threads per channel catch-up follows (the most recently active), and how long they stay. seori answers a top-level
+ * message top-level, so one exchange tracks about three roots (the request, the acknowledgement, the result): the limit
+ * keeps about twenty exchanges.
  */
 const THREAD_LIMIT = 60;
+/**
+ * Pages (of 200) catch-up's history read may take in all to reach back to the oldest tracked thread, so a parent's
+ * latest_reply tells which tracked threads got replies; it reads on past this only until the cursor. A tracked thread
+ * older than what was read gets a conversations.replies call of its own. Each page past the cursor is one more
+ * rate-limited call (and Slack may serve fewer than 200 per page), so the lookback stays this short.
+ */
+const THREAD_HISTORY_PAGES = 3;
 const THREAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Threads per receive remembered as not involving seori, so a busy thread is looked up once (see `involved`). */
 const UNTRACKED_LIMIT = 1000;
@@ -452,16 +459,22 @@ export class SlackAdapter implements MessengerAdapter {
 
   /**
    * Fetches what each known channel got after its committed ts, oldest first, and handles it like a live event: its
-   * top-level history, plus the replies of its tracked threads and of new parents with replies after the cursor
-   * (conversations.history holds no thread replies). A channel the bot can no longer read is skipped, not fatal.
+   * top-level history, plus the replies of each thread with a reply after the cursor (conversations.history holds no
+   * thread replies). The history read reaches back to the oldest tracked thread (see THREAD_HISTORY_PAGES), so a parent's
+   * latest_reply says whether its thread needs a conversations.replies call: a quiet tracked thread costs none. A
+   * channel the bot can no longer read is skipped, not fatal.
    */
   private async catchUp(ctx: Receiving): Promise<void> {
     for (const channel of Object.keys(ctx.cursor.channels)) {
       const oldest = ctx.cursor.channels[channel];
       if (!oldest) continue;
+      const tracked = new Set(Object.keys(ctx.cursor.threads[channel] ?? {}));
+      const since = [...tracked].map(tsBefore).reduce((a, b) => (compareTs(a, b) <= 0 ? a : b), oldest);
+      let read = 0;
       let messages: SlackMessage[];
       try {
-        messages = await this.pages("conversations.history", { channel, oldest }, ctx);
+        // Newest first: a page holding a message at or before the cursor means every new message is in.
+        messages = await this.pages("conversations.history", { channel, oldest: since }, ctx, (page) => ++read >= THREAD_HISTORY_PAGES && page.some((m) => m.ts !== undefined && compareTs(m.ts, oldest) <= 0));
       } catch (e) {
         if (!(e instanceof SlackApiError)) throw e;
         if (UNREADABLE_ERRORS.has(e.error)) continue; // kept: once the scope is added, catch-up resumes from the cursor
@@ -472,12 +485,17 @@ export class SlackAdapter implements MessengerAdapter {
         continue;
       }
       const byTs = new Map<string, SlackMessage>();
-      const roots = new Set(Object.keys(ctx.cursor.threads[channel] ?? {}));
+      const seen = new Set<string>();
+      const roots = new Set<string>();
       for (const m of messages) {
         if (!m.ts) continue;
-        byTs.set(m.ts, m);
-        if (m.thread_ts === m.ts && (m.reply_count ?? 0) > 0 && m.latest_reply && compareTs(m.latest_reply, oldest) > 0) roots.add(m.ts);
+        seen.add(m.ts);
+        const fresh = compareTs(m.ts, oldest) > 0;
+        if (fresh) byTs.set(m.ts, m);
+        // A thread started before the cursor is read only when tracked: someone else's old thread costs no call.
+        if ((fresh || tracked.has(m.ts)) && m.thread_ts === m.ts && (m.reply_count ?? 0) > 0 && m.latest_reply && compareTs(m.latest_reply, oldest) > 0) roots.add(m.ts);
       }
+      for (const root of tracked) if (!seen.has(root)) roots.add(root);
       for (const root of roots) {
         let replies: SlackMessage[];
         try {
@@ -710,7 +728,7 @@ export class SlackAdapter implements MessengerAdapter {
    * message was a thread reply, else top-level in `target.chat`. An `attached` message (an alert or a progress post
    * about `replyTo`) without a thread is threaded under `replyTo`, the only way to tie it to that message.
    */
-  async send(target: SendTarget, text: string): Promise<{ messageId: string }> {
+  async send(target: SendTarget, text: string): Promise<{ messageId: string; laterChunks?: string[] }> {
     const chunks = splitText(escape(text), TEXT_LIMIT);
     if (!chunks.length) throw new Error("slack: refusing to send an empty message");
     const token = this.botToken();
@@ -732,14 +750,15 @@ export class SlackAdapter implements MessengerAdapter {
       if (e instanceof SlackApiError && UNCERTAIN_SEND_ERRORS.has(e.error)) throw new SendUncertain(`slack chat.postMessage: ${e.error}; the message may have been posted`);
       throw this.fatal(e, false) ?? e;
     }
+    const laterChunks: string[] = [];
     for (let i = 1; i < chunks.length; i++) {
       try {
-        await post(chunks[i]!);
+        laterChunks.push(await post(chunks[i]!));
       } catch (e) {
         throw new SendUncertain(`slack: chunk ${i + 1} of ${chunks.length} failed after earlier chunks were posted: ${(e as Error).message ?? e}`);
       }
     }
-    return { messageId: first };
+    return { messageId: first, ...(laterChunks.length ? { laterChunks } : {}) };
   }
 
   async edit(target: SendTarget, message: string, text: string): Promise<void> {

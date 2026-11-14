@@ -55,15 +55,16 @@ export interface MessengerAdapter {
    */
   receive(signal: AbortSignal, onMessage: (m: InboundMessage) => Promise<void>): Promise<void>;
   /**
-   * Resolves with the messenger's message id (the first chunk's, when long text is split). The message goes to
-   * `target.chat`, in `target.thread` when set. `target.replyTo` is the part of a stored id after `<source>:<chat>:`
-   * (an `:edit:<stamp>` suffix there must be dropped, common.ts replyTarget); platforms with inline replies (Discord,
-   * Telegram) quote that message. Slack has none: a reply goes where the message was written, and only an `attached`
-   * message without a thread is threaded under `replyTo`.
+   * Resolves with the messenger's message id (the first chunk's, when long text is split); Slack also gives the ids of
+   * the later chunks (`laterChunks`), since a thread under any of them hangs under seori's reply (rootBySeori). The
+   * message goes to `target.chat`, in `target.thread` when set. `target.replyTo` is the part of a stored id after
+   * `<source>:<chat>:` (an `:edit:<stamp>` suffix there must be dropped, common.ts replyTarget); platforms with inline
+   * replies (Discord, Telegram) quote that message. Slack has none: a reply goes where the message was written, and
+   * only an `attached` message without a thread is threaded under `replyTo`.
    * Throws SendUncertain when the request may have reached the platform (also when some chunks of a split reply went
    * out and a later one failed), or any other Error for a definite failure.
    */
-  send(target: SendTarget, text: string): Promise<{ messageId: string }>;
+  send(target: SendTarget, text: string): Promise<{ messageId: string; laterChunks?: readonly string[] }>;
   /** Verifies credentials and returns who the bot is (e.g. "@seori_bot (id 123)"), for `seori messenger check`. */
   check(): Promise<string>;
   /**
