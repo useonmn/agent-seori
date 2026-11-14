@@ -652,6 +652,8 @@ One copy, two roles: it is both the running install and the checkout you develop
 
 **While you develop.** When a checkout has local work *and* upstream has commits it does not, `install.sh` will not pull: it lists the edits and the unpushed commits, names the three ways out, and stops with exit 1. That is the case worth catching, because a clean fast-forward would otherwise slip upstream in under edits you meant to run as they are. With nothing waiting upstream a reinstall still goes through, so running it while you have edits is harmless. The answer to the refusal is `SEORI_NO_PULL=1 bash install.sh`, which installs the checkout exactly as it is; untracked files (a test log, say) are not local work and never stop an update. Pull by hand when you want upstream: `git -C ~/src/agent-seori pull --rebase`.
 
+Running `install.sh` (or plainly `bun link`) from *any* checkout with your real `HOME` and `BUN_INSTALL` repoints the machine-wide `seori` at that checkout, because that is exactly what linking means: do it in a throwaway tree and the `seori` on your PATH starts running that tree, or stops resolving when the tree is deleted. A throwaway install therefore sets `HOME`, `BUN_INSTALL`, `SEORI_HOME` and `SKILLS_DIR` inside its own temp directory.
+
 **Where tests run.** `bun test` and `bun run typecheck` from the clone; they need no model, no hc and no `SEORI_HOME`. The `.seori/` entry in `.gitignore` keeps a `SEORI_HOME` that happens to sit inside a checkout out of the repository.
 
 ## Testing

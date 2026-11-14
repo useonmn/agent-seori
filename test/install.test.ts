@@ -90,15 +90,53 @@ describe("install.sh and a checkout you develop in", () => {
     return { root, upstream, dev, git };
   }
 
-  /** Runs install.sh against `dev`, with the state home, the skills dir and HOME all inside the temp root. */
+  /**
+   * A checkout that passes install.sh's "is this a seori checkout" check, so a run reaches `bun link`. It is a local
+   * origin and a clone of it carrying this repository's package.json (with its devDependencies dropped, so `bun install`
+   * needs no network), the seori-mode skill directory and the package's bin target. Nothing but a temp tree is written.
+   */
+  function seoriCheckout() {
+    const c = checkout();
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"));
+    delete pkg.devDependencies;
+    mkdirSync(join(c.upstream, "skills", "seori-mode"), { recursive: true });
+    mkdirSync(join(c.upstream, "src"), { recursive: true });
+    writeFileSync(join(c.upstream, "package.json"), JSON.stringify(pkg, null, 2));
+    // `bun link` writes the bin only when its target exists.
+    writeFileSync(join(c.upstream, "src", "cli.ts"), "#!/usr/bin/env bun\n", { mode: 0o755 });
+    writeFileSync(join(c.upstream, "skills", "seori-mode", "SKILL.md"), "skill\n");
+    c.git(c.upstream, "add", "-A");
+    c.git(c.upstream, "commit", "--quiet", "-m", "a seori checkout");
+    c.git(c.dev, "pull", "--quiet", "--ff-only");
+    return c;
+  }
+
+
+  /**
+   * Runs install.sh against `dev` with every directory bun, seori and install.sh read moved inside the temp root: HOME,
+   * BUN_INSTALL, the XDG directories, SEORI_HOME, SEORI_SRC and SKILLS_DIR. BUN_INSTALL matters as much as HOME, because
+   * `bun link` picks its global directory from BUN_INSTALL first and only then from bun's install root under HOME; the
+   * XDG variables are neutralised for the same reason (`bun install`'s cache, `seori up`'s unit directory). A run that
+   * lets any of them through writes the machine's own files — the global `seori` link among them.
+   */
   function install(dev: string, root: string, extra: Record<string, string> = {}) {
-    // Nothing of this machine's own SEORI_* may leak in: the point is a checkout and a home under the temp root.
-    const env: Record<string, string | undefined> = { ...process.env, HOME: join(root, "home"), SEORI_HOME: join(root, "state"), SEORI_SRC: dev, SKILLS_DIR: join(root, "skills"), ...extra };
+    // Nothing of this machine's own SEORI_* may leak in either: the point is a checkout and a home under the temp root.
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      HOME: join(root, "home"),
+      BUN_INSTALL: join(root, "bun"),
+      XDG_CONFIG_HOME: join(root, "config"),
+      XDG_DATA_HOME: join(root, "data"),
+      XDG_CACHE_HOME: join(root, "cache"),
+      SEORI_HOME: join(root, "state"),
+      SEORI_SRC: dev,
+      SKILLS_DIR: join(root, "skills"),
+      ...extra,
+    };
     for (const k of Object.keys(env)) if (k.startsWith("SEORI_") && !["SEORI_HOME", "SEORI_SRC", "SEORI_NO_PULL"].includes(k)) delete env[k];
     const r = Bun.spawnSync(["bash", INSTALL], { env, stdout: "pipe", stderr: "pipe" });
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
   }
-
   test("local edits with an update waiting: it refuses before pulling, names the checkout, offers the three ways out", () => {
     const { root, upstream, dev, git } = checkout();
     writeFileSync(join(dev, "tracked.txt"), "edited\n");
@@ -175,7 +213,33 @@ describe("install.sh and a checkout you develop in", () => {
     // Past the update block, it stops at the checkout check: proof that the pull was not what ended the run.
     expect(r.err).toContain(`is not a seori checkout`);
   });
+  // The boundary this test guards was breached for real on this host: a `bun link` from a throwaway checkout, with the
+  // developer's own BUN_INSTALL still set, repointed the machine-wide `seori` and took the CLI off PATH. So the assertion
+  // is not "the temp tree looks right" but "nothing outside the temp root moved". The run is a full install.sh: past the
+  // update block, through `bun install` and `bun link`, on to the skill link and the summary.
+  test("a full install.sh run writes the temp BUN_INSTALL and leaves the machine's own global seori alone", () => {
+    const { root, dev } = seoriCheckout();
+    // What this host's own global link resolves to, read from the real environment before the run.
+    const machineGlobal = (): string | null => {
+      const p = join(process.env.BUN_INSTALL ?? join(process.env.HOME ?? "", ".bun"), "install", "global", "node_modules", "seori");
+      return existsSync(p) ? realpathSync(p) : null;
+    };
+    const globalBefore = machineGlobal();
 
+    const r = install(dev, root, { SEORI_NO_PULL: "1" });
+    expect(r.code).toBe(0);
+    // Past the update block, through bun, to the summary: the full run, not the update-decision stub. The skill step
+    // warns because the fixture's src/cli.ts is a stub and cannot answer `install-skill`; that is the one part of a real
+    // install this test does not exercise, and it links into SKILLS_DIR under the temp root, not the machine's.
+    expect(r.out).toContain(`Installed seori from ${realpathSync(dev)}`);
+
+    // The link landed in the temp root, pointing at the temp checkout, with the bin beside it.
+    expect(realpathSync(join(root, "bun", "install", "global", "node_modules", "seori"))).toBe(realpathSync(dev));
+    expect(existsSync(join(root, "bun", "bin", "seori"))).toBe(true);
+
+    // The machine's own global link is exactly where it was (or still absent, on a host that has none).
+    expect(machineGlobal()).toBe(globalBefore);
+  });
   test("SEORI_NO_PULL=1 installs a dirty checkout as it is, saying so", () => {
     const { root, upstream, dev, git } = checkout();
     writeFileSync(join(dev, "tracked.txt"), "edited\n");

@@ -10,6 +10,8 @@
 #   SKILLS_DIR    where omp loads user skills (default ~/.omp/agent/skills)
 #   SEORI_NO_PULL 1, true or yes: install the existing checkout as it is, without pulling (what you want while
 #                 developing: a checkout with local work is never pulled, and this says so instead of asking you)
+#   BUN_INSTALL   where bun keeps its global bin and its package links (default ~/.bun). A throwaway install must set
+#                 this, HOME, SEORI_HOME and SKILLS_DIR: `bun link` below writes the machine's global `seori` otherwise.
 set -euo pipefail
 
 repo="https://github.com/useonmn/agent-seori.git"

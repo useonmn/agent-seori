@@ -646,6 +646,8 @@ bun test && bun run typecheck                 # CI가 돌리는 두 명령
 
 **개발하는 동안.** 내 작업이 있고 업스트림에 받아 올 커밋도 있을 때만 `install.sh`가 pull하지 않습니다. 고친 파일과 아직 올리지 않은 커밋을 보여 주고, 세 가지 길을 알려 준 뒤 exit 1로 멈춥니다. 그대로 실행했더니 내가 돌리려던 수정 위로 업스트림이 조용히 fast-forward되는 경우가 바로 이 경우입니다. 업스트림에 받을 것이 없으면 다시 실행해도 그대로 지나가니, 고친 채로 재설치하는 것은 무해합니다. 막혔을 때의 답은 `SEORI_NO_PULL=1 bash install.sh`이고, 체크아웃을 있는 그대로 설치합니다. 추적하지 않는 파일(테스트 로그 같은 것)은 로컬 작업이 아니라서 업데이트를 막지 않습니다. 업스트림을 당길 때는 직접 `git -C ~/src/agent-seori pull --rebase`를 실행하세요.
 
+진짜 `HOME`과 `BUN_INSTALL`을 둔 채 어느 체크아웃에서든 `install.sh`(또는 그냥 `bun link`)를 실행하면 그 체크아웃으로 PC 전체의 `seori`가 바뀝니다. 링크한다는 말이 그것이기 때문입니다. 버리는 나무에서 실행하면 PATH의 `seori`가 그 나무를 실행하기 시작하고, 그 나무를 지우면 아예 풀리지 않습니다. 그래서 버리는 설치는 `HOME`, `BUN_INSTALL`, `SEORI_HOME`, `SKILLS_DIR`을 모두 자기 임시 폴더 안으로 잡습니다.
+
 **테스트는 어디서.** 클론에서 `bun test`와 `bun run typecheck`. 모델도, hc도, `SEORI_HOME`도 필요 없습니다. `.gitignore`의 `.seori/` 덕분에 체크아웃 안에 `SEORI_HOME`이 있어도 저장소에 들어가지 않습니다.
 
 ## 테스트
