@@ -774,6 +774,17 @@ describe("seori restart as a command", () => {
     expect(started[0]!.argv.at(-1)).not.toMatch(/(ENDED|CLOSED) (ci|ui) /);
   });
 
+  test("a lane whose pane status cannot be read counts as open: a waiting one still blocks the restart", async () => {
+    const { d, started } = home({ ci: "waiting" });
+    const rt = d.runtime;
+    rt.status = async () => {
+      throw new Error("hc exploded");
+    };
+    const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
+    await expect(restart(d, undefined, false, () => {}, { spawn })).rejects.toThrow(/would end 1 lane\(s\) still owed work: ci \(waiting\)/);
+    expect(started).toEqual([]);
+  });
+
   test("a host that cannot detach refuses before anything is stopped", async () => {
     const { d, started } = home();
     const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);

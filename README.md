@@ -106,7 +106,7 @@ seori start fix-flaky-login --brief examples/brief.md
 seori status
 ```
 
-A brief states the goal, inputs, deliverable, an observable exit condition and constraints; see [examples/brief.md](examples/brief.md). Do not write "complete the goal" in a brief: in goal mode that wording makes models stop early. A lane key matches `^[a-z][a-z0-9-]{1,40}$`, and a key that is already open is refused, except one whose pane is gone (a restart closed it, or it died before duty marked it lost), which starting again takes back. One start or close of a key runs at a time: a second `seori start` of the key, or a `seori done` or done-window close while a start takes it back, is refused until the first has finished, and a start that fails leaves `briefs/<key>.md` as it was.
+A brief states the goal, inputs, deliverable, an observable exit condition and constraints; see [examples/brief.md](examples/brief.md). Do not write "complete the goal" in a brief: in goal mode that wording makes models stop early. A lane key matches `^[a-z][a-z0-9-]{1,40}$`, and a key that is already open is refused, except one whose pane is gone (a restart closed it, or it died before duty marked it lost), which starting again takes back. One start or close of a key runs at a time: a second `seori start` of the key, or a `seori done` or done-window close while a start takes it back, is refused until the first has finished, and a start that fails writes back the `briefs/<key>.md` it replaced, so the record that stays keeps its own brief.
 
 Inside a lane, the agent reports and finishes with the commands the lane rules give it:
 

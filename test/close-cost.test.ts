@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { closeLane } from "../src/done-flow.ts";
+import { laneBusy } from "../src/harness.ts";
+import { recordCloseCost } from "../src/supervision.ts";
 import { hooksSettled } from "../src/hooks.ts";
 import { type Lane, lockFile } from "../src/store.ts";
 import { World } from "./fake.ts";
@@ -46,9 +48,20 @@ describe("cost recorded when a lane closes", () => {
     expect(ledger()).toHaveLength(1);
   });
 
-  test("two concurrent closeLane calls on one lane write one ledger line and run recordCost once", async () => {
+  test("a second closeLane of a lane while one runs is refused by the lane lock, and the lane closes once", async () => {
     const { d, lane, ledger, hookCalls } = setup([assistant(10, 0.125)], { recordCost: ["record-cost", "{key}", "{tokens}", "{cost}", "{closeKey}"] });
-    await Promise.allSettled([closeLane(d, lane, "closed by lead"), closeLane(d, lane, "closed by lead")]);
+    const [first, second] = await Promise.allSettled([closeLane(d, lane, "closed by lead"), closeLane(d, lane, "closed by lead")]);
+    expect(first.status).toBe("fulfilled");
+    expect(second).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: laneBusy("fix-a") }) });
+    await hooksSettled(1000);
+    expect(ledger()).toHaveLength(1);
+    expect(hookCalls()).toEqual([["fix-a", "10", "0.125", "fix-a@7"]]);
+    expect(d.store.lane("fix-a")!.log.filter((e) => e.kind === "done")).toHaveLength(1);
+  });
+
+  test("two concurrent cost records of one lane write one ledger line and run recordCost once", async () => {
+    const { d, lane, ledger, hookCalls } = setup([assistant(10, 0.125)], { recordCost: ["record-cost", "{key}", "{tokens}", "{cost}", "{closeKey}"] });
+    await Promise.all([recordCloseCost(d, lane), recordCloseCost(d, lane)]);
     await hooksSettled(1000);
     expect(ledger()).toHaveLength(1);
     expect(hookCalls()).toEqual([["fix-a", "10", "0.125", "fix-a@7"]]);

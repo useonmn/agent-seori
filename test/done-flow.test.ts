@@ -250,6 +250,10 @@ describe("autoCloseTick", () => {
     // Delivered in the next batch to the lead (with the notice about the uncertain first delivery).
     expect(lead.received.some((m) => m.includes("[NOT-DONE fix-login] merged o/r#1 -> state OPEN. Its pane is gone"))).toBe(true);
     expect(d.store.lane("fix-login")!.status).toBe("ready");
+    // Told once it went through: the next pass within closeAfterMin reads nothing and tells nothing again.
+    const count = lead.received.length;
+    expect(await autoCloseTick(d, noIo)).toEqual([]);
+    expect(lead.received).toHaveLength(count);
   });
 
   test("an objection to a lane whose pane is gone is refused and leaves the claim as it was", async () => {
