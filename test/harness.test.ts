@@ -267,13 +267,14 @@ describe("lanes started in the checkout seori runs from", () => {
   };
 
   /**
-   * An install as install.sh makes it, a clone of an origin, with seori's git going to real git; origin's main has a
-   * commit the install has not fetched yet, so a lane's branch shows whether it was made from a fresh origin/main.
+   * An install as install.sh makes it by default, a clone of an origin at $SEORI_HOME/src, with seori's git going to
+   * real git; origin's main has a commit the install has not fetched yet, so a lane's branch shows whether it was made
+   * from a fresh origin/main.
    */
   async function installed() {
     const s = setup();
     const top = mkdtempSync(join(tmpdir(), "seori-install-"));
-    const install = join(top, "install");
+    const install = join(s.d.store.root, "src");
     const origin = join(top, "origin.git");
     mkdirSync(install);
     await git(install, "init", "-q", "-b", "main");

@@ -425,8 +425,10 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
   if (workflow !== undefined) await requireWorkflowExtension(d, workflow, opts.workflow === undefined);
   const cwd = resolve(opts.cwd ?? loadConfig(d.store.root).defaultCwd ?? process.cwd());
-  // A folder in $SEORI_HOME is seori's state, never its code, even when the home lies inside the checkout.
-  const worktree = within(cwd, d.installDir) && !within(cwd, d.store.root) ? await laneWorktree(d, key) : undefined;
+  // The default install is the checkout at $SEORI_HOME/src. Only a home inside the checkout (the other nesting) is
+  // exempt: a folder in it is seori's state, never its code.
+  const inInstall = within(cwd, d.installDir) && !(within(d.store.root, d.installDir) && within(cwd, d.store.root));
+  const worktree = inInstall ? await laneWorktree(d, key) : undefined;
   const briefPath = d.store.briefPath(key);
   const closeAfterMin = doneLine === undefined ? 0 : loadConfig(d.store.root).closeAfterMin;
   const footer = prompt("lane-footer.md", {
