@@ -4,17 +4,20 @@
 # Uninstall: bash install.sh --uninstall [--purge]   (or: seori uninstall [--purge]); --purge also deletes SEORI_HOME
 # Needs: git, bun 1.3+. Checks (never installs): hc (herdr-core) and its notes = false setting, omp, systemctl (Linux).
 # Optional env:
-#   SEORI_SRC     where the checkout lives (default ~/.seori/src)
+#   SEORI_SRC     where the checkout lives (default ~/.seori/src). Point it at the clone you develop in, e.g.
+#                 ~/src/agent-seori, and keep that clone outside SEORI_HOME; see "Working on seori itself" in README.md
 #   SEORI_HOME    seori's state directory (default ~/.seori)
 #   SKILLS_DIR    where omp loads user skills (default ~/.omp/agent/skills)
-#   SEORI_NO_PULL 1, true or yes: install the existing checkout as it is, without pulling
+#   SEORI_NO_PULL 1, true or yes: install the existing checkout as it is, without pulling (what you want while
+#                 developing: a checkout with local work *and* commits waiting upstream is not pulled, and this says so)
+#   BUN_INSTALL   where bun keeps its global bin and its package links (default ~/.bun). A throwaway install must set
+#                 this, HOME, SEORI_HOME and SKILLS_DIR: `bun link` below writes the machine's global `seori` otherwise.
 set -euo pipefail
 
 repo="https://github.com/useonmn/agent-seori.git"
 home="${SEORI_HOME:-$HOME/.seori}"
 src="${SEORI_SRC:-$home/src}"
 skills="${SKILLS_DIR:-$HOME/.omp/agent/skills}"
-
 command -v bun >/dev/null || { echo "bun 1.3 or newer is required: https://bun.sh" >&2; exit 1; }
 
 if [ "${1:-}" = "--uninstall" ]; then
@@ -28,9 +31,83 @@ command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 mkdir -p "$home"
 chmod 700 "$home"
 
-# Absolute, so the skill symlink resolves from the skills directory whatever SEORI_SRC was relative to.
+# All three are resolved to absolute paths here, and only then compared with their defaults and carried into a remedy: a
+# relative SEORI_HOME or SKILLS_DIR pasted back from another directory would name a different place (an empty home, a
+# skill link nobody loads), and the default comparisons below would be cwd-dependent.
+home="$(cd "$home" && pwd -P)"
 mkdir -p "$src"
 src="$(cd "$src" && pwd -P)"
+# SKILLS_DIR is resolved the same way, and `mkdir -p` stays: install.sh already creates the state home and the checkout
+# before this point, and the skill link below needs the directory to exist. A run that stops earlier leaves an empty
+# skills directory behind, which is the same thing it has always done for SEORI_HOME.
+mkdir -p "$skills"
+skills="$(cd "$skills" && pwd -P)"
+# Remedy construction, in one place. A remedy is a line the user pastes, so every value in it must survive a shell
+# re-read. SEORI_SRC, SEORI_HOME and SKILLS_DIR are absolute paths by now (`cd … pwd -P` above); HOME and BUN_INSTALL
+# are carried as this shell has them, because they are what `bun link` reads. Two rules keep every remedy pasteable, and
+# no remedy below may bypass them:
+#   q VALUE        escapes one value for pasting (printf %q, so a quote, `$` or backtick in a path cannot become syntax)
+#   cat_words …    joins already-escaped words with single spaces, dropping empty ones; a value reaches a remedy only
+#                  through q
+q() { printf '%q' "$1"; }
+cat_words() { local out="" w; for w in "$@"; do [ -z "$w" ] || out="$out $w"; done; printf '%s' "${out# }"; }
+
+# The command that re-runs this script. From a file it names that file; through a pipe or a redirect there is no file to
+# name, so it re-fetches the script from main, which may be a newer revision than the one that refused; self_note says
+# so under every remedy that uses it.
+self_note=""
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+  selfdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  self="bash $(q "$selfdir/$(basename "${BASH_SOURCE[0]}")")"
+else
+  self="bash <(curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh)"
+  self_note="These commands fetch install.sh from main again, which may be newer than the one that printed them."
+fi
+say_self_note() { [ -z "$self_note" ] || echo "$self_note" >&2; }
+
+# The environment that reproduces *this* install, carried only where it differs from the defaults: SEORI_SRC whenever it is
+# not the default checkout, SEORI_HOME and SKILLS_DIR when they are not theirs, and HOME and BUN_INSTALL when they are not
+# the login values — those last two decide where `bun link` writes the machine's global `seori`, so a throwaway refusal
+# pasted into a normal shell would otherwise repoint it.
+env_prefix=""
+[ "$src" = "$home/src" ] || env_prefix="$(cat_words "SEORI_SRC=$(q "$src")" "$env_prefix")"
+[ "$home" = "$HOME/.seori" ] || env_prefix="$(cat_words "SEORI_HOME=$(q "$home")" "$env_prefix")"
+[ "$skills" = "$HOME/.omp/agent/skills" ] || env_prefix="$(cat_words "SKILLS_DIR=$(q "$skills")" "$env_prefix")"
+# The login home comes from the account database, never from re-reading text through the shell: `eval` on a user name
+# such as `o'brien` is code, not a path. `getent` covers every NSS source on Linux; macOS has no `getent` and keeps
+# login accounts in Directory Services, not /etc/passwd, so `dscl` reads it there (its value is on the next line when
+# it contains a space); awk over /etc/passwd covers the rest. Any of them may be missing or fail, which under
+# `set -euo pipefail` would end the run, so each may fail and an empty result just skips the HOME-differs check.
+login_home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)" || login_home=""
+# awk reads to the end instead of `exit`ing on the match, so dscl never takes a SIGPIPE that pipefail would report.
+[ -n "$login_home" ] || login_home="$(dscl /Search -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null |
+  awk '!found && sub(/^NFSHomeDirectory: ?/, "") { found = 1; if ($0 != "") { print; done = 1 }; next }
+       found && !done { sub(/^ /, ""); print; done = 1 }')" || login_home=""
+[ -n "$login_home" ] || login_home="$(awk -F: -v u="$(id -u)" '$3==u{print $6; exit}' /etc/passwd 2>/dev/null)" || login_home=""
+[ -z "$login_home" ] || [ "$HOME" = "$login_home" ] || env_prefix="$(cat_words "HOME=$(q "$HOME")" "$env_prefix")"
+[ -z "${BUN_INSTALL:-}" ] || env_prefix="$(cat_words "BUN_INSTALL=$(q "$BUN_INSTALL")" "$env_prefix")"
+
+# The remedy that installs this checkout as it is: the one line every refusal offers.
+remedy_install_as_is="$(cat_words "SEORI_NO_PULL=1" "$env_prefix" "$self")"
+# The install a git remedy chains after its git step: the same environment *without* SEORI_NO_PULL, so the re-run goes
+# through the update check again. `git pull --rebase --autostash` exits 0 even when the autostash stops on a conflict,
+# and the re-run's `merge --ff-only` then refuses the unmerged index instead of installing a conflicted tree.
+remedy_reinstall="$(cat_words "$env_prefix" "$self")"
+
+# Local work: edits to tracked files, or commits upstream does not have. Untracked files never count (a test log, or
+# anything else `bun test` leaves behind, does not block a fast-forward), so they are filtered out here.
+local_work() {
+  [ -n "$(git -C "$src" status --porcelain --untracked-files=no)" ] && return 0
+  git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null || return 1
+  [ -n "$(git -C "$src" rev-list '@{u}..HEAD')" ]
+}
+
+# An update is waiting: upstream has commits this checkout does not. Read after the fetch. Both helpers are only
+# meaningful with an upstream branch; without one they say nothing and git's own message from the merge explains it.
+update_waits() {
+  git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null || return 1
+  [ -n "$(git -C "$src" rev-list 'HEAD..@{u}')" ]
+}
 
 # -e, not -d: a git worktree has a .git file.
 if [ ! -e "$src/.git" ]; then
@@ -44,15 +121,55 @@ elif [[ "${SEORI_NO_PULL:-}" =~ ^(1|true|yes)$ ]]; then
 elif ! git -C "$src" fetch --quiet; then
   echo "Could not fetch updates for $src; git's message above says why." >&2
   exit 1
+elif local_work && update_waits; then
+  # Refuse only when a pull would actually move this tree: with nothing upstream to take, local work changes nothing and
+  # a reinstall stays idempotent. The check is before the merge, not after it fails, so a clean fast-forward over edits
+  # meant to be run as they are never happens silently.
+  echo "$src has local work and upstream has commits it does not, so install.sh did not pull:" >&2
+  git -C "$src" status --short --branch --untracked-files=no >&2
+  if ahead="$(git -C "$src" log --oneline '@{u}..HEAD')" && [ -n "$ahead" ]; then
+    echo "Commits upstream does not have:" >&2
+    printf '%s\n' "$ahead" >&2
+  fi
+  echo "This is a checkout you develop in; see \"Working on seori itself\" in README.md." >&2
+  echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+  # The git remedies are built the same way: the path goes through `q`, the rest are literal words, and the tail is the
+  # full re-install — not bare `$self` — so the chained install reproduces this one (its SEORI_SRC, HOME, BUN_INSTALL).
+  echo "  update it and keep the work:     $(cat_words "git -C $(q "$src") pull --rebase --autostash &&" "$remedy_reinstall")" >&2
+  echo "  update it and drop the work:     $(cat_words "git -C $(q "$src") reset --hard '@{u}' &&" "$remedy_reinstall")" >&2
+  # `git pull --rebase --autostash` can stop on a conflict and still exit 0, leaving unmerged paths, so `&&` is not a
+  # success check: the chained re-install refuses the unmerged index (below), and this line says what to do then.
+  echo "If the autostash stops on a conflict, resolve it and commit before installing again." >&2
+  say_self_note
+  exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
-  # Only local work (edits, or commits upstream lacks) is ours to explain; anything else is git's message above.
-  if git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null &&
-    [ -n "$(git -C "$src" status --porcelain)$(git -C "$src" rev-list '@{u}..HEAD')" ]; then
-    echo "Could not update $src. Local work in that checkout:" >&2
-    git -C "$src" status --short --branch >&2
-    git -C "$src" log --oneline '@{u}..HEAD' >&2
-    echo "To keep it and install the checkout as it is, run install.sh again with SEORI_NO_PULL=1." >&2
-    echo "To drop it and update: git -C \"$src\" reset --hard '@{u}', then run install.sh again." >&2
+  # The states that land here: unresolved conflicts (an autostash a remedy left stopped, or a rebase stopped mid-way,
+  # which also detaches HEAD, so it is checked first), a detached HEAD, a branch with no upstream (a scratch branch),
+  # local work, or something only git can explain. Name the one it is instead of blaming local work by default. Each
+  # remedy is on a line of its own, as in the refusal, so only the command is pasted.
+  if [ -n "$(git -C "$src" ls-files --unmerged)" ]; then
+    echo "Could not update $src: it has unresolved conflicts (listed below), so nothing was merged or installed." >&2
+    git -C "$src" status --short --branch --untracked-files=no >&2
+    echo "Resolve them and commit (a stopped autostash stays in \`git stash list\`; a stopped rebase is finished with" >&2
+    echo "\`git rebase --continue\` or undone with \`git rebase --abort\`), then install again:" >&2
+    echo "  $remedy_reinstall" >&2
+    say_self_note
+  elif ! git -C "$src" symbolic-ref -q HEAD >/dev/null; then
+    echo "Could not update $src: HEAD is detached, so there is no branch to update." >&2
+    echo "  switch to main and update it:    $(cat_words "git -C $(q "$src") switch main &&" "$remedy_reinstall")" >&2
+    echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+    say_self_note
+  elif ! git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null; then
+    echo "Could not update $src: its branch has no upstream to merge from (git's message above names the branch)." >&2
+    echo "  set one:                         $(cat_words "git -C $(q "$src") branch --set-upstream-to=origin/main")" >&2
+    echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+    say_self_note
+  elif local_work; then
+    echo "Could not update $src: it has local work (listed below), so nothing was merged." >&2
+    git -C "$src" status --short --branch --untracked-files=no >&2
+    echo "Commit or stash the work first, or:" >&2
+    echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+    say_self_note
   else
     echo "Could not update $src; git's message above says why." >&2
   fi

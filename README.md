@@ -572,7 +572,7 @@ The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name
 
 `install.sh` (the one-liner in [Quick start with seori mode](#quick-start-with-seori-mode)) needs git and Bun 1.3 or newer. It:
 
-- clones the repository into `~/.seori/src` (`SEORI_SRC` picks another place), or fast-forwards an existing checkout; when the checkout has local work it stops and says how to keep it (`SEORI_NO_PULL=1` installs the checkout as it is) or drop it;
+- clones the repository into `~/.seori/src` (`SEORI_SRC` picks another place: point it at the clone you develop in), or fast-forwards an existing checkout. A checkout with local work *and* commits upstream it does not have is not pulled: it lists the edits and unpushed commits, then stops with exit 1 and names the three ways out (`SEORI_NO_PULL=1 bash <script>` installs it as it is, `git pull --rebase --autostash` keeps the work, `git reset --hard` drops it). With nothing waiting upstream the reinstall goes through, and untracked files are never local work. See [Working on seori itself](#working-on-seori-itself);
 - runs `bun install` and `bun link`, which puts `seori` on PATH through Bun's global bin directory;
 - links the skill to `~/.omp/agent/skills/seori-mode` (`SKILLS_DIR` picks another place) with `seori install-skill`: a symlink; an older link or seori copy is replaced, and a real directory already there is left alone, with a warning;
 - creates `~/.seori` (or `$SEORI_HOME`) with mode 700;
@@ -627,6 +627,35 @@ Every `seori` command acts on the home in `SEORI_HOME`, so set it in each shell 
 | `SEORI_LANE` | set by seori in a lane's terminal; the default sender of `seori send` and the default owner of `seori watch add` |
 | `PI_CONFIG_FILES` | omp only: omp settings files; seori appends `$SEORI_HOME/prompts/agent-omp.yml` (`startup.setupWizard: false`) for the lead, duty and lane omp, so an omp whose setup version is behind still starts at its prompt instead of the onboarding wizard (log in to a provider with `omp login` first), and `$SEORI_HOME/prompts/lead-omp.yml` (`advisor.enabled: true` and `advisor.syncBacklog: strict`; omp's advisor is opt-in and off by default and the lead turns it on for itself) for the lead's omp only. In a home other than `~/.seori`, `agent-omp.yml` also sets `mnemopi.dbPath` to `$SEORI_HOME/omp/memories/mnemopi.db` |
 | `SEORI_TELEGRAM_TOKEN`, `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN`, `SEORI_DISCORD_TOKEN` | messenger tokens; override `secrets.json` (not in the lead, duty, lane or hourly-loop terminals) |
+
+## Working on seori itself
+
+Running the checkout you edit *is* the install: `seori` on PATH is a link into the checkout, the same way `npm link`, `pip install -e` or `cargo install --path` work. `install.sh` sets that up, so there is one tree to edit and nothing to reinstall after an edit. What must stay apart is the checkout, the state and your personal settings:
+
+| | lives in | in git? |
+|---|---|---|
+| the checkout you edit, branch and open PRs from | a clone outside `SEORI_HOME`, e.g. `~/src/agent-seori` | it is the repository |
+| state: lanes, inbox, worklog, `config.json`, `secrets.json`, `messengers.json` | `$SEORI_HOME` (`~/.seori`), mode 700 | no, and the repository's `.gitignore` lists `.seori/` |
+| tone and persona | `~/.omp/agent/AGENTS.md`, which omp injects into every session of yours | no |
+
+No personal setting is stored in a tracked file: `config.json` and `AGENTS.md` are user-level overrides documented here, not defaults. (`install.sh` does read one host-personal file, hc's `config.toml`, to warn when its `notes = false` line is missing; it never writes it.)
+
+**The clone.** Clone anywhere outside `SEORI_HOME` and install from it, so the `seori` on PATH and the skill link point at the clone you edit:
+
+```sh
+git clone https://github.com/useonmn/agent-seori.git ~/src/agent-seori
+cd ~/src/agent-seori
+SEORI_SRC=~/src/agent-seori bash install.sh   # `seori` on PATH and the skill link, both pointing at this clone
+bun test && bun run typecheck                 # the same two commands CI runs
+```
+
+One copy, two roles: it is both the running install and the checkout you develop in, which is what `SEORI_SRC` is for. If you would rather keep a read-only install copy, leave `install.sh` on its default (`~/.seori/src`) and develop in a separate clone, installing it with `SEORI_SRC=<clone> bash install.sh` when you want the CLI to run your code. Both work; pick one and keep `SEORI_SRC` the same in every shell, since it decides which tree `seori` resolves to (check with `readlink -f "$(command -v seori)"`).
+
+**While you develop.** When a checkout has local work *and* upstream has commits it does not, `install.sh` will not pull: it lists the edits and the unpushed commits, names the three ways out, and stops with exit 1. That is the case worth catching, because a clean fast-forward would otherwise slip upstream in under edits you meant to run as they are. With nothing waiting upstream a reinstall still goes through, so running it while you have edits is harmless. The three ways out are printed as ready-to-paste commands that reproduce the install that refused: every path in them is shell-escaped, they name the script's own file (or `bash <(curl -fsSL …/install.sh)` when it came through a pipe or a redirect, which fetches the script from main again and says so), and they carry the resolved `SEORI_SRC`, `SEORI_HOME`, `SKILLS_DIR`, and `HOME`/`BUN_INSTALL` wherever those differ from their defaults. That matters twice over: without `SEORI_SRC` a remedy installs the *default* checkout instead of the one you are editing, and without `HOME`/`BUN_INSTALL` a remedy produced in a throwaway install repoints the machine-wide `seori` when pasted in your normal shell. The two git ways end with that same install without `SEORI_NO_PULL=1`, so it checks the tree again and refuses one an autostash left in conflict. Untracked files (a test log, say) are not local work and never stop an update. Pull by hand when you want upstream, with the edits stashed and restored around it: `git -C ~/src/agent-seori pull --rebase --autostash` (plain `pull --rebase` refuses the uncommitted edits that caused the refusal; if the autostash stops on a conflict, resolve and commit before installing again).
+
+Running `install.sh` (or plainly `bun link`) from *any* checkout with your real `HOME` and `BUN_INSTALL` repoints the machine-wide `seori` at that checkout, because that is exactly what linking means: do it in a throwaway tree and the `seori` on your PATH starts running that tree, or stops resolving when the tree is deleted. A throwaway install therefore sets `HOME`, `BUN_INSTALL`, `SEORI_HOME` and `SKILLS_DIR` inside its own temp directory.
+
+**Where tests run.** `bun test` and `bun run typecheck` from the clone; they need no model, no hc and no `SEORI_HOME`. The repository's `.gitignore` lists `.seori/`, so a state home at the default name inside a checkout stays out of git; a home with another name inside one would not, so keep it outside the checkout or add your own ignore rule.
 
 ## Testing
 

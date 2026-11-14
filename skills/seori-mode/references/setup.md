@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh
 
 What it does:
 
-- clones or fast-forwards the checkout in `~/.seori/src` (`SEORI_SRC` picks another place; `SEORI_NO_PULL=1` installs a checkout as it is);
+- clones or fast-forwards the checkout in `~/.seori/src` (`SEORI_SRC` picks another place; a checkout with local work whose upstream has moved is not pulled, and `SEORI_NO_PULL=1` installs it as it is);
 - `bun install` and `bun link`, so `seori` is on PATH (bun's global bin directory, usually `~/.bun/bin`, must be on PATH);
 - links this skill to `~/.omp/agent/skills/seori-mode` (`SKILLS_DIR` picks another place), and leaves a real directory there alone;
 - creates `~/.seori` with mode 700;
