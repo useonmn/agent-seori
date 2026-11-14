@@ -50,6 +50,8 @@ export type ScriptOptions = {
  * one RESTART_FAILED line naming it. The up prints its own `UP lead=... duty=...` line into the log, which is where the
  * caller's pane, closed by the down, cannot.
  *
+ * The down is `down all --keep-autostart`: a restart is not an uninstall, so the home's logon hook (if installed) stays.
+ *
  * The last line is always `RESTART_EXIT=<code>`: the caller's pane is closed by the down, so the log is the only place
  * the outcome of a detached restart can be read (`seori restart --follow` reads it there).
  *
@@ -72,7 +74,7 @@ export function restartScript(o: ScriptOptions): string {
     `if ! hc --json server status >/dev/null 2>&1; then`,
     `  echo "RESTART_FAILED hc (herdr-core) does not answer; nothing stopped, nothing opened"; finish 1`,
     `fi`,
-    `if ! ${seori} down all; then`,
+    `if ! ${seori} down all --keep-autostart; then`,
     `  echo "RESTART_FAILED seori down did not finish; nothing opened"; finish 1`,
     `fi`,
     `if ${seori} up --cwd ${shq(o.cwd)}; then`,
@@ -83,23 +85,30 @@ export function restartScript(o: ScriptOptions): string {
 }
 
 /**
- * How a restart detaches, best first: `setsid --fork` (a new session; the intermediate process exits at once, so the
- * worker is reparented to init), `systemd-run --user` (a transient unit of the user manager), else `nohup` (portable:
- * the worker keeps this session but ignores SIGHUP, the signal a closed pane sends, which is what the hand-rolled
- * script this command replaces did). Undefined only when none of them is on PATH.
- *
- * `background`: the worker is started detached from this process's lifetime (`nohup ... &` inside a bare `sh -c`), so
- * there is no child exit code to read; the log's RESTART_EXIT line is the only outcome either way.
+ * The ways a restart can detach, best first; `seori restart` tries them in order and takes the first that starts:
+ * - `setsid --fork`: a new session; the intermediate process exits at once, so the worker is reparented to init. A
+ *   setsid without --fork (busybox) exits non-zero having started nothing, and the next way is tried.
+ * - `systemd-run --user`: a transient unit of the user manager. That unit gets the manager's environment, not this
+ *   one, so PATH (where hc and bun are) and the caller's SEORI_* and HC_* variables are passed on with --setenv.
+ * - `nohup ... &`: portable (macOS has no setsid); the worker keeps this session but ignores SIGHUP, the signal a
+ *   closed pane sends. It always exits 0, so it is last.
+ * Empty only when none of them is on PATH. Every way reports through the log, not its exit code: 0 means started.
  */
-export type Detach = { readonly argv: readonly string[]; readonly background: boolean };
+export type Detach = { readonly via: string; readonly argv: readonly string[] };
 
-export function detachArgv(script: string, has: (bin: string) => boolean, unit: string): Detach | undefined {
-  if (has("setsid")) return { argv: ["setsid", "--fork", "/bin/sh", "-c", script], background: false };
-  if (has("systemd-run")) {
-    return { argv: ["systemd-run", "--user", "--collect", "--quiet", `--unit=${unit}`, "/bin/sh", "-c", script], background: false };
-  }
-  if (has("nohup")) return { argv: ["/bin/sh", "-c", `nohup /bin/sh -c ${shq(script)} >/dev/null 2>&1 &`], background: true };
-  return undefined;
+export function detachWays(
+  script: string, has: (bin: string) => boolean, unit: string, env: Readonly<Record<string, string | undefined>>,
+): Detach[] {
+  const passed = Object.entries(env)
+    .filter((e): e is [string, string] => e[1] !== undefined && (e[0] === "PATH" || e[0].startsWith("SEORI_") || e[0].startsWith("HC_")))
+    .map(([k, v]) => `--setenv=${k}=${v}`);
+  return [
+    ...(has("setsid") ? [{ via: "setsid", argv: ["setsid", "--fork", "/bin/sh", "-c", script] }] : []),
+    ...(has("systemd-run")
+      ? [{ via: "systemd-run", argv: ["systemd-run", "--user", "--collect", "--quiet", `--unit=${unit}`, ...passed, "/bin/sh", "-c", script] }]
+      : []),
+    ...(has("nohup") ? [{ via: "nohup", argv: ["/bin/sh", "-c", `nohup /bin/sh -c ${shq(script)} >/dev/null 2>&1 &`] }] : []),
+  ];
 }
 
 /** The refusal text for a host that cannot detach a restart: said before anything is stopped. */

@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import type { Subprocess } from "bun";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { up, waitForHc, waitForHcResult, hcUnavailableLine, HC_POLL_MS, restart, main, followRestartLog } from "../src/cli.ts";
-import { detachArgv, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript } from "../src/restart.ts";
-import { BOOT_KIND, bootUnitInstalled, installBootUnit, unitDir, unitFile, unitName } from "../src/systemd.ts";
-import { recordPath } from "../src/down.ts";
+import {
+  up, upCheck, upLockPath, waitForHc, waitForHcResult, hcUnavailableLine, HC_POLL_MS, restart, main, followRestartLog, wakeNewLead,
+  LEAD_START_LINE, LEAD_START_WAIT_MS,
+} from "../src/cli.ts";
+import { detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript } from "../src/restart.ts";
+import { BOOT_KIND, bootUnitInstalled, installBootUnit, unitCwd, unitDir, unitFile, unitName, writeUnits } from "../src/systemd.ts";
+import { liveRunners, recordPath } from "../src/down.ts";
+import { DeliveryUncertain } from "../src/runtime/delivery.ts";
+import { lockFile } from "../src/store.ts";
 import { World, paneRef } from "./fake.ts";
 
 // `seori restart` and the logon hook, on a fake runtime and temporary homes: nothing here touches a real unit, a real
@@ -55,6 +61,25 @@ async function restartExit(log: string, deadlineMs = 20_000): Promise<number> {
   }
 }
 
+/** Waits (bounded) for `ok` to hold: for a detached worker, which no one here can await, its traces are the signal. */
+async function waitUntil(what: string, ok: () => boolean, deadlineMs = 20_000): Promise<void> {
+  const end = Date.now() + deadlineMs;
+  while (!ok()) {
+    if (Date.now() >= end) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(20);
+  }
+}
+
+/** Whether `pid` names a live process (signal 0 checks without sending anything). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("lanes a restart would end", () => {
   test("only a working lane blocks: ready, paused, done and lost lanes have no agent still producing", () => {
     const lanes = [
@@ -79,26 +104,55 @@ describe("lanes a restart would end", () => {
 
 describe("the detached restart script", () => {
   let dir = "";
+  let panes: Subprocess[] = [];
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "seori-restart-"));
+    panes = [];
   });
   afterEach(() => {
+    for (const p of panes) p.kill();
     rmSync(dir, { recursive: true, force: true });
   });
 
+  /** A stand-in for the caller's pane: a throwaway process of this test that the fake down kills, as a real down closes that terminal. */
+  function openPane(): Subprocess {
+    const p = Bun.spawn(["sleep", "300"], { stdio: ["ignore", "ignore", "ignore"] });
+    panes.push(p);
+    return p;
+  }
+
+  /** Resolves with the signal that ended the pane process, awaiting its exit; the bound only turns a hang into a failure. */
+  async function paneEnded(p: Subprocess, deadlineMs = 20_000): Promise<Subprocess["signalCode"]> {
+    const late = Promise.withResolvers<never>();
+    const timer = setTimeout(() => late.reject(new Error(`pane ${p.pid} still running after ${deadlineMs} ms`)), deadlineMs);
+    try {
+      await Promise.race([p.exited, late.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+    return p.signalCode;
+  }
+
   /**
-   * A fake seori that records each call, and whose `down all` closes the caller's pane the way the real one does: it
-   * sends `PANE_PID` a SIGTERM (a real `down` closes that terminal). `downMs` keeps it busy that long, so a hang-up
-   * sent meanwhile lands while the worker is still mid-down.
+   * A fake seori that records each call, and whose `down` closes the caller's pane the way the real one does: it sends
+   * `PANE_PID` a SIGTERM. With `gate`, the down then waits (bounded) for that file to exist, so the test decides what
+   * happens while the worker is still mid-down.
    */
-  function fakeSeori(fail?: "down" | "up", downMs = 0): string {
+  function fakeSeori(fail?: "down" | "up", gate?: string): string {
     const path = join(dir, "seori");
     writeFileSync(path, [
       "#!/bin/sh",
       `echo "CALLED $*" >> '${join(dir, "calls.log")}'`,
       `if [ "$1" = down ]; then`,
-      `  echo "CLOSED the caller pane"; if [ -n "$PANE_PID" ]; then kill -TERM "$PANE_PID" 2>/dev/null; fi`,
-      ...(downMs > 0 ? [`  sleep ${downMs / 1000}`] : []),
+      `  echo "CLOSED the caller pane"; if [ -n "$PANE_PID" ]; then kill -TERM "$PANE_PID"; fi`,
+      ...(gate === undefined
+        ? []
+        : [
+            `  n=0`,
+            `  while [ ! -e '${gate}' ]; do`,
+            `    n=$((n+1)); if [ "$n" -gt 400 ]; then echo "GATE never opened"; exit 1; fi; sleep 0.05`,
+            `  done`,
+          ]),
       ...(fail === "down" ? ["  exit 1"] : ["  exit 0"]),
       `fi`,
       `if [ "$1" = up ]; then`,
@@ -122,6 +176,14 @@ describe("the detached restart script", () => {
     return bin;
   }
 
+  /** The first way this host detaches (setsid on Linux, nohup on macOS), as `seori restart` would take it. */
+  function firstWay(script: string, env: Record<string, string> = {}): readonly string[] {
+    const PATH = env["PATH"] ?? process.env["PATH"] ?? "";
+    const way = detachWays(script, (bin) => Bun.which(bin, { PATH }) !== null, "seori-restart-test", env)[0];
+    if (way === undefined) throw new Error("no detach available in this test host");
+    return way.argv;
+  }
+
   /**
    * The script, run detached exactly as `seori restart` runs it, plus the worker's exit code from its log. A detached
    * worker is nobody's child here, so its outcome is read where `--follow` reads it. The detach is whatever this host
@@ -130,58 +192,66 @@ describe("the detached restart script", () => {
   async function runDetached(seori: string, env: Record<string, string>): Promise<number> {
     const log = join(dir, "restart.log");
     const script = restartScript({ home: dir, cwd: dir, seoriCmd: seori, log });
-    const detach = detachArgv(script, (bin) => Bun.which(bin, { PATH: `${env["PATH"] ?? ""}` }) !== null, "seori-restart-test");
-    if (detach === undefined) throw new Error("no detach available in this test host");
-    const p = Bun.spawn([...detach.argv], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "ignore"] });
+    const p = Bun.spawn([...firstWay(script, env)], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "ignore"] });
     await p.exited;
     return restartExit(log);
   }
 
-  test("the worker survives a SIGHUP mid-down and still runs the up, then reports its exit", async () => {
-    // A closing terminal hangs up on what it started; that arrives while the worker is still mid-`down`, because the
-    // fake seori's down takes a moment. The hang-up goes to the worker itself (its pid is in the log), which is the
-    // signal that would otherwise end it, so this holds whatever detach this host offers.
-    const seori = fakeSeori(undefined, 600);
+  test("the worker survives a SIGHUP mid-down, closes the pane, still runs the up, then reports its exit and ends", async () => {
+    const gate = join(dir, "gate");
+    const seori = fakeSeori(undefined, gate);
+    const pane = openPane();
     const log = join(dir, "restart.log");
-    const detach = detachArgv(restartScript({ home: dir, cwd: dir, seoriCmd: seori, log }), (b) => Bun.which(b) !== null, "seori-restart-test");
-    expect(detach).toBeDefined();
-    const pane = Bun.spawn([...detach!.argv], { env: { ...process.env, PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir }, stdio: ["ignore", "ignore", "ignore"] });
-    await pane.exited;
+    const env = { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir, PANE_PID: String(pane.pid) };
+    const starter = Bun.spawn([...firstWay(restartScript({ home: dir, cwd: dir, seoriCmd: seori, log }), env)], {
+      env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "ignore"],
+    });
+    await starter.exited;
     const worker = await restartPid(log);
     expect(worker).toBeGreaterThan(0);
-    // A closing terminal hangs up on what it started.
+    // The down has started (and is held at the gate): the hang-up a closing terminal sends lands mid-down.
+    await waitUntil("the down to start", () => existsSync(join(dir, "calls.log")));
     process.kill(worker, "SIGHUP");
+    writeFileSync(gate, "");
     expect(await restartExit(log)).toBe(0);
+    // The down closed the pane that asked, as the real one does.
+    expect(await paneEnded(pane)).toBe("SIGTERM");
     const calls = readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n");
-    expect(calls).toEqual(["CALLED down all", "CALLED up --cwd " + dir]);
+    // The restart's down keeps the logon hook: a restart is not an uninstall.
+    expect(calls).toEqual(["CALLED down all --keep-autostart", "CALLED up --cwd " + dir]);
     const text = readFileSync(log, "utf8");
     expect(text).toContain("RESTART_BEGIN");
     expect(text).toContain("UP lead=hc:t9 duty=hc:t10");
     expect(LINE(text.split("\n").find((l) => l.startsWith("RESTART_DONE"))!)).toBe("RESTART_DONE");
-    // The worker is done and gone: the exit code was its last word.
-    const gone = Bun.spawn(["/bin/kill", "-0", String(worker)], { stdio: ["ignore", "ignore", "ignore"] });
-    expect(await gone.exited).not.toBe(0);
+    // The exit code was its last word: the worker ends after it.
+    await waitUntil(`worker ${worker} to end`, () => !alive(worker));
   });
 
   test("a down that does not finish leaves the up out, and says so", async () => {
     const seori = fakeSeori("down");
-    const code = await runDetached(seori, { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, PANE_PID: "1", SEORI_HOME: dir });
+    const pane = openPane();
+    const code = await runDetached(seori, { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, PANE_PID: String(pane.pid), SEORI_HOME: dir });
     expect(code).not.toBe(0);
-    expect(readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n")).toEqual(["CALLED down all"]);
+    expect(await paneEnded(pane)).toBe("SIGTERM");
+    expect(readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n")).toEqual(["CALLED down all --keep-autostart"]);
     expect(readFileSync(join(dir, "restart.log"), "utf8")).toContain("RESTART_FAILED seori down did not finish; nothing opened");
   });
 
   test("no hc core means nothing is stopped and nothing opened", async () => {
     const seori = fakeSeori();
-    const code = await runDetached(seori, { PATH: `${fakeHc(5)}:${process.env["PATH"]}`, PANE_PID: "1", SEORI_HOME: dir });
+    const pane = openPane();
+    const code = await runDetached(seori, { PATH: `${fakeHc(5)}:${process.env["PATH"]}`, PANE_PID: String(pane.pid), SEORI_HOME: dir });
     expect(code).not.toBe(0);
     expect(existsSync(join(dir, "calls.log"))).toBe(false);
+    // No seori ran, so nothing could have closed the pane.
+    expect(alive(pane.pid)).toBe(true);
     expect(readFileSync(join(dir, "restart.log"), "utf8")).toContain("RESTART_FAILED hc (herdr-core) does not answer");
   });
 
   test("an up that fails ends the script non-zero with the reason", async () => {
     const seori = fakeSeori("up");
-    const code = await runDetached(seori, { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, PANE_PID: "1", SEORI_HOME: dir });
+    const pane = openPane();
+    const code = await runDetached(seori, { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, PANE_PID: String(pane.pid), SEORI_HOME: dir });
     expect(code).not.toBe(0);
     expect(readFileSync(join(dir, "restart.log"), "utf8")).toContain("RESTART_FAILED seori up failed");
   });
@@ -194,8 +264,8 @@ describe("the detached restart script", () => {
     mkdirSync(evil, { recursive: true });
     const seori = fakeSeori();
     const script = restartScript({ home: evil, cwd: evil, seoriCmd: seori, log: join(dir, "restart.log") });
-    const detach = detachArgv(script, (b) => Bun.which(b) !== null, "seori-restart-test");
-    const p = Bun.spawn([...detach!.argv], { env: { ...process.env, PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir }, stdio: ["ignore", "ignore", "ignore"] });
+    const env = { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, SEORI_HOME: dir };
+    const p = Bun.spawn([...firstWay(script, env)], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "ignore"] });
     await p.exited;
     expect(await restartExit(join(dir, "restart.log"))).toBe(0);
     // The path reached seori as one literal argument, and both markers are missing.
@@ -206,15 +276,18 @@ describe("the detached restart script", () => {
 
 describe("how a restart detaches", () => {
   test("setsid first, then systemd-run, then portable nohup, and a refusal when none is there", () => {
-    expect(detachArgv("x", (b) => b === "setsid", "u")).toEqual({ argv: ["setsid", "--fork", "/bin/sh", "-c", "x"], background: false });
-    expect(detachArgv("x", (b) => b === "systemd-run", "u")).toEqual({
-      argv: ["systemd-run", "--user", "--collect", "--quiet", "--unit=u", "/bin/sh", "-c", "x"], background: false,
-    });
+    const all = detachWays("x", () => true, "u", { PATH: "/p/bin:/usr/bin", SEORI_HOME: "/h", HC_SOCKET: "/s", HOME: "/home/x", OTHER: "y" });
+    expect(all.map((w) => w.via)).toEqual(["setsid", "systemd-run", "nohup"]);
+    expect(all[0]!.argv).toEqual(["setsid", "--fork", "/bin/sh", "-c", "x"]);
+    // A transient unit runs with the user manager's environment: PATH (hc, bun) and seori's and hc's variables go along.
+    expect(all[1]!.argv).toEqual([
+      "systemd-run", "--user", "--collect", "--quiet", "--unit=u",
+      "--setenv=PATH=/p/bin:/usr/bin", "--setenv=SEORI_HOME=/h", "--setenv=HC_SOCKET=/s", "/bin/sh", "-c", "x",
+    ]);
     // macOS has neither: nohup still detaches from the pane's SIGHUP, which is the whole point.
-    const nohup = detachArgv("x", (b) => b === "nohup", "u");
-    expect(nohup?.background).toBe(true);
-    expect(nohup?.argv).toEqual(["/bin/sh", "-c", "nohup /bin/sh -c 'x' >/dev/null 2>&1 &"]);
-    expect(detachArgv("x", () => false, "u")).toBeUndefined();
+    expect(all[2]!.argv).toEqual(["/bin/sh", "-c", "nohup /bin/sh -c 'x' >/dev/null 2>&1 &"]);
+    expect(detachWays("x", (b) => b === "nohup", "u", {}).map((w) => w.via)).toEqual(["nohup"]);
+    expect(detachWays("x", () => false, "u", {})).toEqual([]);
     expect(noDetachRefusal()).toContain("setsid, systemd-run or nohup");
   });
 
@@ -364,7 +437,8 @@ describe("the logon hook unit", () => {
   test("is a oneshot running up --wait-hc, with no Restart= and no success codes to hide a failure", () => {
     const text = unitFile(spec("/h/.seori", dir), BOOT_KIND);
     expect(text).toContain("Type=oneshot\n");
-    expect(text).toContain('ExecStart="/b/bun" "/s/cli.ts" "up" "--wait-hc"');
+    // The hook carries its cwd to `up`: WorkingDirectory= alone would leave the agents in $SEORI_HOME.
+    expect(text).toContain('ExecStart="/b/bun" "/s/cli.ts" "up" "--wait-hc" "--cwd" "/h/.seori"\n');
     expect(text).toContain("Restart=no\n");
     expect(text).not.toContain("Restart=on-failure");
     expect(text).not.toContain("SuccessExitStatus");
@@ -387,6 +461,15 @@ describe("the logon hook unit", () => {
     expect(bootUnitInstalled(dir, "seori-two", join(dir, "other"))).toBeUndefined();
   });
 
+  test("the units' cwd is read back for a restart, never from another home's file under the name", () => {
+    const home = join(dir, "home");
+    const work = join(dir, "it's 100% work");
+    expect(unitCwd(dir, "seori-two", home)).toBeUndefined();
+    writeUnits(dir, { ...spec(home, dir), cwd: work });
+    expect(unitCwd(dir, "seori-two", home)).toBe(work);
+    expect(unitCwd(dir, "seori-two", join(dir, "other"))).toBeUndefined();
+  });
+
   test("the hook is separate from unitDir(): it is not one of the three kinds and not a live runner", () => {
     // unitDir() is the real user-manager directory; these helpers only compute names, so this checks the naming rule.
     expect(unitName("seori", "/h/.seori", BOOT_KIND)).toMatch(/^seori-seori-[0-9a-f]{8}-boot\.service$/);
@@ -407,6 +490,104 @@ describe("up with a resident home", () => {
     // No hc `run` for a unit, and no systemctl at all: the units that are running were left alone.
     const systemctlCalls = w.calls.slice(before).filter((c) => c.cmd !== "hc" && c.cmd !== "omp");
     expect(systemctlCalls).toEqual([]);
+  });
+
+  test("two ups at once open one set: the second finds the first's lock, says UP BUSY and opens nothing", async () => {
+    const w = new World();
+    const d = { ...w.deps(), platform: "darwin" as const };
+    w.heartbeat(d.store.root, 0);
+    const lines: string[] = [];
+    const out = (l: string): void => void lines.push(l);
+    await Promise.all([up(d, undefined, {}, out), up(d, undefined, {}, out)]);
+    expect(lines.filter((l) => l.startsWith("UP lead="))).toHaveLength(1);
+    expect(lines.filter((l) => l.startsWith("UP BUSY "))).toEqual([
+      `UP BUSY name=seori home=${d.store.root}: another seori up of this home is opening it (${upLockPath(d.store.root)}); nothing opened`,
+    ]);
+    const leads = [...w.panes.values()].filter((p) => p.labels["seori.role"] === "lead");
+    expect(leads).toHaveLength(1);
+    // The lock went with the up that held it: the next up finds the home and opens nothing.
+    expect(existsSync(upLockPath(d.store.root))).toBe(false);
+    const again: string[] = [];
+    await up(d, undefined, {}, (l) => void again.push(l));
+    expect(again[0]).toStartWith("ALREADY UP");
+  });
+
+  test("an up whose lock another live process holds exits cleanly through main, opening nothing", async () => {
+    const w = new World();
+    const d = { ...w.deps(), platform: "darwin" as const };
+    mkdirSync(join(d.store.root, "run"));
+    // This test process is alive, so its lock is not stale: exactly what a running hook's lock looks like.
+    const release = lockFile(upLockPath(d.store.root), d.now())!;
+    try {
+      let code: number | undefined;
+      const line = await captureLog(async () => { code = await main(["up"], d); });
+      expect(code).toBe(0);
+      expect(line).toStartWith("UP BUSY name=seori ");
+      expect(w.panes.size).toBe(0);
+    } finally {
+      release();
+    }
+  });
+
+  test("a run record from before this boot is not a live runner, whatever its pid", async () => {
+    const w = new World();
+    const d = w.deps();
+    mkdirSync(join(d.store.root, "run"));
+    const path = recordPath(d.store.root, "daemon-loop");
+    // A live pid (this process), as a reused pid would be after a reboot on macOS.
+    writeFileSync(path, JSON.stringify({ pid: process.pid }));
+    expect(liveRunners(d.store.root)).toEqual(["daemon-loop"]);
+    const longAgo = new Date(Date.now() - 10 * 365 * 24 * 3_600_000);
+    utimesSync(path, longAgo, longAgo);
+    expect(liveRunners(d.store.root)).toEqual([]);
+    expect((await upCheck(d, "seori")).kind).toBe("fresh");
+  });
+});
+
+describe("the start-up line a new lead gets", () => {
+  test("a delivery that typed nothing is tried again, and false comes back after the last try", async () => {
+    const w = new World();
+    const rt = w.runtime();
+    let tries = 0;
+    rt.deliver = async () => (tries++, { kind: "not-ready", status: "working" });
+    const d = { ...w.deps(), runtime: rt };
+    const t0 = d.now();
+    expect(await wakeNewLead(d, paneRef("t1"), 3)).toBe(false);
+    expect(tries).toBe(3);
+    // Between tries the fake clock moved, never the real one.
+    expect(d.now() - t0).toBe(2 * LEAD_START_WAIT_MS);
+  });
+
+  test("an uncertain delivery is never retried: the line may already be in the pane", async () => {
+    const w = new World();
+    const rt = w.runtime();
+    const sent: string[] = [];
+    rt.deliver = async (_ref, text) => (sent.push(text), { kind: "ambiguous", detail: "hc send did not complete", failure: new Error("timeout") });
+    const d = { ...w.deps(), runtime: rt };
+    await expect(wakeNewLead(d, paneRef("t1"), 3)).rejects.toThrow(DeliveryUncertain);
+    expect(sent).toEqual([LEAD_START_LINE]);
+  });
+
+  test("an up whose lead never took the line says so on stderr and still opens the home", async () => {
+    const w = new World();
+    const rt = w.runtime();
+    const real = rt.deliver.bind(rt);
+    // The lead's start-up line is refused; everything else is delivered as the fake world does.
+    rt.deliver = async (ref, text, opts) => (text === LEAD_START_LINE ? { kind: "not-ready", status: "working" } : real(ref, text, opts));
+    const d = { ...w.deps(), runtime: rt, platform: "darwin" as const };
+    // A heartbeat dated past the two refused tries' waits, so the daemon counts as started without a real-time wait.
+    w.heartbeat(d.store.root, -(3 * LEAD_START_WAIT_MS));
+    const errors: string[] = [];
+    const error = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a.join(" "));
+    let line = "";
+    try {
+      line = await captureLog(() => up(d, undefined));
+    } finally {
+      console.error = error;
+    }
+    expect(line).toStartWith("UP lead=");
+    expect(errors.filter((e) => e.includes("did not take its start-up line (its agent was not ready for it)"))).toHaveLength(1);
   });
 });
 
@@ -442,7 +623,7 @@ describe("seori restart as a command", () => {
     expect(started).toHaveLength(1);
     expect(started[0]!.cwd).toBe(d.store.root);
     expect(started[0]!.argv.slice(0, 2)).toEqual(["setsid", "--fork"]);
-    expect(started[0]!.argv.join(" ")).toContain("down all");
+    expect(started[0]!.argv.join(" ")).toContain("down all --keep-autostart");
     expect(lines.filter((l) => l.startsWith("ENDED ")).map((l) => l.split(" ")[1])).toEqual(["api", "tests"]);
     expect(lines.at(-1)).toContain("RESTARTING detached");
     expect(lines.at(-1)).toContain(join(d.store.root, "restart.log"));
@@ -455,12 +636,49 @@ describe("seori restart as a command", () => {
     expect(started).toEqual([]);
   });
 
-  test("a worker that could not be started says so instead of claiming a restart", async () => {
+  test("a way that fails to start falls through to the next, and only when every way fails is it a failure", async () => {
+    const { d } = home();
+    const tried: string[] = [];
+    // A setsid without --fork (busybox) exits non-zero having started nothing; systemd-run then starts the worker.
+    const spawn = async (argv: readonly string[]) => (tried.push(argv[0]!), argv[0] === "setsid" ? 1 : 0);
+    const lines: string[] = [];
+    expect(await restart(d, undefined, false, (l) => void lines.push(l), { spawn, has: () => true })).toBe(0);
+    expect(tried).toEqual(["setsid", "systemd-run"]);
+    expect(lines.at(-1)).toContain("RESTARTING detached");
+  });
+
+  test("a worker that could not be started by any way says so instead of claiming a restart", async () => {
     const { d } = home();
     const lines: string[] = [];
     const code = await restart(d, undefined, false, (l) => void lines.push(l), { spawn: async () => 3, has: () => true });
     expect(code).toBe(1);
-    expect(lines).toEqual([`RESTART_FAILED could not detach the relaunch (exit 3); nothing was stopped. See ${join(d.store.root, "restart.log")}`]);
+    expect(lines).toEqual([
+      `RESTART_FAILED could not detach the relaunch (setsid exit 3, systemd-run exit 3, nohup exit 3); nothing was stopped. ` +
+        `See ${join(d.store.root, "restart.log")}`,
+    ]);
+  });
+
+  test("without --cwd the agents come back where the home's units run, not in $SEORI_HOME", async () => {
+    const { d: base, started } = home();
+    const d = { ...base, platform: "linux" as const };
+    const saved = process.env["SEORI_SYSTEMD_DIR"];
+    process.env["SEORI_SYSTEMD_DIR"] = mkdtempSync(join(tmpdir(), "seori-restart-units-"));
+    try {
+      const work = mkdtempSync(join(tmpdir(), "seori-restart-work-"));
+      const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
+      // No units: $SEORI_HOME, as a bare `seori up` would.
+      await restart(d, undefined, false, () => {}, { spawn, has: (b) => b === "setsid" });
+      expect(started.at(-1)!.argv.at(-1)).toContain(`up --cwd '${d.store.root}'`);
+      writeUnits(unitDir(), { instance: "seori", home: d.store.root, cwd: work, bun: "/b/bun", cli: "/s/cli.ts", env: {} });
+      await restart(d, undefined, false, () => {}, { spawn, has: (b) => b === "setsid" });
+      expect(started.at(-1)!.argv.at(-1)).toContain(`up --cwd '${work}'`);
+      // --cwd still wins.
+      await restart(d, "/elsewhere", false, () => {}, { spawn, has: (b) => b === "setsid" });
+      expect(started.at(-1)!.argv.at(-1)).toContain(`up --cwd '/elsewhere'`);
+    } finally {
+      if (saved === undefined) delete process.env["SEORI_SYSTEMD_DIR"];
+      else process.env["SEORI_SYSTEMD_DIR"] = saved;
+    }
   });
 });
 
@@ -495,7 +713,9 @@ describe("the commands as the CLI dispatches them", () => {
 
   test("`seori restart --follow` starts the worker, then prints its log through to the exit line", async () => {
     const w = new World();
-    const d = { ...w.deps(), seoriCmd: join(dir, "seori") };
+    // The worker is a real process, so --follow polls the log on the real clock: d.sleep and d.now are one clock, and a
+    // fake sleep with a real deadline would spin. The bound is the test timeout.
+    const d = { ...w.deps(), seoriCmd: join(dir, "seori"), sleep: (ms: number) => Bun.sleep(ms), now: () => Date.now() };
     const { env, calls } = stubCommand();
     const before = Object.fromEntries(["PATH", "SEORI_HOME"].map((k) => [k, process.env[k]]));
     Object.assign(process.env, env);
@@ -519,7 +739,7 @@ describe("the commands as the CLI dispatches them", () => {
     expect(text).toContain("RESTARTING detached");
     expect(text).toContain("UP lead=hc:t7 duty=hc:t8");
     expect(text).toContain("RESTART_EXIT=0");
-    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["CALLED down all", `CALLED up --cwd ${d.store.root}`]);
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["CALLED down all --keep-autostart", `CALLED up --cwd ${d.store.root}`]);
   }, 30_000);
 
   test("`seori up --wait-ms` refuses a value that is not a number, before any pane opens", async () => {

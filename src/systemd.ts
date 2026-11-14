@@ -140,7 +140,8 @@ export function unitFile(spec: UnitSpec, kind: UnitSpecKind): string {
     ...vars.map(([k, v]) => `Environment=${envWord(`${k}=${v}`)}`),
     // WorkingDirectory= takes the rest of the line as the path: systemd rejects a quoted value as "not absolute".
     `WorkingDirectory=${spec.cwd.replace(/%/g, "%%")}`,
-    `ExecStart=${[spec.bun, spec.cli, ...COMMAND[kind]].map(execWord).join(" ")}`,
+    // The hook passes its cwd on: `up` opens its agents in $SEORI_HOME unless told otherwise, whatever the unit's cwd.
+    `ExecStart=${[spec.bun, spec.cli, ...COMMAND[kind], ...(boot ? ["--cwd", spec.cwd] : [])].map(execWord).join(" ")}`,
     ...(boot
       ? [
           // A boot hook that restarts itself is a loop: it runs once per logon and ends. `up --wait-hc` already answers
@@ -234,6 +235,21 @@ export async function installBootUnit(dir: string, spec: UnitSpec, ctl: Systemct
 export function bootUnitInstalled(dir: string, instance: string, home: string): string | undefined {
   const name = unitName(instance, home, BOOT_KIND);
   return sameHome(unitHome(dir, name), home) ? name : undefined;
+}
+
+/**
+ * The working directory this home's units run in (the `--cwd` its last `seori up` or `autostart install` was given), read
+ * from the first of them installed in `dir`; undefined when none is. A file of another home under the name is not read.
+ */
+export function unitCwd(dir: string, instance: string, home: string): string | undefined {
+  const kinds: readonly UnitSpecKind[] = [...UNIT_KINDS, BOOT_KIND];
+  for (const kind of kinds) {
+    const name = unitName(instance, home, kind);
+    if (!sameHome(unitHome(dir, name), home)) continue;
+    const m = /^WorkingDirectory=(.+)$/m.exec(readFileSync(join(dir, name), "utf8"));
+    if (m) return m[1]!.replace(/%%/g, "%");
+  }
+  return undefined;
 }
 
 /**

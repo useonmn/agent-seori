@@ -353,6 +353,33 @@ describe("seori up on hc", () => {
     expect(ctlCalls().some((c) => c.startsWith("--user stop ") && c.includes(boot))).toBe(true);
   });
 
+  test("down all --keep-autostart (a restart's down) removes the three units and keeps the logon hook", async () => {
+    const { d } = setup();
+    const boot = unitName("seori-two", d.store.root, BOOT_KIND);
+    await captureLog(() => main(["autostart", "install"], d));
+    await captureLog(() => main(["up"], d));
+    expect(readdirSync(unitDir).sort()).toEqual([...unitsOf(d.store.root), boot].sort());
+    const before = ctlCalls().length;
+    let code: number | undefined;
+    await captureLog(async () => { code = await main(["down", "all", "--keep-autostart"], d); });
+    expect(code).toBe(0);
+    expect(readdirSync(unitDir)).toEqual([boot]);
+    expect(ctlCalls().slice(before).some((c) => c.includes(boot))).toBe(false);
+    // The up that follows a restart opens the whole set again, with the hook still in place for the next logon.
+    expect(await captureLog(() => main(["up"], d))).toStartWith("UP lead=hc:t");
+    expect(readdirSync(unitDir).sort()).toEqual([...unitsOf(d.store.root), boot].sort());
+  });
+
+  test("autostart install --cwd passes the cwd to the up it runs at logon", async () => {
+    const { d } = setup();
+    const boot = unitName("seori-two", d.store.root, BOOT_KIND);
+    const cwd = mkdtempSync(join(tmpdir(), "seori-bootcwd-"));
+    await captureLog(() => main(["autostart", "install", "--cwd", cwd], d));
+    const text = readFileSync(join(unitDir, boot), "utf8");
+    expect(text).toContain(`WorkingDirectory=${cwd}\n`);
+    expect(text).toContain(`"up" "--wait-hc" "--cwd" "${cwd}"\n`);
+  });
+
   test("autostart install enables the hook without starting it, and status reports it", async () => {
     const { d } = setup();
     const boot = unitName("seori-two", d.store.root, BOOT_KIND);

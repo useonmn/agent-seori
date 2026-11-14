@@ -2,12 +2,12 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   defaultDeps, done, dutyTick, inboxList, mergeGate, paneEnv, ready, Refusal, releaseHeld, report, review, send, sendToShell,
   startAgent, ROLES, type Deps, type DutyEvent, type SendResult,
 } from "./harness.ts";
-import { deliverOrThrow } from "./runtime/delivery.ts";
+import { DeliveryUncertain, deliverOrThrow } from "./runtime/delivery.ts";
 import { heartbeatPath, runDaemon } from "./daemon.ts";
 import { down, DOWN_GROUPS, liveRunners, running, sleepUnless, type Runner } from "./down.ts";
 import { defaultSkillsDir, installSkill, SEORI_SRC, uninstall } from "./install.ts";
@@ -18,7 +18,7 @@ import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./me
 import { msgClose, msgDepsFor, msgEdit, msgEditReplyOf, msgList, msgSend, parseTo } from "./msg.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 import type { SessionRef } from "./runtime/index.ts";
-import { pidAlive, type Lane, type LaneStatus, type Role } from "./store.ts";
+import { lockFile, pidAlive, type Lane, type LaneStatus, type Role } from "./store.ts";
 import { parsePr, promptsDir } from "./harness.ts";
 import { hooksSettled, loadHooks } from "./hooks.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
@@ -40,10 +40,10 @@ import { WatchRefusal } from "./watch/store.ts";
 import { HerdrRecord, refText } from "./refs.ts";
 import { parseRef } from "./runtime/types.ts";
 import {
-  BOOT_KIND, bootUnitInstalled, homeTag, installBootUnit, removeUnits, systemctl, unitDir, unitName, writeUnits, type UnitKind,
+  BOOT_KIND, bootUnitInstalled, homeTag, installBootUnit, removeUnits, systemctl, unitCwd, unitDir, unitName, writeUnits, type UnitKind,
   type UnitSpecKind,
 } from "./systemd.ts";
-import { detachArgv, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript } from "./restart.ts";
+import { detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartScript } from "./restart.ts";
 import { hcReason } from "./runtime/hc/exec.ts";
 
 const USAGE = `seori - a proactive multi-session harness for omp on hc
@@ -52,16 +52,19 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               lead and duty terminals labelled seori.group=<name> (cwd default $SEORI_HOME);
                                               daemon, duty loop and hourly loop as systemd --user units
                                               seori-<name>-<hash>-<daemon|duty|hourly> on Linux, as hc terminals on macOS.
-                                              ALREADY UP (nothing opened) while the lead pane is live; when only the panes
-                                              are gone (a reboot, an hc restart) it reopens exactly the missing lead and duty
-                                              and leaves the running units alone; --wait-hc waits for hc first (the logon hook)
+                                              ALREADY UP (nothing opened) while the lead and duty panes are live; when either
+                                              is gone (a reboot, an hc restart) it reopens exactly the missing panes and leaves
+                                              the running units alone; UP BUSY (exit 0, nothing opened) while another up of
+                                              this home is opening it; --wait-hc waits for hc first (the logon hook)
   seori restart [--cwd DIR] [--force] [--follow]
                                               down then up for this home, safe from inside the lead or duty pane: the
                                               work runs in a detached child (setsid/systemd-run/nohup), because down closes the
                                               caller's pane. Refused while a lane is working unless --force (which names
-                                              the keys it ended); new refs go to $SEORI_HOME/restart.log, --follow prints them
+                                              the keys it ended); keeps the logon hook; DIR defaults to the cwd this home's
+                                              units run in, else $SEORI_HOME; new refs go to $SEORI_HOME/restart.log,
+                                              --follow prints them
   seori autostart install [--cwd DIR]          write and enable the logon hook (a systemd --user oneshot running
-                                              seori up --wait-hc), so the lead and duty panes come back after a reboot
+                                              seori up --wait-hc --cwd DIR), so the lead and duty panes come back after a reboot
   seori autostart status                       whether that hook is installed
   seori role <lead|duty> [REF]                 register a session (hc:t7) as lead or duty (default: this one)
   seori start <key> --brief FILE [--cwd DIR]   open a lane: new terminal, agent session, lessons + brief + lane rules
@@ -115,8 +118,10 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
   seori status
   seori daemon                                 receive messengers into the lead channel and run watches (seori up runs it)
   seori daemon-loop                            run the daemon and restart it when it crashes (seori up's daemon unit or pane)
-  seori down [duty|loop|daemon|all]            stop the duty loop, hourly loop and daemon (default all); all also disables
-                                              the systemd units and closes the seori.group terminals; exit 1 if a process
+  seori down [duty|loop|daemon|all] [--keep-autostart]
+                                              stop the duty loop, hourly loop and daemon (default all); all also disables
+                                              the systemd units and the logon hook (kept with --keep-autostart, as seori
+                                              restart does) and closes the seori.group terminals; exit 1 if a process
                                               still runs after 30 s
   seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
@@ -157,8 +162,9 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "purge", "help", "global",
-  // up --wait-hc (the logon hook) and restart --follow (watch the detached restart's log) never take a value.
-  "wait-hc", "follow",
+  // up --wait-hc (the logon hook), restart --follow (watch the detached restart's log) and down --keep-autostart (what
+  // the restart worker runs) never take a value.
+  "wait-hc", "follow", "keep-autostart",
 ]);
 
 function parse(argv: readonly string[]): Args {
@@ -264,9 +270,9 @@ type PaneRole = "lead" | "duty";
 
 /**
  * What `seori up` has to do, from the facts of this home alone, so an autostart hook can call it every logon:
- * - healthy: the lead pane is live; nothing opens (a second up opens nothing, whatever else is running);
- * - panes: the lead pane is gone (a reboot, an hc core restart, a closed pane) while this home is still resident, here or
- *   in its units; only the panes listed in `missing` open, and the units are left exactly as they are;
+ * - healthy: the lead and duty panes are both live; nothing opens (a second up opens nothing, whatever else is running);
+ * - panes: the lead or the duty pane is gone (a reboot, an hc core restart, a closed pane) while this home is still
+ *   resident, here or in its units; only the panes listed in `missing` open, and the units are left exactly as they are;
  * - fresh: nothing of this home is running, so up opens the whole set.
  */
 export type UpPlan =
@@ -431,10 +437,14 @@ export function hcUnavailableLine(r: HcWaitResult): string {
   return `HC UNAVAILABLE: waited ${waited} for the hc core to answer: ${status}, ${start}, still no answer; nothing opened. The daemon and loops are unaffected.`;
 }
 
+/** Held across a `seori up`'s check and open, so two ups of one home (the logon hook and a hand-typed one) never both open. */
+export const upLockPath = (root: string): string => join(root, "run", "up.lock");
+
 /**
  * `seori up`: healthy prints ALREADY UP, panes reopens what is missing, fresh opens everything. `waitHc` is the logon
  * path: it waits for hc to answer first, because after a reboot the core may still be starting or not yet started, and
- * says so instead of failing.
+ * says so instead of failing. While another up of this home holds the up lock, this one prints UP BUSY and opens
+ * nothing: its check would see the other's half-opened set and add to it.
  */
 export async function up(
   d: Deps, cwdFlag: string | undefined, opts: { waitHc?: boolean; waitMs?: number } = {}, out: (line: string) => void = console.log,
@@ -449,12 +459,23 @@ export async function up(
       return;
     }
   }
-  const plan = await upCheck(d, name);
-  if (plan.kind === "healthy") {
-    out(alreadyUpLine(name, d.store.root, plan.lead, plan.runners));
+  const lock = upLockPath(d.store.root);
+  mkdirSync(dirname(lock), { recursive: true });
+  const release = lockFile(lock, d.now());
+  if (release === undefined) {
+    out(`UP BUSY name=${name} home=${d.store.root}: another seori up of this home is opening it (${lock}); nothing opened`);
     return;
   }
-  return upHc(d, name, cwd, plan, out);
+  try {
+    const plan = await upCheck(d, name);
+    if (plan.kind === "healthy") {
+      out(alreadyUpLine(name, d.store.root, plan.lead, plan.runners));
+      return;
+    }
+    await upHc(d, name, cwd, plan, out);
+  } finally {
+    release();
+  }
 }
 
 const dutyLine = (e: DutyEvent): string => `DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`;
@@ -521,10 +542,14 @@ async function upHc(d: Deps, name: string, cwd: string, plan: UpPlan, out: (line
     d.store.setRole("lead", ref);
     // A fresh lead is the one the owner is waiting on: seed the boot-and-greet so it speaks first instead of sitting
     // silent until someone types "seori mode" (the boring option: the prompt says what to do, this makes it happen).
-    await wakeNewLead(d, ref).catch((e: unknown) => {
-      const why = e instanceof Error ? e.message : String(e);
+    const warn = (why: string): void =>
       console.error(`seori: the new lead in ${refText(ref)} did not take its start-up line (${why}); it still answers its messages`);
-    });
+    try {
+      if (!(await wakeNewLead(d, ref))) warn("its agent was not ready for it");
+    } catch (e) {
+      // DeliveryUncertain: the line may be in the pane already, so it is not typed again.
+      warn(e instanceof DeliveryUncertain ? `it may have arrived: ${e.message}` : e instanceof Error ? e.message : String(e));
+    }
     return ref;
   };
   const openDuty = async (): Promise<SessionRef> => {
@@ -572,10 +597,14 @@ export const LEAD_START_LINE =
   "open worklog item, else the owner's direct message with `seori msg send --to`): that seori is back, with the open " +
   "item count and the lanes still open. Nothing else until a message arrives.";
 
-/** Delivers LEAD_START_LINE to a new lead. True when it was delivered; the caller warns on false, never blocks the up. */
+/**
+ * Delivers LEAD_START_LINE to a new lead. True when it was delivered, false when the agent never took it (the caller
+ * warns, never blocks the up). Only a delivery that typed nothing is tried again: a DeliveryUncertain (the line may be
+ * in the pane already) is thrown, since a retry could hand the lead [START] twice.
+ */
 export async function wakeNewLead(d: Deps, ref: SessionRef, attempts = 3): Promise<boolean> {
   for (let i = 0; i < attempts; i++) {
-    if (await deliverOrThrow(d.runtime, ref, LEAD_START_LINE, { when: "idle" }).catch(() => false)) return true;
+    if (await deliverOrThrow(d.runtime, ref, LEAD_START_LINE, { when: "idle" })) return true;
     if (i + 1 < attempts) await d.sleep(LEAD_START_WAIT_MS);
   }
   return false;
@@ -617,7 +646,8 @@ const DOWN_UNITS: Readonly<Record<string, readonly UnitSpecKind[]>> = {
   duty: ["duty"],
   loop: ["hourly"],
   daemon: ["daemon"],
-  // The logon hook goes only with `all`: it is not one of the resident processes, so a partial down leaves it alone.
+  // The logon hook goes only with `all`: it is not one of the resident processes, so a partial down leaves it alone, and
+  // `all --keep-autostart` (a restart's down) keeps it too.
   all: ["daemon", "duty", "hourly", BOOT_KIND],
 };
 
@@ -625,9 +655,12 @@ const DOWN_UNITS: Readonly<Record<string, readonly UnitSpecKind[]>> = {
  * `seori down`: each process is asked to stop first (it ends cleanly, which its unit does not restart), then the
  * home's units of that group are stopped, disabled and removed. `all` on hc also closes this home's terminals
  * (homeTerminals: lead, duty and lanes), the caller's own terminal last, or, with keepSelf, not at all: it is left for
- * the owner to close. ok is false when a process outlived the wait.
+ * the owner to close. keepAutostart leaves the logon hook installed (`seori restart` is not an uninstall). ok is false
+ * when a process outlived the wait.
  */
-async function downHome(d: Deps, which: string, opts: { keepSelf?: boolean } = {}): Promise<{ lines: string[]; ok: boolean }> {
+async function downHome(
+  d: Deps, which: string, opts: { keepSelf?: boolean; keepAutostart?: boolean } = {},
+): Promise<{ lines: string[]; ok: boolean }> {
   const r = await down(d.store.root, DOWN_GROUPS[which]!);
   const name = (() => {
     try {
@@ -638,7 +671,8 @@ async function downHome(d: Deps, which: string, opts: { keepSelf?: boolean } = {
   })();
   if (name === undefined) return r;
   // No systemd off Linux: there `seori up` wrote no units, and the processes stopped above are all there is.
-  const lines = usesSystemdUnits(d) ? [...r.lines, ...(await removeUnits(unitDir(), name, d.store.root, DOWN_UNITS[which]!, systemctl()))] : [...r.lines];
+  const kinds = DOWN_UNITS[which]!.filter((kind) => !(opts.keepAutostart && kind === BOOT_KIND));
+  const lines = usesSystemdUnits(d) ? [...r.lines, ...(await removeUnits(unitDir(), name, d.store.root, kinds, systemctl()))] : [...r.lines];
   if (which === "all") {
     const rt = d.runtime;
     const self = process.env["HC_TERMINAL_ID"];
@@ -680,9 +714,11 @@ async function homeTerminals(d: Deps, name: string): Promise<SessionRef[]> {
  * process only starts that child and prints where it reports; the new lead and duty refs land in the log.
  *
  * A restart that would end working lanes is refused unless `--force` is given, and then says which keys it ended.
+ * Without --cwd the agents come back where the home's units run (the cwd its last up or autostart install was given),
+ * else in $SEORI_HOME, as `seori up` would open them.
  */
 export type RestartDeps = {
-  /** Starts the detached worker and resolves with its immediate exit code (0 at once for a backgrounded worker). */
+  /** Starts one detach way and resolves with its immediate exit code (0: the worker started). */
   readonly spawn?: (argv: readonly string[], cwd: string) => Promise<number>;
   /** Whether a command is on PATH (setsid, systemd-run, nohup). */
   readonly has?: (bin: string) => boolean;
@@ -692,22 +728,29 @@ export async function restart(
   d: Deps, cwdFlag: string | undefined, force: boolean, out: (line: string) => void = console.log, deps: RestartDeps = {},
 ): Promise<number> {
   const home = d.store.root;
-  const cwd = cwdFlag === undefined ? home : resolve(cwdFlag);
+  const unitsCwd = usesSystemdUnits(d) ? unitCwd(unitDir(), loadConfig(home).name, home) : undefined;
+  const cwd = cwdFlag === undefined ? (unitsCwd ?? home) : resolve(cwdFlag);
   const log = restartLogPath(home);
   const lanes = lanesARestartEnds(d.store.lanes());
   if (lanes.length > 0 && !force) throw new Refusal(lanesRefusal(lanes, d.seoriCmd));
   const script = restartScript({ home, cwd, seoriCmd: d.seoriCmd, log });
-  const detach = detachArgv(script, deps.has ?? ((bin) => Bun.which(bin) !== null), `seori-restart-${homeTag(home)}`);
-  if (detach === undefined) throw new Refusal(noDetachRefusal());
+  const ways = detachWays(script, deps.has ?? ((bin) => Bun.which(bin) !== null), `seori-restart-${homeTag(home)}`, process.env);
+  if (ways.length === 0) throw new Refusal(noDetachRefusal());
   const spawn = deps.spawn ?? (async (a: readonly string[], at: string) => {
     const child = Bun.spawn([...a], { env: process.env, stdio: ["ignore", "ignore", "ignore"], cwd: at });
     return child.exited;
   });
-  const code = await spawn(detach.argv, home);
   // A detached worker reports through its own log, not this exit code: setsid --fork's intermediate and a `&` both exit
-  // 0 the moment the work starts, and a real failure to start is what RESTART_BEGIN missing in the log shows.
-  if (code !== 0) {
-    out(`RESTART_FAILED could not detach the relaunch (exit ${code}); nothing was stopped. See ${log}`);
+  // 0 the moment the work starts. A non-zero exit started nothing (a setsid without --fork, no user manager for
+  // systemd-run), so the next way is tried.
+  const failed: string[] = [];
+  for (const way of ways) {
+    const code = await spawn(way.argv, home);
+    if (code === 0) break;
+    failed.push(`${way.via} exit ${code}`);
+  }
+  if (failed.length === ways.length) {
+    out(`RESTART_FAILED could not detach the relaunch (${failed.join(", ")}); nothing was stopped. See ${log}`);
     return 1;
   }
   for (const lane of lanes) out(`ENDED ${lane.key} (--force: a restart closes every terminal of this home, lane panes included)`);
@@ -1153,7 +1196,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const from = existsSync(log) ? readFileSync(log, "utf8").length : 0;
       const code = await restart(d, one(a, "cwd"), one(a, "force") === "true");
       if (code !== 0 || one(a, "follow") !== "true") return code;
-      return (await followRestartLog(log, from, console.log, d.sleep)) ? 0 : 1;
+      // d.sleep and d.now are one clock: a test that drives one drives the other, so the deadline is never real time.
+      return (await followRestartLog(log, from, console.log, d.sleep, RESTART_FOLLOW_MS, d.now)) ? 0 : 1;
     }
     case "autostart": {
       if (x === "install") {
@@ -1443,7 +1487,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return runDaemonLoop(d.store.root);
     case "down": {
       if (!DOWN_GROUPS[x ?? "all"]) throw new Refusal(`seori down takes duty, loop, daemon or all\n\n${USAGE}`);
-      const r = await downHome(d, x ?? "all");
+      const r = await downHome(d, x ?? "all", { keepAutostart: one(a, "keep-autostart") === "true" });
       console.log(r.lines.join("\n"));
       return r.ok ? 0 : 1;
     }

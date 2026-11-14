@@ -56,7 +56,7 @@ seori up
 
 `seori up`은 터미널 두 개를 엽니다. 리드(인스턴스 이름, 기본 `seori`)와 듀티(`seori-duty`)이고, 둘 다 `seori.group=<이름>` 라벨이 붙습니다. 작업 폴더는 `$SEORI_HOME`이고, `--cwd`로 바꿀 수 있습니다. Linux에서는 데몬, 듀티 루프, 시간 단위 루프가 `systemd --user` 유닛(`seori-<이름>-<hash>-daemon`, `seori-<이름>-<hash>-duty`, `seori-<이름>-<hash>-hourly`, `<hash>`는 `$SEORI_HOME` 경로의 16진수 8자리)으로 돌고, enabled 상태라 재부팅이나 WSL 재시작 뒤에도 다시 뜹니다. macOS에서는 같은 세 프로세스가 hc 터미널에서 돕니다. `seori up`은 데몬의 heartbeat를 기다린 뒤 루프를 시작합니다.
 
-`seori up`은 언제 다시 실행해도 안전하고, 남아 있는 것에 따라 하는 일이 다릅니다. 리드 패널이 살아 있으면 `ALREADY UP ... nothing opened`를 출력하고 아무것도 열지 않습니다(다른 것이 얼마나 돌고 있든 마찬가지). 유닛이나 듀티 패널은 살아 있는데 리드 패널만 사라진 상태(재부팅, hc 코어 재시작, 창을 닫은 경우)에서는 사라진 리드·듀티 패널만 다시 열고 `REOPENED lead,duty lead=hc:t9 duty=hc:t10 running=...`를 출력합니다. 이때 유닛은 손대지 않고, 절대 다시 시작하지 않습니다. 예전에는 이 경우 `nothing opened`만 출력해서 리드가 없는데도 `seori down` 뒤 `seori up`을 손으로 해야 했습니다.
+`seori up`은 언제 다시 실행해도 안전하고, 남아 있는 것에 따라 하는 일이 다릅니다. 리드 패널과 듀티 패널이 둘 다 살아 있으면 `ALREADY UP ... nothing opened`를 출력하고 아무것도 열지 않습니다(다른 것이 얼마나 돌고 있든 마찬가지). 홈은 남아 있는데(유닛이나 다른 패널) 두 패널 중 하나라도 사라진 상태(재부팅, hc 코어 재시작, 창을 닫은 경우)에서는 사라진 패널만 다시 열고 `REOPENED lead,duty lead=hc:t9 duty=hc:t10 running=...`를 출력합니다(듀티 패널만 사라졌으면 `REOPENED duty ...`). 이때 유닛은 손대지 않고, 절대 다시 시작하지 않습니다. 예전에는 이 경우 `nothing opened`만 출력해서 리드가 없는데도 `seori down` 뒤 `seori up`을 손으로 해야 했습니다. 한 홈에서 `seori up` 두 개가 동시에 돌면(로그온 훅과 손으로 친 것) 둘 다 열지는 않습니다: 두 번째는 `UP BUSY ... nothing opened`를 출력하고 0으로 끝납니다.
 
 모든 패널은 `keep` 없이 만든 hc 터미널이라 재부팅이나 hc 재시작에서 끝납니다: Linux에서는 systemd 유닛만 돌아오고, macOS에서는 아무것도 돌아오지 않습니다. 패널은 로그온 때 무언가가 `seori up`을 실행해야만 돌아옵니다. 그 역할이 `seori autostart install`입니다:
 
@@ -65,24 +65,27 @@ seori autostart install
 # AUTOSTART seori-seori-1a2b3c4d-boot.service enabled in ~/.config/systemd/user: it runs `seori up --wait-hc` once at logon
 ```
 
-로그온마다 한 번 `seori up --wait-hc`를 실행하는 `systemd --user` oneshot(`Type=oneshot`, `Restart=` 없음, enable만 하고 시작하지는 않음)을 씁니다. `--wait-hc`는 `hc server status`를 폴링해서 코어가 답할 때까지 기다립니다(고정 sleep 없음, 최대 10분). hc 0.1.20은 `status`만 불러도 코어를 필요할 때 띄우므로 보통은 이 폴링만으로 코어가 뜹니다. 그래도 코어가 없으면 훅이 `hc server start`를 한 번 실행한 뒤 계속 기다립니다. 이는 hc의 즉석 기동을 쓸 수 없을 때(그 하위 명령이 없는 옛 hc, 상태 디렉터리에 쓸 수 없을 때)를 덮습니다. 이미 답하는 코어는 시작하지 않고, 한 번만 시작합니다. 코어가 끝내 답하지 않으면 무엇을 얼마나 기다렸고 무엇을 시도했는지(`hc server status` exit 5와 hc가 준 이유, `hc server start`의 성공 또는 실패 이유)를 한 줄 `HC UNAVAILABLE`로 남기고 0으로 끝나므로, 부팅 실패가 보고될 뿐 루프로 재시도하지 않습니다. 데몬과 루프는 어느 경우든 계속 돕니다. 이 줄은 seori가 멀쩡한지 hc가 안 뜬 것인지도 구분해 줍니다. `hc server start`로도 코어가 돌아오지 않으면 그 줄에 hc 자신의 메시지(예: `cannot start core: Permission denied (os error 13)`)가 그대로 실리므로, 그것이 다음에 고칠 것입니다. 설치를 다시 실행해도 무해하고, `seori autostart status`로 훅이 있는지 보고, `seori down all`이 훅을 지웁니다. 레인 에이전트는 로그온 때 되살리지 않습니다: 기록이 남으므로 닫힌 레인은 키로 `seori start` 하면 됩니다.
+로그온마다 한 번 `seori up --wait-hc --cwd DIR`을 실행하는 `systemd --user` oneshot(`Type=oneshot`, `Restart=` 없음, enable만 하고 시작하지는 않음)을 씁니다. DIR은 설치할 때 준 `--cwd`(기본 `$SEORI_HOME`)라서 에이전트가 시작했던 폴더에서 다시 뜹니다. `--wait-hc`는 `hc server status`를 폴링해서 코어가 답할 때까지 기다립니다(고정 sleep 없음, 최대 10분). hc 0.1.20은 `status`만 불러도 코어를 필요할 때 띄우므로 보통은 이 폴링만으로 코어가 뜹니다. 그래도 코어가 없으면 훅이 `hc server start`를 한 번 실행한 뒤 계속 기다립니다. 이는 hc의 즉석 기동을 쓸 수 없을 때(그 하위 명령이 없는 옛 hc, 상태 디렉터리에 쓸 수 없을 때)를 덮습니다. 이미 답하는 코어는 시작하지 않고, 한 번만 시작합니다. 코어가 끝내 답하지 않으면 무엇을 얼마나 기다렸고 무엇을 시도했는지(`hc server status` exit 5와 hc가 준 이유, `hc server start`의 성공 또는 실패 이유)를 한 줄 `HC UNAVAILABLE`로 남기고 0으로 끝나므로, 부팅 실패가 보고될 뿐 루프로 재시도하지 않습니다. 데몬과 루프는 어느 경우든 계속 돕니다. 이 줄은 seori가 멀쩡한지 hc가 안 뜬 것인지도 구분해 줍니다. `hc server start`로도 코어가 돌아오지 않으면 그 줄에 hc 자신의 메시지(예: `cannot start core: Permission denied (os error 13)`)가 그대로 실리므로, 그것이 다음에 고칠 것입니다. 설치를 다시 실행해도 무해하고, `seori autostart status`로 훅이 있는지 보고, `seori down all`이 훅을 지우며, `seori restart`는 훅을 그대로 둡니다. 레인 에이전트는 로그온 때 되살리지 않습니다: 기록이 남으므로 닫힌 레인은 키로 `seori start` 하면 됩니다.
 
 `seori restart`는 리드나 듀티 세션이 자기 패널 안에서 홈을 재시작하는 방법입니다:
 
 ```sh
 seori restart --follow
-# RESTARTING detached, pid 41233; this pane is closed by the down. The new refs and every step land in ~/.seori/restart.log
-# RESTART_BEGIN home=/home/you/.seori cwd=/home/you/.seori
+# RESTARTING detached; this pane is closed by the down. The new refs and every step land in /home/you/.seori/restart.log (seori restart --follow prints them as they come)
+# RESTART_PID 41233
+# RESTART_BEGIN home=/home/you/.seori cwd=/home/you/src
+# STOPPED duty pid=41221
+# ...
 # UP lead=hc:t28 duty=hc:t29 units=...,... home=/home/you/.seori name=seori
 # RESTART_DONE
 # RESTART_EXIT=0
 ```
 
-`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커(`setsid --fork`, 없으면 `systemd-run --user`, 그것도 없으면 SIGHUP을 무시하는 `nohup`)를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. 워커는 hc가 답하는지 확인하고, down을 실행하고, down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 `nohup`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이면 거절하고, `--force`를 주면 끝낸 레인 키를 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
+`seori down all`은 명령이 도는 터미널을 닫기 때문에, 재시작은 자기 패널의 자식일 수 없습니다. 그래서 분리된 워커를 띄워 패널이 닫혀도 살아남게 하고, 그 워커가 어디에 기록하는지 알려 줍니다. `setsid --fork`, 그다음 `systemd-run --user`(transient 유닛은 사용자 매니저의 환경을 받으므로 `PATH`와 호출한 쪽의 `SEORI_*`, `HC_*` 변수를 넘겨 줍니다), 그다음 SIGHUP을 무시하는 `nohup` 순서로 시도해서 처음 시작되는 방법을 씁니다. 워커는 hc가 답하는지 확인하고, `seori down all --keep-autostart`를 실행하고(재시작은 로그온 훅을 남깁니다), down이 끝난 뒤에만 up을 실행합니다. 모든 단계와 마지막 종료 코드는 `$SEORI_HOME/restart.log`에 남습니다(명령을 실행한 패널은 그때 이미 닫혀 있으니까요). `--cwd`가 없으면 up은 그 홈의 유닛이 도는 폴더(마지막 `seori up`이나 `autostart install`에 준 cwd)에서, 그것도 없으면 `$SEORI_HOME`에서 에이전트를 엽니다. `--follow`는 워커가 끝날 때까지 그 로그를 출력합니다. 분리할 방법이 없으면(`setsid`도 `systemd-run`도 `nohup`도 없음) 아무것도 멈추기 전에 0이 아닌 코드로 거절합니다. 재시작은 그 홈의 모든 레인 패널을 닫으므로 레인이 `working`이면 거절하고, `--force`를 주면 끝낸 레인 키를 알려 줍니다(기록은 남아 다시 시작할 수 있습니다). 재시작 스크립트를 손으로 만들지 마세요: 이 명령만이 자기 패널이 닫히는 상황을 처리합니다.
 
 `seori up`이나 `seori restart`가 새 리드를 열면 seori가 시작 안내 한 줄을 전달합니다: `seori boot`을 실행하고, 주인에게 짧은 한 줄(가장 오래된 열린 worklog 항목의 스레드, 없으면 주인 DM)로 seori가 돌아왔다는 것과 열린 항목 수, 아직 열린 레인을 알리라는 내용입니다. 그래서 재시작 뒤에 주인이 아무것도 입력하지 않아도 소식이 갑니다. `prompts/lead.md`도 같은 규칙을 담고 있어서 손으로 띄운 리드도 그렇게 합니다.
 
-`seori down`은 프로세스를 멈추고, 유닛을 비활성화하고 지우고, 그룹의 모든 터미널(레인 포함)을 닫습니다. 그룹 바깥의 셸에서 실행하세요. 리드 터미널 안에서 실행하면, 그 터미널이 마지막에 닫히면서 출력이 멈춥니다. `down all`은 로그온 훅도 지우고, `down duty`, `down loop`, `down daemon`은 훅을 그대로 둡니다.
+`seori down`은 프로세스를 멈추고, 유닛을 비활성화하고 지우고, 그룹의 모든 터미널(레인 포함)을 닫습니다. 그룹 바깥의 셸에서 실행하세요. 리드 터미널 안에서 실행하면, 그 터미널이 마지막에 닫히면서 출력이 멈춥니다. `down all`은 로그온 훅도 지웁니다(`--keep-autostart`를 주면 남기고, `seori restart`가 그렇게 합니다). `down duty`, `down loop`, `down daemon`은 훅을 그대로 둡니다.
 
 리드에게 말을 걸면 됩니다. 리드가 브리프를 쓰고 레인을 엽니다. 셸에서 직접 열어도 됩니다:
 
@@ -125,16 +128,19 @@ seori up [--cwd DIR] [--wait-hc]             이 홈의 리드, 듀티, 듀티 �
                                             seori.group=<name> 라벨이 붙은 리드, 듀티 터미널(기본 폴더 $SEORI_HOME);
                                             데몬, 듀티 루프, 시간 단위 루프는 Linux에서 systemd --user 유닛
                                             seori-<name>-<hash>-<daemon|duty|hourly>, macOS에서는 hc 터미널.
-                                            리드 패널이 살아 있으면 ALREADY UP(아무것도 열지 않음); 패널만 사라졌으면
-                                            사라진 것만 다시 열고 실행 중인 유닛은 그대로 둡니다; --wait-hc는 hc를 먼저
-                                            기다립니다(로그온 훅)
+                                            리드와 듀티 패널이 둘 다 살아 있으면 ALREADY UP(아무것도 열지 않음); 하나라도
+                                            사라졌으면(재부팅, hc 재시작) 사라진 패널만 다시 열고 실행 중인 유닛은 그대로
+                                            둡니다; 같은 홈의 다른 up이 여는 중이면 UP BUSY(종료 코드 0, 아무것도 열지
+                                            않음); --wait-hc는 hc를 먼저 기다립니다(로그온 훅)
 seori restart [--cwd DIR] [--force] [--follow]
                                             이 홈을 down 뒤 up 합니다. 리드나 듀티 패널 안에서 실행해도 안전합니다:
                                             down이 그 패널을 닫으므로 분리된 자식(setsid/systemd-run/nohup)이 일합니다.
                                             레인이 working이면 --force 없이는 거절하고, --force면 끝낸 키를 알려 줍니다;
-                                            새 ref와 모든 단계는 $SEORI_HOME/restart.log에 남습니다
-seori autostart install [--cwd DIR]          로그온 훅(systemd --user oneshot, `seori up --wait-hc`)을 쓰고 enable 합니다.
-                                            재부팅 뒤 리드·듀티 패널이 저절로 다시 뜹니다
+                                            로그온 훅은 남깁니다; DIR 기본값은 이 홈의 유닛이 도는 폴더, 없으면
+                                            $SEORI_HOME; 새 ref와 모든 단계는 $SEORI_HOME/restart.log에 남고 --follow가
+                                            출력합니다
+seori autostart install [--cwd DIR]          로그온 훅(systemd --user oneshot, `seori up --wait-hc --cwd DIR`)을 쓰고
+                                            enable 합니다. 재부팅 뒤 리드·듀티 패널이 저절로 다시 뜹니다
 seori autostart status                       그 훅이 설치되어 있는지 봅니다
 seori role <lead|duty> [PANE]                창을 리드나 듀티로 등록합니다 (기본: 지금 창)
 seori start <key> --brief FILE [--cwd DIR]   레인을 엽니다: 새 터미널, 에이전트 세션, 교훈 + 브리프 + 레인 규칙
@@ -180,7 +186,9 @@ seori heavy <label> -- <cmd...>              부하가 낮고 무거운 작업 �
 seori status
 seori daemon                                 메신저에서 메시지를 받아 리드 채널에 저장하고 감시를 돌립니다 (seori up이 켭니다)
 seori daemon-loop                            데몬을 돌리고 죽으면 다시 켭니다 (seori up의 데몬 유닛이나 창)
-seori down [duty|loop|daemon|all]            듀티 루프, 시간 단위 루프, 데몬을 끝냅니다(기본 all). all은 systemd 유닛도 끄고
+seori down [duty|loop|daemon|all] [--keep-autostart]
+                                            듀티 루프, 시간 단위 루프, 데몬을 끝냅니다(기본 all). all은 systemd 유닛과
+                                            로그온 훅(--keep-autostart면 남김, seori restart가 그렇게 함)도 끄고
                                             seori.group 터미널을 닫습니다. 30초 뒤에도 남은 프로세스가 있으면 종료 코드 1
 seori install-skill [--skills-dir DIR]       seori-mode 스킬을 에이전트의 스킬 폴더에 링크합니다. install.sh가 실행합니다
 seori uninstall [--skills-dir DIR] [--purge] 스킬 링크와 seori 명령을 지웁니다. --purge는 $SEORI_HOME도 지웁니다
@@ -622,7 +630,7 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
 
 - **이름.** 홈의 `config.json`에 있는 `name`이 그 홈의 `seori.group` 라벨이고, systemd 유닛 이름에도 들어갑니다. 첫 인스턴스는 아무것도 안 해도 됩니다(기본값 `seori`). 다른 인스턴스에는 각자 다른 이름을 주세요.
 - **에이전트 기억.** omp의 기억은 PC 하나에 DB 하나라서, `~/.seori`가 아닌 홈에서 `prompts/agent-omp.yml`에 `mnemopi.dbPath`를 `$SEORI_HOME/omp/memories/mnemopi.db`로 적고, `~/.seori`는 omp 기본 DB를 그대로 씁니다.
-- **홈마다 한 번만.** 리드 패널이 이미 살아 있는 홈에서 `seori up`을 실행하면 `ALREADY UP name=... home=... lead=hc:tN running=...; nothing opened`를 출력하고 0으로 끝납니다. 유닛이 도는 채로 리드 패널만 잃은 홈은 사라진 패널을 다시 열고(`REOPENED ...`), 같은 홈의 패널을 두 번 열지는 않습니다. 한 인스턴스만 멈추려면 그 홈의 `SEORI_HOME`으로 `seori down`을 실행하세요. 다른 인스턴스는 계속 돕니다.
+- **홈마다 한 번만.** 리드와 듀티 패널이 이미 살아 있는 홈에서 `seori up`을 실행하면 `ALREADY UP name=... home=... lead=hc:tN running=...; nothing opened`를 출력하고 0으로 끝납니다. 나머지가 도는 채로 패널 하나를 잃은 홈은 사라진 패널을 다시 열고(`REOPENED ...`), 같은 홈을 여는 중에 들어온 두 번째 `seori up`은 `UP BUSY ...`를 출력하고 아무것도 열지 않으므로, 같은 홈의 패널을 두 번 열지는 않습니다. 한 인스턴스만 멈추려면 그 홈의 `SEORI_HOME`으로 `seori down`을 실행하세요. 다른 인스턴스는 계속 돕니다.
 
 두 번째 인스턴스를 더하는 방법(여기서는 `~/seori-two`에 `seori-two`라는 이름):
 
@@ -634,7 +642,7 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
    ```
 2. 봇을 따로 만듭니다. 새 봇이나 앱을 만들고([messengers.md](skills/seori-mode/references/messengers.md)), 봇 하나로 데몬 두 개를 섬길 수는 없습니다. 토큰은 `$SEORI_HOME/secrets.json`에 적고, 같은 셸에서 `seori msg check <source>`, `seori msg pair <source> --write`를 실행합니다. 계정 전체에 `SEORI_*_TOKEN` 변수를 두지 마세요. 모든 홈의 `secrets.json`보다 먼저 쓰입니다.
 3. 그 셸에서 `seori up --cwd ~/src`로 띄웁니다. 터미널에는 `seori.group=seori-two` 라벨이 붙고, 유닛 이름은 `seori-seori-two-<hash>-*`입니다. `<hash>`는 홈 경로의 16진수 8자리라서 두 홈이 유닛을 나눠 쓰는 일이 없습니다. `seori down`은 이 홈을 가리키는 예전 `seori-<name>-*` 이름의 유닛도 지웁니다.
-4. 자동 시작. Linux에서는 유닛이 enabled 상태라 재부팅 뒤 데몬과 루프가 저절로 다시 뜨지만, 리드·듀티 패널은 그렇지 않습니다. 그 홈의 셸에서 한 번 `seori autostart install`을 실행하세요(`seori up --wait-hc`를 한 번 도는 `systemd --user` oneshot이고, 이름은 `seori-seori-two-<hash>-boot.service`입니다). 그러면 재부팅 뒤 패널이 저절로 돌아옵니다. 이때 hc가 먼저 떠 있어야 하는 것은 아닙니다: 훅이 `hc server status`를 폴링하고(hc 0.1.20은 이것만으로 코어를 필요할 때 띄웁니다), 그래도 코어가 없으면 `hc server start`를 한 번 실행합니다. 그렇게도 코어가 뜨지 않으면 저널에 hc 자신의 이유와 함께 `HC UNAVAILABLE`을 남기고 아무것도 열지 않으니, 그때는 `systemctl --user status`와 `hc server status`를 확인하세요. `seori down all`이 훅까지 함께 지웁니다. macOS에서는 로그인 항목에 `seori up --wait-hc`를 넣으세요. hc가 늦게 떠도 같은 방식으로 기다리고 시작하며 실패하지 않습니다.
+4. 자동 시작. Linux에서는 유닛이 enabled 상태라 재부팅 뒤 데몬과 루프가 저절로 다시 뜨지만, 리드·듀티 패널은 그렇지 않습니다. 그 홈의 셸에서 한 번 `seori autostart install --cwd ~/src`를 실행하세요(`seori up --wait-hc --cwd ~/src`를 한 번 도는 `systemd --user` oneshot이고, 이름은 `seori-seori-two-<hash>-boot.service`입니다). 그러면 재부팅 뒤 패널이 3단계와 같은 폴더에서 저절로 돌아옵니다. 이때 hc가 먼저 떠 있어야 하는 것은 아닙니다: 훅이 `hc server status`를 폴링하고(hc 0.1.20은 이것만으로 코어를 필요할 때 띄웁니다), 그래도 코어가 없으면 `hc server start`를 한 번 실행합니다. 그렇게도 코어가 뜨지 않으면 저널에 hc 자신의 이유와 함께 `HC UNAVAILABLE`을 남기고 아무것도 열지 않으니, 그때는 `systemctl --user status`와 `hc server status`를 확인하세요. `seori down all`이 훅까지 함께 지우고, `seori restart`는 남깁니다. macOS에서는 로그인 항목에 `seori up --wait-hc --cwd ~/src`를 넣으세요. hc가 늦게 떠도 같은 방식으로 기다리고 시작하며 실패하지 않습니다.
 
 모든 `seori` 명령은 `SEORI_HOME`에 있는 홈을 대상으로 하니, 그 인스턴스용으로 쓰는 셸마다 설정하세요. seori가 띄운 세션과 유닛에는 이미 들어 있습니다.
 
