@@ -206,14 +206,20 @@ seori down [duty|loop|daemon|all] [--keep-autostart]
                                             seori.group 터미널을 닫습니다. 30초 뒤에도 남은 프로세스가 있으면 종료 코드 1
 seori install-skill [--skills-dir DIR]       seori-mode 스킬을 에이전트의 스킬 폴더에 링크합니다. install.sh가 실행합니다
 seori uninstall [--skills-dir DIR] [--purge] 스킬 링크와 seori 명령을 지웁니다. --purge는 $SEORI_HOME도 지웁니다
-seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack]
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack [--title T]]
                                             메신저 메시지에 답합니다 (id 하나에 답 하나). --to는 알림을 보냅니다.
                                             쓴 즉시 바로 나가므로, 다 쓴 답을 곧바로 보냅니다. --again은 이미 답한
                                             id에 또 답합니다 (정정, 일의 결과). seori가 그 메시지에 단 눈은 체크
-                                            표시로 바뀝니다. --ack(일의 접수 확인이자 상태 메시지)만 눈을 그대로 둡니다
+                                            표시로 바뀝니다. --ack(일의 접수 확인이자 상태 메시지)만 눈을 그대로 둡니다.
+                                            디스코드에서는 서버 채널 메시지에 보낸 첫 --ack가 그 메시지에 일의 스레드를
+                                            "🔄 <제목>"으로 엽니다(thread=ID 출력). 이후 답과 수정은 모두 그 스레드로 갑니다
 seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                             seori가 보낸 메시지를 고칩니다. --reply-of는 그 리드 채널 메시지에 seori가
                                             처음 보낸 답을 고칩니다. MID는 msg send가 출력한 message= 값
+seori msg thread <id> [--status working|waiting|done] [--title T] [--archive]
+                                            일의 스레드 이름(상태 이모지 🔄, ⏸, ✅와 제목)을 바꾸고 보관하거나,
+                                            열어 둡니다(보관된 스레드는 다시 엽니다). 스레드는 seori가 그 id에 연 것,
+                                            또는 메시지가 쓰인 스레드(디스코드)입니다
 seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다.
                                             메신저 메시지에는 체크 표시를 답니다
 seori msg list [--all]                       아직 열린 리드 채널 메시지: 메신저 메시지와 감시 알림 (--all: 전부, 상태 포함)
@@ -460,7 +466,7 @@ seori worklog list --open
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
 | `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`, `files:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`, `others`를 쓰려면 `users:read`. `files:write`는 파일 올리기용이고, 없으면 `agent-slackbot file upload`가 `missing_scope`로 실패합니다), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
-| `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). Public Bot을 끄고(`others`를 쓰려면 꼭), Add Reactions, Read Message History 권한으로 초대하고(서버 채널에서 seori가 리액션을 달 수 있도록), 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
+| `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). Public Bot을 끄고(`others`를 쓰려면 꼭), Add Reactions, Read Message History 권한(서버 채널에서 seori가 리액션을 달 수 있도록)과 Create Public Threads, Send Messages in Threads, Manage Threads 권한(일마다 스레드를 열도록)으로 초대하고, 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
 
@@ -521,6 +527,10 @@ seori는 메시지 자체에 지금 어디까지 왔는지 표시합니다. 데�
 | Telegram | 👀 | 👌, 눈을 대신함: ✅는 텔레그램이 허용하는 리액션이 아닙니다 | 더 없음 |
 
 리액션이 실패해도(권한이 없음, 속도 제한 등) 기록만 남기고(눈은 데몬 로그에, 체크 표시는 `seori msg`의 stderr에), 메시지 전달이나 답을 막지 않습니다.
+
+### 디스코드 일 스레드
+
+디스코드에서 리드가 서버 채널(스레드나 DM이 아닌 곳)에 쓰인 메시지에 처음 `--ack`를 보내면, seori가 그 메시지에 "🔄 <제목>"이라는 스레드를 열고 접수 확인을 그 안에 올립니다. 제목은 `--title`, 없으면 접수 확인의 첫 줄이며 100자에서 자릅니다. `SENT` 줄 끝에 `thread=<id>`가 붙습니다. 그 id에 대한 이후 답과 `msg edit --reply-of`, seori가 직접 올리는 진행 소식도 모두 그 스레드로 갑니다. 리드는 일이 진행됨에 따라 `seori msg thread <id> --status working|waiting|done`(🔄, ⏸, ✅)으로 이름을 바꾸고, 끝나면 `--archive`로 보관합니다. `--archive` 없이 같은 명령을 쓰면 보관된 스레드를 다시 엽니다. 스레드는 일주일 동안 메시지가 없으면 저절로 숨겨집니다. 디스코드가 스레드를 거절하면(Create Public Threads 권한이 없는 경우 등) seori는 stderr에 경고를 남기고, 접수 확인은 예전처럼 메시지가 쓰인 곳으로 갑니다. 슬랙과 텔레그램은 지금처럼 그 자리에서 답합니다.
 
 ### 정정
 

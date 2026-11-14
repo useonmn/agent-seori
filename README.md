@@ -207,15 +207,21 @@ seori down [duty|loop|daemon|all] [--keep-autostart]
                                             still runs after 30 s
 seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
 seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
-seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack]
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack [--title T]]
                                             answer messenger messages (one reply per id) or send a notice; it goes out
                                             at once, so answer as soon as you have written it; --again sends another
                                             reply to an id already answered (a correction, a job's result); the eyes
                                             seori put on the message become a check mark, except with --ack (a job's
-                                            acknowledgement, its status message, which keeps the eyes)
+                                            acknowledgement, its status message, which keeps the eyes); on Discord the
+                                            first --ack to a server channel message opens the job's thread on it, named
+                                            "🔄 <title>" (prints thread=ID), and every later reply and edit goes there
 seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                             edit a message seori sent: --reply-of edits seori's first reply to that
                                             lead channel message; MID is the message= send printed
+seori msg thread <id> [--status working|waiting|done] [--title T] [--archive]
+                                            rename the job's thread (its emoji 🔄, ⏸ or ✅ and its title) and archive it,
+                                            or keep it open (reopens an archived one); the thread is the one seori opened
+                                            for the id or the one the message was written in (Discord)
 seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no
                                             reply; a messenger message gets the check mark
 seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
@@ -471,7 +477,7 @@ Tokens go in `$SEORI_HOME/secrets.json`, which must be `chmod 600` (seori refuse
 |---|---|---|---|
 | `telegram` | a bot from @BotFather; send it `/start` once in a DM. For groups or forum topics, turn privacy mode off (`/setprivacy`) | your numeric user id | `SEORI_TELEGRAM_TOKEN` |
 | `slack` | an app in your workspace with Socket Mode on, an app-level token (`connections:write`), bot scopes `chat:write`, `im:history`, `reactions:write` and `files:write` (plus `app_mentions:read`, `channels:history` for channels, and `users:read` for `others`; `files:write` is for file uploads, without it `agent-slackbot file upload` fails with `missing_scope`), bot event `message.im`, and the Messages tab enabled | your member id (`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
-| `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only), turn off Public Bot (needed for `others`), invite it with Add Reactions and Read Message History (seori's reactions in server channels), and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
+| `discord` | an application with a bot; enable the MESSAGE CONTENT intent (or drop it from `options.intents` to read DMs only), turn off Public Bot (needed for `others`), invite it with Add Reactions and Read Message History (seori's reactions in server channels) and Create Public Threads, Send Messages in Threads and Manage Threads (job threads), and DM the bot once | your user id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check` asks each configured messenger who its bot is, which proves the tokens work: it prints `OK <source>: <who the bot is>` or `FAIL <source>: <why>` per messenger and exits 1 when any fails. `seori msg check <source>` checks that one source, and works before `messengers.json` has an entry for it: only its token matters.
 
@@ -532,6 +538,10 @@ seori shows on the message itself where it stands. The moment the daemon has sto
 | Telegram | 👀 | 👌, replacing the eyes: ✅ is not among Telegram's allowed reactions | nothing more |
 
 A reaction that fails (a missing scope or permission, a rate limit) is logged, in the daemon's log for the eyes and on stderr of `seori msg` for the check mark, and never holds up the message or the reply.
+
+### Discord job threads
+
+On Discord, the lead's first `--ack` to a message written in a server channel (not in a thread or a DM) makes seori open a thread on that message, named "🔄 <title>" (`--title`, else the ack's first line, cut to 100 characters), and post the ack there; the `SENT` line ends with `thread=<id>`. Every later reply and `msg edit --reply-of` for that id, and seori's own progress posts about it, go into the thread. The lead renames it as the job moves with `seori msg thread <id> --status working|waiting|done` (🔄, ⏸, ✅) and archives it when done with `--archive`; the same command without `--archive` reopens an archived thread. A thread hides on its own after a week without messages. If Discord refuses the thread (a missing Create Public Threads permission), seori warns on stderr and the ack goes where the message was written, as before. Slack and Telegram keep answering in place.
 
 ### Corrections
 

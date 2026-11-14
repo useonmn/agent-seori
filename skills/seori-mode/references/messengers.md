@@ -60,7 +60,7 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
 1. https://discord.com/developers/applications → New Application, with the chosen name.
 2. Bot → Reset Token → copy it. That is the secret. On the same page turn on MESSAGE CONTENT INTENT (without it seori reads DMs only, and only after removing that intent from `options.intents`).
 3. Bot → turn off Public Bot and save, so only the owner can add the bot to a server; `others` on Discord (section 5) is safe only with it off. If Discord refuses because a private application cannot have a default authorization link, set Installation → Install Link to None, save, and turn Public Bot off again.
-4. OAuth2 → URL Generator → scope `bot`, permissions Send Messages, Read Message History, Send Messages in Threads, Add Reactions, Manage Threads → open the URL and add the bot to a server the owner is in. Discord lets a user DM a bot only when they share a server. Add Reactions and Read Message History let seori put the eyes and check mark on messages in server channels.
+4. OAuth2 → URL Generator → scope `bot`, permissions Send Messages, Read Message History, Create Public Threads, Send Messages in Threads, Add Reactions, Manage Threads → open the URL and add the bot to a server the owner is in. Discord lets a user DM a bot only when they share a server. Add Reactions and Read Message History let seori put the eyes and check mark on messages in server channels; Create Public Threads and Send Messages in Threads let it open a thread per job, and Manage Threads lets it rename and archive threads it did not open.
 5. The owner DMs the bot once.
 
 ## 2. Write the secrets
