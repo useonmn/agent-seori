@@ -33,8 +33,11 @@ export type SeoriConfig = {
   readonly repoIdentities: Readonly<Record<string, RepoIdentity>>;
   /** A READY lane with a Done line closes on its own this long after the claim unless the lead objects. */
   readonly closeAfterMin: number;
-  /** A lane with a thread gets its newest report posted there at most this often. */
-  readonly progressEveryMin: number;
+  /**
+   * A lane with a thread gets its newest report posted there at most this often, in minutes. `null` (the default) is
+   * off: no progress post is sent. It is the only spelling of off, so a config cannot say it two ways.
+   */
+  readonly progressEveryMin: number | null;
   /** A lane whose terminal shows a dialog (hc `blocked`) this long is told to the lead once as [BLOCKED-PROMPT]. */
   readonly blockedPromptMin: number;
   /**
@@ -66,7 +69,7 @@ export const DEFAULT_CONFIG: SeoriConfig = {
   name: DEFAULT_NAME,
   repoIdentities: {},
   closeAfterMin: 5,
-  progressEveryMin: 15,
+  progressEveryMin: null,
   blockedPromptMin: 10,
   startupWaitSeconds: 180,
   supervision: { defaults: { wallMinutes: null, tokens: null, costUsd: null }, hungAfterMin: 20, activityPaths: [] },
@@ -89,6 +92,15 @@ function num(o: Obj, k: string, where: string, fallback: number): number {
   const v = o[k];
   if (v === undefined) return fallback;
   if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ConfigError(`${where}.${k} must be a nonnegative number`);
+  return v;
+}
+
+/** A cadence: a positive number of minutes, or null to switch it off. 0 is refused (it would post on every pass). */
+function minutes(o: Obj, k: string, where: string, fallback: number | null): number | null {
+  const v = o[k];
+  if (v === undefined) return fallback;
+  if (v === null) return null;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) throw new ConfigError(`${where}.${k} must be a positive number of minutes, or null (off)`);
   return v;
 }
 
@@ -165,7 +177,7 @@ export function loadConfig(root: string): SeoriConfig {
     name,
     repoIdentities,
     closeAfterMin: num(raw, "closeAfterMin", path, D.closeAfterMin),
-    progressEveryMin: num(raw, "progressEveryMin", path, D.progressEveryMin),
+    progressEveryMin: minutes(raw, "progressEveryMin", path, D.progressEveryMin),
     blockedPromptMin: num(raw, "blockedPromptMin", path, D.blockedPromptMin),
     startupWaitSeconds: num(raw, "startupWaitSeconds", path, D.startupWaitSeconds),
     supervision: {

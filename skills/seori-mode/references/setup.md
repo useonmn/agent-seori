@@ -59,7 +59,7 @@ Tell the owner the lead is up and which terminal it is in.
   "name": "<name>",
   "repoIdentities": { "owner/repo": { "name": "Their Name", "email": "them@example.com" } },
   "closeAfterMin": 5,
-  "progressEveryMin": 15,
+  "progressEveryMin": null,
   "blockedPromptMin": 10,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
   "guard": { "loadAlertPct": 150, "loadOkPct": 80, "memFreeMinPct": 10, "diskFreeMinGb": 20, "panesMax": 30 },
@@ -70,11 +70,12 @@ Tell the owner the lead is up and which terminal it is in.
 - `name`: this instance's name (1 to 40 letters, digits, `.`, `_` or `-`, starting with a letter or digit). Required in `$SEORI_HOME/config.json` for any instance other than the first, and different for each instance, so side-by-side instances don't collide.
 - `repoIdentities`: the Git identity commits in that repo must carry; `seori verify-pr` and the merge gate check it. Ask the owner for it per repo they want checked.
 - `closeAfterMin`: how long after READY a lane with a Done line closes on its own.
-- `progressEveryMin`: how often a lane with a thread gets its newest report posted there.
+- `progressEveryMin`: how often a lane with a thread gets its newest report posted there, in minutes; `null` (the default) is off, so nothing is posted unless the owner asks for it. Set a positive number to turn it on; `0` is refused.
 - `blockedPromptMin`: how long a lane may sit on a dialog (tool approval or question) before the lead gets one `[BLOCKED-PROMPT]`.
 - `supervision.defaults`: wall-clock, token and cost ceilings for every lane (`null` is off); `hungAfterMin`: when a working lane with no report and no file change is reported stalled; `activityPaths`: files or directories (relative to each lane's cwd) whose change counts as progress besides git status (a file when written, a directory only when an entry is added, removed or renamed; per lane: `seori start --activity-path`).
 - `guard`: host load, memory, disk and pane-count lines; `seori can-launch` holds new lanes past them.
 - `heavy`: slots and load limit for `seori heavy`.
+- `hooks.threadReply`: an argv template (`{thread}`, `{text}`, `{key}`) whose command posts a lane's progress into its thread, in place of the built-in messenger send; see `hooks` in `README.md`.
 
 Write it only with the owner's go, and only the fields they want changed.
 

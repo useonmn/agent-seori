@@ -22,7 +22,7 @@ Roles:
 
 - Lead: an agent session with `prompts/lead.md` appended to its system prompt. The only session that talks to you. It writes briefs, opens lanes, reads what they send back, and merges.
 - Lane: an agent session in its own terminal, one per task, with the brief and the lane rules (`prompts/lane-footer.md`).
-- Duty: an agent session with `prompts/duty.md`, next to the duty loop process (`seori duty`), which flushes inboxes, nudges lanes that stop reporting, escalates, detects lost lanes, closes lanes whose Done line reads back live, reports ceilings, stalls and host guard crossings to the lead, and posts progress to the owner's thread.
+- Duty: an agent session with `prompts/duty.md`, next to the duty loop process (`seori duty`), which flushes inboxes, nudges lanes that stop reporting, escalates, detects lost lanes, closes lanes whose Done line reads back live, reports ceilings, stalls and host guard crossings to the lead, and, when `progressEveryMin` is set, posts progress to the owner's thread.
 - Hourly loop: `seori loop`, a process that syncs the backlog, audits missed work, starts the next item and asks open questions through the lead. Design: [docs/hourly-loop.md](docs/hourly-loop.md).
 - Daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead, and runs the watches agents arm. See [Messenger channel](#messenger-channel) and [Watches](#watches).
 
@@ -409,9 +409,13 @@ The host guard takes one reading of the machine: the 1-minute load per core in p
 
 ## Progress posts to the owner's thread
 
-A lane started for a messenger message can carry that message's lead channel id: `seori start <key> --brief FILE --thread <id>`. The id is the one the lead sees for the message, `<source>:<chat>:<message id>` (as in `seori msg list`). The duty loop then posts the lane's newest report as a threaded reply under that message, as `[<key>] <report text>`, at most every `progressEveryMin` minutes (default 15, counted from the lane's start or its last post), only when the report changed and only while the lane is working or waiting. Before a post goes out, the home directory is shown as `~` and pane ids are replaced with `<pane>`.
+A lane started for a messenger message can carry that message's lead channel id: `seori start <key> --brief FILE --thread <id>`. The id is the one the lead sees for the message, `<source>:<chat>:<message id>` (as in `seori msg list`). The duty loop then posts the lane's newest report as a threaded reply under that message, as `Progress (from the lane's last report): <report text>`, at most every `progressEveryMin` minutes (counted from the lane's start or its last post), only when the report changed and only while the lane is working or waiting.
 
-A post that may or may not have arrived counts as posted and is never sent twice. A definite failure, a source with no configured messenger, or a thread id that is not of that shape is a `post-failed` duty event and is tried again on the next pass. Each post is logged on the lane.
+**It is off by default.** With no `progressEveryMin` in config.json nothing is posted; turn it on with `{"progressEveryMin": 15}` (a positive number of minutes). `null` is the one way to say off; `0` is refused as a config error, since an empty period is not a period. The switch turns only the post off: `seori report`, the `[REPORT]` line the lead gets, and the nudges work the same either way.
+
+Before a post goes out, the home directory is shown as `~`, a path under `$SEORI_HOME` (where `secrets.json`, `messengers.json` and the lane records live) as `(state path)`, and pane ids as `<pane>`. Every other absolute path stays as the lane wrote it, because a report cites its evidence (a test log, a clone path, a PR) and hiding that would make the post useless. The post goes out through `hooks.threadReply` when that hook is set (see [Hooks](#hooks)); otherwise through the configured messenger.
+
+A post that may or may not have arrived counts as posted and is never sent twice. A definite failure, a source with no configured messenger, or a thread id that is not of that shape is a `post-failed` duty event and is tried again on the next pass. Each post is logged on the lane, and each event names the path it took (`via hooks.threadReply` or `via messenger`).
 
 ## Messenger channel
 
@@ -551,7 +555,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
   "name": "seori",
   "repoIdentities": {},
   "closeAfterMin": 5,
-  "progressEveryMin": 15,
+  "progressEveryMin": null,
   "blockedPromptMin": 10,
   "startupWaitSeconds": 180,
   "supervision": { "defaults": { "wallMinutes": null, "tokens": null, "costUsd": null }, "hungAfterMin": 20, "activityPaths": [] },
@@ -567,7 +571,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 | `name` | `"seori"` | this instance's name: the `seori.group` label of its hc terminals; also part of the systemd unit names. 1-40 letters (any script), digits, `.`, `_` or `-`, starting with a letter or digit. Give every instance on a PC its own; see [Several instances on one PC](#several-instances-on-one-pc) |
 | `repoIdentities` | `{}` | `"owner/repo": { "name": "...", "email": "..." }`: the Git identity a repo's commits must carry; verify-pr and the merge gate check the email. Repo keys match without case. A repo with no entry is not identity-checked |
 | `closeAfterMin` | `5` | minutes after READY that a lane with a Done line closes on its own, unless the lead objects |
-| `progressEveryMin` | `15` | a lane with `--thread` gets its newest report posted at most this often (minutes) |
+| `progressEveryMin` | `null` | a lane with `--thread` gets its newest report posted at most this often (minutes); `null` is off, `0` is refused |
 | `blockedPromptMin` | `10` | minutes a lane's pane may show a dialog (`blocked`) before the lead gets one `[BLOCKED-PROMPT <key>]`; fractions work (`0.5` is 30 s) |
 | `workflow` | unset | every lane's workflow unless `seori start --workflow` says otherwise: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` runs lanes under that omp-ulw workflow; unset is plain omp goal mode. See [Workflows](#workflows) |
 | `startupWaitSeconds` | `180` | how long `seori start` watches a new lane for a startup verdict (first check 20 s after the kickoff, then every 10 s); see [How a lane starts](#how-a-lane-starts) |
@@ -596,7 +600,7 @@ The commands that read the config (`start`, `ready` for a lane with a Done line,
 
 ### Hooks
 
-`hooks` in config.json takes argv templates (a non-empty array of strings; element 0 is the command, nothing is shell-expanded). Placeholders `{key}`, `{text}`, `{evidence}`, `{file}`, `{tokens}`, `{cost}`, `{closeKey}` are substituted inside each element.
+`hooks` in config.json takes argv templates (a non-empty array of strings; element 0 is the command, nothing is shell-expanded). Placeholders `{key}`, `{text}`, `{evidence}`, `{file}`, `{tokens}`, `{cost}`, `{closeKey}`, `{thread}` are substituted inside each element.
 
 | hook | runs | placeholders |
 |---|---|---|
@@ -605,12 +609,15 @@ The commands that read the config (`start`, `ready` for a lane with a Done line,
 | `onLost` | when duty or supervision marks a lane lost | `key`, `text` |
 | `recordCost` | once when a lane closes and its tokens or cost could be read (see Cost record) | `key`, `tokens`, `cost`, `closeKey` |
 | `transcribe` | turns an audio file into text: `seori transcribe <file>`, and Telegram voice notes | `file` |
+| `threadReply` | posts a lane's progress into its thread, in place of the built-in messenger send (see Progress posts) | `thread`, `text`, `key` |
 
-The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name> failed (...)` line on stderr and never changes the command's result; the CLI waits at most 2 s for hooks still running at exit. No hook replaces the reviewer: `seori review` always runs omp, and a `hooks.reviewCommand` key is refused. `transcribe` runs in the foreground and must print the transcript on stdout and exit 0; when it is not set, a voice note stays a plain attachment line. A malformed `hooks` value is a config error (exit 2).
+The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name> failed (...)` line on stderr and never changes the command's result; the CLI waits at most 2 s for hooks still running at exit. No hook replaces the reviewer: `seori review` always runs omp, and a `hooks.reviewCommand` key is refused. `transcribe` and `threadReply` run in the foreground and must exit 0: `transcribe` prints the transcript on stdout, and a `threadReply` that exits non-zero (or runs past 30 s, when it is killed) posts nothing, so the next duty pass tries the same report again and the event is `post-failed` with `hooks.threadReply: <the hook's first error line>` (`hooks.threadReply: timed out after 30 s` for a killed one). When `transcribe` is not set a voice note stays a plain attachment line; when `threadReply` is not set, progress posts go through the configured messenger. A malformed `hooks` value is a config error (exit 2).
 
 ```json
-{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"] } }
+{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"], "threadReply": ["/path/to/thread-reply", "{thread}", "{text}"] } }
 ```
+
+`{thread}` is the lane's whole thread id, `<source>:<chat>:<message id>`, so a `threadReply` command is usually a small wrapper script that splits it into the chat and message id its sender takes. Have the script `exec` its sender as the last step: the 30 s kill reaches only the process seori started, so a sender left running as a child of the script outlives it.
 
 ## seori mode skill
 
