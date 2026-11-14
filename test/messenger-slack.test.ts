@@ -326,7 +326,7 @@ describe("SlackAdapter receive", () => {
       ["slack:D1:1700000000.000200", "b"],
       ["slack:D1:1700000001.000000", "c"],
     ]);
-    expect(mock.historyCalls[0]?.get("oldest")).toBe("1700000000.000100");
+    expect(mock.historyCalls[0]?.get("oldest")).toBe("1700000000.000099"); // back to the tracked thread of message 100
     expect(mock.historyCalls[0]?.get("inclusive")).toBe("false");
   });
 
@@ -458,6 +458,35 @@ describe("SlackAdapter receive", () => {
       ["slack:D1:1700000000.000500", "1700000000.000100", "also"],
     ]);
     expect(mock.repliesCalls.every((q) => q.get("oldest") === "1700000000.000100")).toBe(true);
+  });
+
+  test("catch-up reads conversations.replies only for tracked threads with a reply after the cursor, or older than its history read", async () => {
+    const mock = startMock();
+    const root = home();
+    const at = (n: number) => `1700000000.000${String(n).padStart(3, "0")}`;
+    writeCursor(root, { channels: { C1: at(500) }, threads: { C1: Object.fromEntries([50, 100, 200, 300].map((n) => [at(n), at(n)])) } });
+    const parent = (n: number, extra: Record<string, unknown> = {}) => ({ type: "message", user: "UBOT", bot_id: "B1", text: "done", ts: at(n), ...extra });
+    // Newest first, one page per call: the third page passes the cursor, so the fourth (thread 50) is never read.
+    const pages = [
+      [{ type: "message", user: OWNER, text: "<@UBOT> new", ts: at(800) }, parent(300, { thread_ts: at(300), reply_count: 2, latest_reply: at(700) })],
+      [parent(200, { thread_ts: at(200), reply_count: 1, latest_reply: at(250) })],
+      [parent(100)],
+      [parent(50, { thread_ts: at(50), reply_count: 1, latest_reply: at(650) })],
+    ];
+    mock.historyPage = (q) => {
+      const i = Number(q.get("cursor") ?? "0");
+      return { ok: true, messages: pages[i], has_more: i + 1 < pages.length, response_metadata: { next_cursor: String(i + 1) } };
+    };
+    mock.replies[`C1:${at(300)}`] = [{ type: "message", user: OWNER, text: "on 300", ts: at(700), thread_ts: at(300) }];
+    mock.replies[`C1:${at(50)}`] = [{ type: "message", user: OWNER, text: "on 50", ts: at(650), thread_ts: at(50) }];
+    const got = await collect(adapter(mock, root), () => cursorOf(root).channels["C1"] === at(800));
+    expect(got.map((m) => [m.id, m.text])).toEqual([
+      [`slack:C1:${at(650)}`, "on 50"],
+      [`slack:C1:${at(700)}`, "on 300"],
+      [`slack:C1:${at(800)}`, "<@UBOT> new"],
+    ]);
+    expect(mock.historyCalls.map((q) => [q.get("oldest"), q.get("cursor")])).toEqual([[at(49), null], [at(49), "1"], [at(49), "2"]]);
+    expect(mock.repliesCalls.map((q) => q.get("ts")).sort()).toEqual([at(300), at(50)].sort());
   });
 
   test("a failure loop longer than two minutes rejects receive with the last error; a shorter blip stays internal", async () => {
@@ -747,7 +776,7 @@ describe("SlackAdapter send", () => {
     const mock = startMock();
     const text = `<!channel> & ${"word ".repeat(1000)}`; // > 3900 chars
     const res = await adapter(mock, home()).send({ chat: "D1", thread: "1700000000.000050", replyTo: "1700000000.000100:edit:1700000050.000000" }, text);
-    expect(res).toEqual({ messageId: "1800000000.000001" });
+    expect(res).toEqual({ messageId: "1800000000.000001", laterChunks: ["1800000000.000002"] });
     expect(mock.posts.length).toBe(2);
     for (const p of mock.posts) {
       expect(p).toMatchObject({ channel: "D1", thread_ts: "1700000000.000050", unfurl_links: false, unfurl_media: false });
@@ -806,14 +835,27 @@ describe("SlackAdapter send", () => {
     expect(await msgEditReplyOf(root, "slack:C1:1700000000.000200", "done", d)).toBe("1800000000.000002");
     expect(mock.updates).toEqual([{ channel: "C1", ts: "1800000000.000002", text: "done" }]);
 
+    // A long answer goes out in two chunks; the ledger keeps both ids.
+    expect(await msgSend(root, { replyTo: ["slack:C1:1700000000.000200"], text: "long ".repeat(1000), again: true }, d)).toMatchObject({ status: "SENT", messageId: "1800000000.000006" });
+    expect(channel.ledger().findLast((e) => e.ev === "replied")).toMatchObject({ messageId: "1800000000.000006", laterChunks: ["1800000000.000007"] });
+
     // The owner goes on in a thread under seori's top-level answer, without a new mention: it reaches the lead, and
-    // it is the owner's alone (seori's message there answered the owner), so --thread and progress may use it.
-    mock.history["C1"] = [{ type: "message", user: "UBOT", bot_id: "B1", text: "done", ts: "1800000000.000002" }];
-    mock.onConnect = (ws) => ws.send(envelope("e5", chan("1800000000.000010", "and y too", { thread_ts: "1800000000.000002", parent_user_id: "UBOT" })));
-    const more = await collect(adapter(mock, root), (g) => g.length >= 1, store);
-    expect(more.map((m) => [m.id, m.thread, m.root, m.rootBySeori])).toEqual([["slack:C1:1800000000.000010", "1800000000.000002", "slack:C1:1800000000.000002", true]]);
+    // it is the owner's alone (seori's message there answered the owner), so --thread and progress may use it. So is
+    // a thread under the second chunk of the long answer.
+    const bot = (ts: string) => ({ type: "message", user: "UBOT", bot_id: "B1", text: "done", ts });
+    mock.history["C1"] = [bot("1800000000.000007"), bot("1800000000.000006"), bot("1800000000.000002")];
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e5", chan("1800000000.000010", "and y too", { thread_ts: "1800000000.000002", parent_user_id: "UBOT" })));
+      ws.send(envelope("e6", chan("1800000000.000020", "and on part two", { thread_ts: "1800000000.000007", parent_user_id: "UBOT" })));
+    };
+    const more = await collect(adapter(mock, root), (g) => g.length >= 2, store);
+    expect(more.map((m) => [m.id, m.thread, m.root, m.rootBySeori])).toEqual([
+      ["slack:C1:1800000000.000010", "1800000000.000002", "slack:C1:1800000000.000002", true],
+      ["slack:C1:1800000000.000020", "1800000000.000007", "slack:C1:1800000000.000007", true],
+    ]);
     expect(channel.othersIds().has("slack:C1:1800000000.000010")).toBe(false);
-    expect(channel.inbound().map((r) => r.id)).toContain("slack:C1:1800000000.000010");
+    expect(channel.othersIds().has("slack:C1:1800000000.000020")).toBe(false);
+    expect(channel.inbound().map((r) => r.id)).toEqual(expect.arrayContaining(["slack:C1:1800000000.000010", "slack:C1:1800000000.000020"]));
   });
 
   test("429 Retry-After and ok:false ratelimited are waited out and retried", async () => {

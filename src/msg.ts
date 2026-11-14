@@ -166,9 +166,9 @@ async function replyLocked(
   const startedAt = d.now();
   for (const id of ids) channel.appendLedger({ id, ev: "sending", at: startedAt });
   try {
-    const { messageId } = await adapter.send(target, o.text);
+    const { messageId, laterChunks } = await adapter.send(target, o.text);
     const at = d.now();
-    for (const id of ids) channel.appendLedger({ id, ev: "replied", at, messageId });
+    for (const id of ids) channel.appendLedger({ id, ev: "replied", at, messageId, ...(laterChunks?.length ? { laterChunks } : {}) });
     return { result: { status: "SENT", messageId, ids }, rows };
   } catch (e) {
     const at = d.now();
