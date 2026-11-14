@@ -197,7 +197,7 @@ describe("progressTick", () => {
       lane();
       reportNow("working on it");
       w.clock += 15 * MIN;
-      expect(await progressTick(d)).toEqual([{ lane: "fix-a", action: "post-failed", detail: "thread fake:c1:m1 is a message from someone other than the owner; lane progress never posts there" }]);
+      expect(await progressTick(d)).toEqual([{ lane: "fix-a", action: "post-failed", detail: "thread fake:c1:m1 is someone else's message or in their thread; lane progress never posts there" }]);
       expect(w.notified).toEqual([]);
       expect(w.calls.filter((c) => c.cmd === "notify-owner")).toEqual([]);
     }

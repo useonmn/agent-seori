@@ -25,17 +25,19 @@ describe("rows stored by an earlier seori from someone other than the owner", ()
 });
 
 describe("owner-only by default", () => {
-  test("inbound, states and open hide other people's messages unless asked withOthers; fromNonOwner names them", () => {
+  test("inbound, states and open hide what is not the owner's alone unless asked withOthers; othersIds names it", () => {
     const c = fresh();
     c.appendInbound(row("fake:c1:1"));
-    c.appendInbound({ id: "fake:c1:2", kind: "messenger", source: "fake", chat: "c1", from: "u2", notOwner: true, at: T0, text: "question" });
+    c.appendInbound({ id: "fake:c1:2", kind: "messenger", source: "fake", chat: "c1", thread: "2", from: "u2", notOwner: true, at: T0, text: "question" });
+    // The owner's own reply inside that person's thread is theirs to see, not the owner's alone.
+    c.appendInbound({ id: "fake:c1:3", kind: "messenger", source: "fake", chat: "c1", thread: "2", from: "u1", at: T0, text: "@bot answer them" });
     c.appendInbound({ id: "watch:w1:1", kind: "watch", watchId: "w1", name: "ci", at: T0, text: "done" });
     expect(c.inbound().map((r) => r.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
     expect(c.states().map((s) => s.row.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
     expect(c.open().map((s) => s.row.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
-    expect(c.inbound({ withOthers: true }).map((r) => r.id)).toEqual(["fake:c1:1", "fake:c1:2", "watch:w1:1"]);
-    expect(c.open({ withOthers: true }).map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2", "watch:w1:1"]);
-    expect([c.fromNonOwner("fake:c1:2"), c.fromNonOwner("fake:c1:1"), c.fromNonOwner("fake:c1:9")]).toEqual([true, false, false]);
+    expect(c.inbound({ withOthers: true }).map((r) => r.id)).toEqual(["fake:c1:1", "fake:c1:2", "fake:c1:3", "watch:w1:1"]);
+    expect(c.open({ withOthers: true }).map((s) => s.row.id)).toEqual(["fake:c1:1", "fake:c1:2", "fake:c1:3", "watch:w1:1"]);
+    expect([...c.othersIds()].sort()).toEqual(["fake:c1:2", "fake:c1:3"]);
   });
 });
 

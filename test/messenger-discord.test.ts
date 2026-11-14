@@ -166,8 +166,8 @@ const mock = () => {
   return m;
 };
 
-function adapter(m: MockDiscord, root: string, extra: { sleeps?: number[]; now?: () => number; token?: string; options?: Record<string, unknown>; others?: boolean } = {}) {
-  return new DiscordAdapter({ source: "discord", owner: OWNER, ...(extra.others ? { others: true } : {}), options: { apiBase: m.base, wsUrl: m.ws, timeoutMs: 200, ...extra.options } }, root, {
+function adapter(m: MockDiscord, root: string, extra: { sleeps?: number[]; now?: () => number; token?: string; options?: Record<string, unknown> } = {}) {
+  return new DiscordAdapter({ source: "discord", owner: OWNER, options: { apiBase: m.base, wsUrl: m.ws, timeoutMs: 200, ...extra.options } }, root, {
     env: { SEORI_DISCORD_TOKEN: extra.token ?? "T0K" },
     sleep: async (ms) => {
       extra.sleeps?.push(ms);
@@ -345,19 +345,17 @@ describe("DiscordAdapter receive", () => {
     expect(m.resumes.length).toBe(1);
   });
 
-  for (const others of [false, true]) {
-    test(`others ${others ? "on delivers people other than the owner with their own id" : "off delivers only the owner"}; bots never`, async () => {
-      const m = mock();
-      m.afterReady = [
-        ["MESSAGE_CREATE", msg("601", { guild_id: "G1", author: { id: "7" }, content: "<@BOT> q", mentions: [{ id: "BOT" }] })],
-        ["MESSAGE_CREATE", msg("602", { author: { id: "7" }, content: "dm" })],
-        ["MESSAGE_CREATE", msg("603", { guild_id: "G1", author: { id: "9", bot: true }, content: "<@BOT> beep", mentions: [{ id: "BOT" }] })],
-        ["MESSAGE_CREATE", msg("604", { content: "owner" })],
-      ];
-      const got = await collect(adapter(m, home(), { others }), others ? 3 : 1);
-      expect(got.map((x) => [x.id, x.from])).toEqual([...(others ? [["discord:C1:601", "7"], ["discord:C1:602", "7"]] : []), ["discord:C1:604", OWNER]]);
-    });
-  }
+  test("only the owner is delivered: another person's mention or DM, and a bot's mention, are dropped", async () => {
+    const m = mock();
+    m.afterReady = [
+      ["MESSAGE_CREATE", msg("601", { guild_id: "G1", author: { id: "7" }, content: "<@BOT> q", mentions: [{ id: "BOT" }] })],
+      ["MESSAGE_CREATE", msg("602", { author: { id: "7" }, content: "dm" })],
+      ["MESSAGE_CREATE", msg("603", { guild_id: "G1", author: { id: "9", bot: true }, content: "<@BOT> beep", mentions: [{ id: "BOT" }] })],
+      ["MESSAGE_CREATE", msg("604", { content: "owner" })],
+    ];
+    const got = await collect(adapter(m, home()), 1);
+    expect(got.map((x) => [x.id, x.from])).toEqual([["discord:C1:604", OWNER]]);
+  });
 
   test("op 9 (session invalid) re-identifies, waiting at least 5s since the last identify", async () => {
     const m = mock();

@@ -45,12 +45,22 @@ export const fromOther = (row: InboundRow): boolean => {
 };
 
 /** A message from someone other than the owner: the messenger's `others` opt-in (`notOwner`), or `fromOther`. */
-export const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.notOwner === true || fromOther(row));
+const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.notOwner === true || fromOther(row));
 
 /**
- * How a reader sees the lead channel. By default only the owner's messages (and watch events) exist; `withOthers`
- * also shows messages from anyone else, for the few readers that must see them: delivering them to the lead, replying
- * to or listing them, and refusing to use one where only the owner's may go.
+ * The ids that are not the owner's alone: messages from someone else, and the owner's own messages in a thread one of
+ * them started (a reply there lands in their thread, which `<source>:<chat>:<thread>` names).
+ */
+function othersOf(rows: readonly InboundRow[]): Set<string> {
+  const others = new Set(rows.filter(nonOwner).map((row) => row.id));
+  for (const row of rows) if (row.kind === "messenger" && row.thread !== undefined && others.has(`${row.source}:${row.chat}:${row.thread}`)) others.add(row.id);
+  return others;
+}
+
+/**
+ * How a reader sees the lead channel. By default only what is the owner's alone exists (their messages outside other
+ * people's threads, and watch events); `withOthers` also shows the rest, for the few readers that must see it:
+ * delivering it to the lead, replying to or listing it. Where only the owner's may go, refuse an id in `othersIds()`.
  */
 export type ChannelView = { readonly withOthers?: boolean };
 
@@ -186,15 +196,17 @@ export class Channel {
     return true;
   }
 
-  /** Stored rows, oldest first: the owner's messages and watch events, plus other people's with `withOthers`. */
+  /** Stored rows, oldest first: the owner's alone and watch events, plus everything else with `withOthers`. */
   inbound(view: ChannelView = {}): InboundRow[] {
     const rows = readJsonl<InboundRow>(this.inboundPath);
-    return view.withOthers === true ? rows : rows.filter((row) => !nonOwner(row));
+    if (view.withOthers === true) return rows;
+    const others = othersOf(rows);
+    return rows.filter((row) => !others.has(row.id));
   }
 
-  /** Whether `id` names a stored message from someone other than the owner: where only the owner's may go, refuse it. */
-  fromNonOwner(id: string): boolean {
-    return this.inbound({ withOthers: true }).some((row) => row.id === id && nonOwner(row));
+  /** Ids that are not the owner's alone (see othersOf): where only the owner's message or thread may go, refuse them. */
+  othersIds(): Set<string> {
+    return othersOf(this.inbound({ withOthers: true }));
   }
 
   appendLedger(e: LedgerEvent): void {

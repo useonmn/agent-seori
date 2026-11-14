@@ -83,7 +83,6 @@ function withGatewayQuery(url: string): string {
 export class DiscordAdapter implements MessengerAdapter {
   readonly source: string;
   private readonly owner: string;
-  private readonly others: boolean;
   private readonly api: string;
   private readonly wsUrl: string | undefined;
   private readonly intents: number;
@@ -116,7 +115,6 @@ export class DiscordAdapter implements MessengerAdapter {
   ) {
     this.source = config.source;
     this.owner = config.owner;
-    this.others = config.others === true;
     const o = config.options ?? {};
     this.api = (typeof o["apiBase"] === "string" ? o["apiBase"] : DEFAULT_API).replace(/\/+$/, "");
     this.wsUrl = typeof o["wsUrl"] === "string" ? o["wsUrl"] : undefined;
@@ -414,11 +412,10 @@ export class DiscordAdapter implements MessengerAdapter {
     if (this.delivered.size > 10_000) this.delivered.delete(this.delivered.values().next().value as string);
   }
 
-  /** The sender of `m` when it may reach the lead: the owner, or with "others" on anyone else; never a bot. */
+  /** The sender of `m` when it may reach the lead: the owner, never a bot ("others" is refused for Discord). */
   private sender(m: Message): string | undefined {
     const id = m.author?.id;
-    if (typeof id !== "string" || id === "" || m.author?.bot === true) return undefined;
-    return id === this.owner || this.others ? id : undefined;
+    return typeof id === "string" && id === this.owner && m.author?.bot !== true ? id : undefined;
   }
 
   /**

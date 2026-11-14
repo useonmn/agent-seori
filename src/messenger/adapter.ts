@@ -81,8 +81,11 @@ export function loadMessengers(root: string): MessengerConfig[] {
     const c = m as Partial<MessengerConfig>;
     if (typeof c.source !== "string" || typeof c.owner !== "string") throw new ConfigError(`${path}: messengers[${i}] needs string "source" and "owner"`);
     if (c.others !== undefined && typeof c.others !== "boolean") throw new ConfigError(`${path}: messengers[${i}].others must be true or false, got ${JSON.stringify(c.others)}`);
-    // Anyone on Telegram can message a bot, and the adapter cannot see whether group privacy mode limits it to mentions.
-    if (c.others === true && c.source === "telegram") throw new ConfigError(`${path}: messengers[${i}].others is not supported for telegram; only the owner is answered there`);
+    // Telegram: anyone can message a bot, and the adapter cannot see whether group privacy mode limits it to mentions.
+    // Discord: anyone may share a server with a public bot; others there wait for a guild allowlist.
+    if (c.others === true && (c.source === "telegram" || c.source === "discord")) {
+      throw new ConfigError(`${path}: messengers[${i}].others is not supported for ${c.source}; only the owner is answered there`);
+    }
     return { source: c.source, owner: c.owner, ...(c.others !== undefined ? { others: c.others } : {}), ...(c.options ? { options: c.options } : {}) };
   });
 }
