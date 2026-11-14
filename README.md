@@ -655,7 +655,7 @@ One copy, two roles: it is both the running install and the checkout you develop
 
 Running `install.sh` (or plainly `bun link`) from *any* checkout with your real `HOME` and `BUN_INSTALL` repoints the machine-wide `seori` at that checkout, because that is exactly what linking means: do it in a throwaway tree and the `seori` on your PATH starts running that tree, or stops resolving when the tree is deleted. A throwaway install therefore sets `HOME`, `BUN_INSTALL`, `SEORI_HOME` and `SKILLS_DIR` inside its own temp directory.
 
-**Where tests run.** `bun test` and `bun run typecheck` from the clone; they need no model, no hc and no `SEORI_HOME`. The `.seori/` entry in `.gitignore` keeps a `SEORI_HOME` that happens to sit inside a checkout out of the repository.
+**Where tests run.** `bun test` and `bun run typecheck` from the clone; they need no model, no hc and no `SEORI_HOME`. The repository's `.gitignore` lists `.seori/`, so a state home at the default name inside a checkout stays out of git; a home with another name inside one would not, so keep it outside the checkout or add your own ignore rule.
 
 ## Testing
 

@@ -361,6 +361,16 @@ describe("install.sh and a checkout you develop in", () => {
     // It installed the dev checkout, not a fresh clone of the default one.
     expect(r.stdout.toString()).toContain(`Installed seori from ${realpathSync(dev)}`);
     expect(realpathSync(join(root, "bun", "install", "global", "node_modules", "seori"))).toBe(realpathSync(dev));
+
+    // Remedy 2 chains an install after the pull. That tail must reproduce this install too: a bare `install.sh` there
+    // installs the *default* checkout in a shell without SEORI_SRC, which is the failure this PR exists to stop.
+    const keep = first.err.split("\n").find((l) => l.includes("update it and keep the work:"));
+    expect(keep).toBeDefined();
+    // Only the install half is run: the rebase is covered elsewhere and would move the tree under these assertions.
+    const tail = keep!.slice(keep!.indexOf("&&") + 2).trim();
+    const tailRun = Bun.spawnSync(["bash", "-c", tail], { env, stdout: "pipe", stderr: "pipe" });
+    expect(tailRun.stdout.toString()).toContain(`Installed seori from ${realpathSync(dev)}`);
+    expect(realpathSync(join(root, "bun", "install", "global", "node_modules", "seori"))).toBe(realpathSync(dev));
   });
 
   // Through `curl | bash` there is no file to name, so the remedy is the one-liner — and it must carry SEORI_SRC for the

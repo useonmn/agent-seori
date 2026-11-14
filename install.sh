@@ -37,9 +37,11 @@ chmod 700 "$home"
 home="$(cd "$home" && pwd -P)"
 mkdir -p "$src"
 src="$(cd "$src" && pwd -P)"
+# SKILLS_DIR is resolved the same way, and `mkdir -p` stays: install.sh already creates the state home and the checkout
+# before this point, and the skill link below needs the directory to exist. A run that stops earlier leaves an empty
+# skills directory behind, which is the same thing it has always done for SEORI_HOME.
 mkdir -p "$skills"
 skills="$(cd "$skills" && pwd -P)"
-
 # Remedy construction, in one place. A remedy is a line the user pastes, so every value in it must survive a shell
 # re-read, and every value here is already an absolute path (SEORI_SRC, SEORI_HOME and SKILLS_DIR went through
 # `cd … pwd -P` above). Two rules keep that true, and no remedy below may bypass them:
@@ -65,9 +67,12 @@ env_prefix=""
 [ "$src" = "$home/src" ] || env_prefix="$(cat_words "SEORI_SRC=$(q "$src")" "$env_prefix")"
 [ "$home" = "$HOME/.seori" ] || env_prefix="$(cat_words "SEORI_HOME=$(q "$home")" "$env_prefix")"
 [ "$skills" = "$HOME/.omp/agent/skills" ] || env_prefix="$(cat_words "SKILLS_DIR=$(q "$skills")" "$env_prefix")"
-# `~$(id -un)` is expanded from the passwd entry, so it stays the login home even when HOME is the variable overridden.
-login_home="$(eval printf '%s' "~$(id -un)")"
-[ "$login_home" = "~$(id -un)" ] || [ "$HOME" = "$login_home" ] || env_prefix="$(cat_words "HOME=$(q "$HOME")" "$env_prefix")"
+# The login home comes from the passwd entry, never from re-reading text through the shell: `eval` on a user name such as
+# `o'brien` is code, not a path. `getent` covers non-/etc/passwd sources where it exists, awk the rest; an empty result
+# just means the HOME-differs check is skipped.
+login_home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+[ -n "$login_home" ] || login_home="$(awk -F: -v u="$(id -u)" '$3==u{print $6; exit}' /etc/passwd 2>/dev/null)"
+[ -z "$login_home" ] || [ "$HOME" = "$login_home" ] || env_prefix="$(cat_words "HOME=$(q "$HOME")" "$env_prefix")"
 [ -z "${BUN_INSTALL:-}" ] || env_prefix="$(cat_words "BUN_INSTALL=$(q "$BUN_INSTALL")" "$env_prefix")"
 
 # The remedy that installs this checkout as it is: the one line every refusal offers.
@@ -112,13 +117,13 @@ elif local_work && update_waits; then
   fi
   echo "This is a checkout you develop in; see \"Working on seori itself\" in README.md." >&2
   echo "  install this checkout as it is:  $remedy_install_as_is" >&2
-  # The git remedies are built the same way: the path goes through `q`, the rest are literal words. Hand-quoting `"$src"`
-  # would still expand `$(…)`, a backtick or a quote from a directory name the moment the line is pasted.
-  echo "  update it and keep the work:     $(cat_words "git -C $(q "$src") pull --rebase --autostash &&" "$self")" >&2
-  echo "  update it and drop the work:     $(cat_words "git -C $(q "$src") reset --hard '@{u}' &&" "$self")" >&2
-  # `git pull --rebase --autostash` can stop on a conflict and still exit 0, leaving unmerged paths, so `&& $self` is not
-  # a success check; the line below says what to do when that happens. The chained install is still the right advice: it
-  # would refuse on the unmerged index rather than install a conflicted tree.
+  # The git remedies are built the same way: the path goes through `q`, the rest are literal words, and the tail is the
+  # full install line — not bare `$self` — so the chained install reproduces this one (its SEORI_SRC, HOME, BUN_INSTALL).
+  echo "  update it and keep the work:     $(cat_words "git -C $(q "$src") pull --rebase --autostash &&" "$remedy_install_as_is")" >&2
+  echo "  update it and drop the work:     $(cat_words "git -C $(q "$src") reset --hard '@{u}' &&" "$remedy_install_as_is")" >&2
+  # `git pull --rebase --autostash` can stop on a conflict and still exit 0, leaving unmerged paths, so `&&` is not a
+  # success check; the line below says what to do when that happens. The chained install would still refuse on the
+  # unmerged index rather than install a conflicted tree.
   echo "If the autostash stops on a conflict, resolve it and commit before installing again." >&2
   exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
@@ -126,7 +131,7 @@ elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
   # something only git can explain. Name the one it is instead of blaming local work by default.
   if ! git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null; then
     echo "Could not update $src: its branch has no upstream to merge from (git's message above names the branch)." >&2
-    echo "Set one with $(cat_words "git -C $(q "$src") branch --set-upstream-to=origin/main,") or install it as it is with $remedy_install_as_is." >&2
+    echo "Set one with $(cat_words "git -C $(q "$src") branch --set-upstream-to=origin/main") and then install it as it is with $remedy_install_as_is." >&2
   elif local_work; then
     echo "Could not update $src: it has local work (listed below), so nothing was merged." >&2
     git -C "$src" status --short --branch --untracked-files=no >&2

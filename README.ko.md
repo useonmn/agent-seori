@@ -648,7 +648,7 @@ bun test && bun run typecheck                 # CI가 돌리는 두 명령
 
 진짜 `HOME`과 `BUN_INSTALL`을 둔 채 어느 체크아웃에서든 `install.sh`(또는 그냥 `bun link`)를 실행하면 그 체크아웃으로 PC 전체의 `seori`가 바뀝니다. 링크한다는 말이 그것이기 때문입니다. 버리는 나무에서 실행하면 PATH의 `seori`가 그 나무를 실행하기 시작하고, 그 나무를 지우면 아예 풀리지 않습니다. 그래서 버리는 설치는 `HOME`, `BUN_INSTALL`, `SEORI_HOME`, `SKILLS_DIR`을 모두 자기 임시 폴더 안으로 잡습니다.
 
-**테스트는 어디서.** 클론에서 `bun test`와 `bun run typecheck`. 모델도, hc도, `SEORI_HOME`도 필요 없습니다. `.gitignore`의 `.seori/` 덕분에 체크아웃 안에 `SEORI_HOME`이 있어도 저장소에 들어가지 않습니다.
+**테스트는 어디서.** 클론에서 `bun test`와 `bun run typecheck`. 모델도, hc도, `SEORI_HOME`도 필요 없습니다. 저장소의 `.gitignore`에 `.seori/`가 있어서 기본 이름의 상태 폴더가 체크아웃 안에 있어도 git에 들어가지 않습니다. 다른 이름의 폴더라면 들어가니, 체크아웃 밖에 두거나 직접 ignore 규칙을 더하세요.
 
 ## 테스트
 
