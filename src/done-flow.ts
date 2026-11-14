@@ -3,6 +3,7 @@ import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
 import { Refusal, send, tellLead, type Deps, type DutyEvent, type SendResult } from "./harness.ts";
 import { checkSignals, defaultSignalIo, type SignalIo } from "./signals.ts";
 import { recordCloseCost } from "./supervision.ts";
+import { startAgain } from "./restart.ts";
 import type { Lane } from "./store.ts";
 
 // The done flow of a lane started with a Done line (`seori start --done`): the lane's READY is a claim; seori closes
@@ -92,6 +93,10 @@ function eventDetail(e: unknown): string {
  * checked (checkSignals). Pass: the lane closes and the lead hears `[CLOSED <key>]`. Fail: the claim is objected to
  * with the reasons and the lead hears `[NOT-DONE <key>]`. A pane still working or behind a dialog is left for a
  * later pass. READY lanes without a Done line are the lead's to close.
+ *
+ * A gone pane (a restart closes ready panes too) cannot take an objection, and one would make the lane working and so
+ * lost: its claim stays, the lead hears `[NOT-DONE <key>]` once per claim with the command that starts it again, and a
+ * later pass closes it once every signal reads back live (the lead merged).
  */
 export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Promise<DutyEvent[]> {
   const due = d.store.lanes().filter((l) => l.status === "ready" && l.done !== undefined && l.final);
@@ -116,6 +121,20 @@ export async function autoCloseTick(d: Deps, io: SignalIo = defaultSignalIo): Pr
       const fresh = sameClaim(d, lane);
       if (!fresh) {
         events.push({ lane: lane.key, action: "close-deferred", detail: "its claim changed while its signals were read" });
+        continue;
+      }
+      if (failures.length && st === "gone") {
+        const mark = `not-done-gone:${fresh.final!.at}`;
+        events.push({ lane: lane.key, action: "close-deferred", detail: `pane is gone; ${failures.join("; ")}` });
+        if (fresh.alerts?.[mark] !== undefined) continue;
+        fresh.alerts = { ...fresh.alerts, [mark]: d.now() };
+        d.store.saveLane(fresh);
+        await tellLead(
+          d,
+          `[NOT-DONE ${lane.key}] ${failures.join("; ")}. Its pane is gone, so it stays ready and closes once every Done ` +
+            `signal reads back live; if it needs more work, resume it with: ${startAgain(fresh, d.seoriCmd)}`,
+          "duty",
+        );
         continue;
       }
       if (failures.length) {

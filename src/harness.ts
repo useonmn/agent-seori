@@ -26,6 +26,7 @@ import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
 import { refText, sameSession } from "./refs.ts";
 import { loadHooks, runHook } from "./hooks.ts";
+import { WatchStore } from "./watch/store.ts";
 import { lostText } from "./restart.ts";
 
 export { KEY_RE, reservedKey };
@@ -451,6 +452,21 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
     throw new Refusal(`lane ${key} did not start, pane ${refText(ref)} closed: ${failureDetail(e)}`);
   }
 
+  if (existing?.status === "ready") {
+    // The ready claim may have been closed (seori done, the done window) while the new pane opened: never overwrite it.
+    if (!sameClaim(d, existing)) {
+      await rt.close(ref).catch(() => undefined);
+      throw new Refusal(`lane ${key} changed while it was being started again (now ${d.store.lane(key)?.status ?? "gone"}); pane ${refText(ref)} closed`);
+    }
+    // Watches the old session armed would wake the new one with events it never asked for.
+    const watches = new WatchStore(d.store.root);
+    for (const w of watches.list()) {
+      if ((w.status !== "active" && w.status !== "muted") || w.owner.kind !== "lane" || w.owner.key !== key) continue;
+      const reason = "owner lane started again";
+      watches.update(w.id, (cur) => (cur.status === "active" || cur.status === "muted" ? { ...cur, status: "stopped", reason } : cur));
+      watches.appendEvent(w.id, { at: d.now(), ev: "stopped", reason });
+    }
+  }
   const now = d.now();
   const lane: Lane = {
     key, sessionRef: ref, paneId: ref.id, tabId: "", brief: briefPath, cwd,

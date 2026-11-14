@@ -9,6 +9,7 @@ import { backlogAdd } from "../src/loop.ts";
 import { deliverOrThrow } from "../src/runtime/index.ts";
 import { refText } from "../src/refs.ts";
 import { startAgain } from "../src/restart.ts";
+import { WatchStore } from "../src/watch/store.ts";
 import { Channel } from "../src/channel.ts";
 import { ompJson, World, paneRef } from "./fake.ts";
 
@@ -517,7 +518,8 @@ describe("duty loop", () => {
   test("start takes back a ready lane's key once its pane is gone (a restart closed it), and only then, recording its spend", async () => {
     const { w, d, brief } = setup();
     const first = await startLane(d, "busy", brief, {});
-    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready" });
+    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
+    const old = new WatchStore(d.store.root).add({ owner: { kind: "lane", key: "busy" }, source: { kind: "file", path: "/tmp/x" } }, w.clock);
     await expect(startLane(d, "busy", brief, {})).rejects.toThrow(`lane busy is already open in ${refText(first.sessionRef)}`);
     w.panes.delete(first.paneId);
     const again = await startLane(d, "busy", brief, {});
@@ -526,6 +528,28 @@ describe("duty loop", () => {
     // The ready session is closed by the take-back, so its spend goes to the ledger as `seori done` would record it.
     const ledger = readFileSync(join(d.store.root, "cost.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { closeKey: string });
     expect(ledger.map((r) => r.closeKey)).toEqual([`busy@${first.createdAt}`]);
+    // The old session's watches end: they would wake the new session with events it never armed.
+    expect(new WatchStore(d.store.root).list().find((x) => x.id === old.id)).toMatchObject({ status: "stopped", reason: "owner lane started again" });
+  });
+
+  test("a take-back whose ready claim is closed while the new pane opens closes that pane and leaves the record done", async () => {
+    const { w, d, brief } = setup();
+    const first = await startLane(d, "busy", brief, {});
+    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
+    w.panes.delete(first.paneId);
+    const rt = d.runtime;
+    const create = rt.create.bind(rt);
+    let opened = "";
+    rt.create = async (spec) => {
+      const ref = await create(spec);
+      opened = ref.id;
+      // seori done (or the done window) closes the claim from another process meanwhile.
+      d.store.saveLane({ ...d.store.lane("busy")!, status: "done" });
+      return ref;
+    };
+    await expect(startLane(d, "busy", brief, {})).rejects.toThrow("lane busy changed while it was being started again (now done)");
+    expect(d.store.lane("busy")!.status).toBe("done");
+    expect(w.panes.has(opened)).toBe(false);
   });
 
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */

@@ -212,6 +212,28 @@ describe("autoCloseTick", () => {
     expect(lead.received.at(-1)).toBe("[NOT-DONE fix-login] merged o/r#1 -> state OPEN");
   });
 
+  test("a failed check on a lane whose pane is gone (a restart closed it) keeps the claim, tells NOT-DONE once, closes once live", async () => {
+    const { d, w, lead, lane, state } = await claimed();
+    w.panes.delete(lane.paneId);
+    w.clock += 5 * 60_000;
+    const deferred = [{ lane: "fix-login", action: "close-deferred", detail: "pane is gone; merged o/r#1 -> state OPEN" }];
+    expect(await autoCloseTick(d, noIo)).toEqual(deferred);
+    // No objection: one to a gone pane could not be delivered and would make the lane working, then lost.
+    expect(d.store.lane("fix-login")).toMatchObject({ status: "ready" });
+    expect(d.store.lane("fix-login")!.objection).toBeUndefined();
+    expect(d.store.inboxPanes()).toEqual([]);
+    const told = lead.received.at(-1)!;
+    expect(told).toStartWith("[NOT-DONE fix-login] merged o/r#1 -> state OPEN. Its pane is gone, so it stays ready");
+    expect(told).toContain(`resume it with: ${d.seoriCmd} start fix-login`);
+    const count = lead.received.length;
+    expect(await autoCloseTick(d, noIo)).toEqual(deferred);
+    expect(lead.received).toHaveLength(count);
+    // The lead merged: the next pass closes it with no pane at all.
+    state.merged = true;
+    expect(await autoCloseTick(d, noIo)).toEqual([{ lane: "fix-login", action: "closed" }]);
+    expect(d.store.lane("fix-login")!.status).toBe("done");
+  });
+
   test("a pane still working or behind a dialog is left for a later pass", async () => {
     const { d, w, pane, state } = await claimed();
     state.merged = true;
