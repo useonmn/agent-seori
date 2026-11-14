@@ -19,6 +19,13 @@ home="${SEORI_HOME:-$HOME/.seori}"
 src="${SEORI_SRC:-$home/src}"
 skills="${SKILLS_DIR:-$HOME/.omp/agent/skills}"
 
+# How the remedies below tell the user to run this script again. Through `curl | bash` there is no file to name, so the
+# one-liner is the way back; run from a file, name that file, since the user's shell may be anywhere.
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+  self="bash \"$(readlink -f "${BASH_SOURCE[0]}")\""
+else
+  self="bash <(curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh)"
+fi
 command -v bun >/dev/null || { echo "bun 1.3 or newer is required: https://bun.sh" >&2; exit 1; }
 
 if [ "${1:-}" = "--uninstall" ]; then
@@ -74,9 +81,9 @@ elif local_work && update_waits; then
     printf '%s\n' "$ahead" >&2
   fi
   echo "This is a checkout you develop in; see \"Working on seori itself\" in README.md." >&2
-  echo "  install this checkout as it is:  SEORI_NO_PULL=1 bash install.sh" >&2
-  echo "  update it and keep the work:     git -C \"$src\" pull --rebase" >&2
-  echo "  update it and drop the work:     git -C \"$src\" reset --hard '@{u}' && bash install.sh" >&2
+  echo "  install this checkout as it is:  SEORI_NO_PULL=1 $self" >&2
+  echo "  update it and keep the work:     git -C \"$src\" pull --rebase --autostash" >&2
+  echo "  update it and drop the work:     git -C \"$src\" reset --hard '@{u}' && $self" >&2
   exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
   echo "Could not update $src; git's message above says why." >&2

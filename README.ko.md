@@ -565,7 +565,7 @@ config.json의 `hooks`는 argv 템플릿을 받습니다(비어 있지 않은 �
 
 `install.sh`([서리 모드로 빠르게 시작하기](#서리-모드로-빠르게-시작하기)의 한 줄 명령)에는 git과 Bun 1.3 이상이 필요합니다. 하는 일:
 
-- 저장소를 `~/.seori/src`에 받거나(`SEORI_SRC`로 다른 곳 지정. 개발하는 클론을 가리키게 하세요) 이미 있는 체크아웃을 fast-forward합니다. 내 작업이 있는데 업스트림에 받을 커밋도 있으면 pull하지 않고, 고친 파일과 아직 올리지 않은 커밋을 보여 준 뒤 exit 1로 멈추면서 세 가지 길을 알려 줍니다(`SEORI_NO_PULL=1 bash install.sh`는 있는 그대로 설치, `git pull --rebase`는 작업을 남기고 업데이트, `git reset --hard`는 작업을 버리고 업데이트). 받을 것이 없으면 그대로 지나가고, 추적하지 않는 파일은 로컬 작업이 아닙니다. [seori 자체를 고칠 때](#seori-자체를-고칠-때)를 보세요.
+- 저장소를 `~/.seori/src`에 받거나(`SEORI_SRC`로 다른 곳 지정. 개발하는 클론을 가리키게 하세요) 이미 있는 체크아웃을 fast-forward합니다. 내 작업이 있는데 업스트림에 받을 커밋도 있으면 pull하지 않고, 고친 파일과 아직 올리지 않은 커밋을 보여 준 뒤 exit 1로 멈추면서 세 가지 길을 알려 줍니다(`SEORI_NO_PULL=1 bash <스크립트>`는 있는 그대로 설치, `git pull --rebase --autostash`는 작업을 남기고 업데이트, `git reset --hard`는 작업을 버리고 업데이트). 받을 것이 없으면 그대로 지나가고, 추적하지 않는 파일은 로컬 작업이 아닙니다. [seori 자체를 고칠 때](#seori-자체를-고칠-때)를 보세요.
 - `bun install`과 `bun link`를 돌려, Bun의 전역 bin 폴더를 통해 `seori`를 PATH에 넣습니다.
 - `seori install-skill`로 스킬을 `~/.omp/agent/skills/seori-mode`에 링크합니다(`--skills-dir DIR`이나 `SKILLS_DIR`로 다른 곳 지정). 심볼릭 링크로 만듭니다. 예전 링크나 seori가 만든 복사본은 새로 바꾸고, 그 자리에 진짜 폴더가 있으면 건드리지 않고 경고만 합니다.
 - `~/.seori`(또는 `$SEORI_HOME`)를 권한 700으로 만듭니다.
@@ -631,7 +631,7 @@ seori 하나는 `$SEORI_HOME` 하나입니다. 레인, 메시지, 데몬, 루프
 | 상태: 레인, 받은편지함, 작업 기록, `config.json`, `secrets.json`, `messengers.json` | `$SEORI_HOME`(`~/.seori`), 권한 700 | 아니오. 저장소의 `.gitignore`에 `.seori/`가 있습니다 |
 | 말투와 성격 | `~/.omp/agent/AGENTS.md`. omp가 이 PC의 모든 세션에 넣습니다 | 아니오 |
 
-저장소에서 추적하는 파일은 개인 파일을 읽지 않고, 개인 설정은 추적하는 파일에 두지 않습니다. `config.json`과 `AGENTS.md`는 여기서 설명하는 사용자 수준 덮어쓰기이지 기본값이 아닙니다.
+개인 설정은 추적하는 파일에 두지 않습니다. `config.json`과 `AGENTS.md`는 여기서 설명하는 사용자 수준 덮어쓰기이지 기본값이 아닙니다. (`install.sh`는 hc의 `config.toml` 한 파일을 읽습니다. `notes = false` 줄이 없으면 경고하려고요. 쓰지는 않습니다.)
 
 **클론.** `SEORI_HOME` 밖 아무 곳에나 받고, 그 클론에서 설치하세요. PATH의 `seori`와 스킬 링크가 고치는 클론을 가리키게 됩니다:
 
@@ -644,7 +644,7 @@ bun test && bun run typecheck                 # CI가 돌리는 두 명령
 
 한 벌이 두 역할을 합니다. 설치본이자 개발하는 체크아웃이고, `SEORI_SRC`가 그 역할을 합니다. 읽기 전용 설치본을 따로 두고 싶으면 `install.sh`를 기본값(`~/.seori/src`)대로 두고 다른 클론에서 개발하면서, CLI가 내 코드를 돌리게 하고 싶을 때 `SEORI_SRC=<클론> bash install.sh`로 설치하세요. 둘 다 됩니다. 하나를 고르고, `seori`가 어느 나무를 가리키는지 정하는 값이니 모든 셸에서 `SEORI_SRC`를 같게 두세요(`readlink -f "$(command -v seori)"`로 확인).
 
-**개발하는 동안.** 내 작업이 있고 업스트림에 받아 올 커밋도 있을 때만 `install.sh`가 pull하지 않습니다. 고친 파일과 아직 올리지 않은 커밋을 보여 주고, 세 가지 길을 알려 준 뒤 exit 1로 멈춥니다. 그대로 실행했더니 내가 돌리려던 수정 위로 업스트림이 조용히 fast-forward되는 경우가 바로 이 경우입니다. 업스트림에 받을 것이 없으면 다시 실행해도 그대로 지나가니, 고친 채로 재설치하는 것은 무해합니다. 막혔을 때의 답은 `SEORI_NO_PULL=1 bash install.sh`이고, 체크아웃을 있는 그대로 설치합니다. 추적하지 않는 파일(테스트 로그 같은 것)은 로컬 작업이 아니라서 업데이트를 막지 않습니다. 업스트림을 당길 때는 직접 `git -C ~/src/agent-seori pull --rebase`를 실행하세요.
+**개발하는 동안.** 내 작업이 있고 업스트림에 받아 올 커밋도 있을 때만 `install.sh`가 pull하지 않습니다. 고친 파일과 아직 올리지 않은 커밋을 보여 주고, 세 가지 길을 알려 준 뒤 exit 1로 멈춥니다. 그대로 실행했더니 내가 돌리려던 수정 위로 업스트림이 조용히 fast-forward되는 경우가 바로 이 경우입니다. 업스트림에 받을 것이 없으면 다시 실행해도 그대로 지나가니, 고친 채로 재설치하는 것은 무해합니다. 막혔을 때의 답은 `SEORI_NO_PULL=1 bash install.sh`이고, 체크아웃을 있는 그대로 설치합니다. 추적하지 않는 파일(테스트 로그 같은 것)은 로컬 작업이 아니라서 업데이트를 막지 않습니다. 업스트림을 당길 때는 수정을 잠시 챙겨 두었다 되돌리는 `git -C ~/src/agent-seori pull --rebase --autostash`를 쓰세요. 그냥 `pull --rebase`는 멈춤의 원인이었던 커밋하지 않은 수정 때문에 거부합니다.
 
 진짜 `HOME`과 `BUN_INSTALL`을 둔 채 어느 체크아웃에서든 `install.sh`(또는 그냥 `bun link`)를 실행하면 그 체크아웃으로 PC 전체의 `seori`가 바뀝니다. 링크한다는 말이 그것이기 때문입니다. 버리는 나무에서 실행하면 PATH의 `seori`가 그 나무를 실행하기 시작하고, 그 나무를 지우면 아예 풀리지 않습니다. 그래서 버리는 설치는 `HOME`, `BUN_INSTALL`, `SEORI_HOME`, `SKILLS_DIR`을 모두 자기 임시 폴더 안으로 잡습니다.
 

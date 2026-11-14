@@ -67,7 +67,12 @@ describe("uninstall (I6)", () => {
 
 describe("install.sh and a checkout you develop in", () => {
   const INSTALL = join(import.meta.dir, "..", "install.sh");
-  const gitEnv = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  // The fixture's git must not inherit this host's config: a developer with `commit.gpgsign = true`, a signing key that
+  // wants a pinentry, or a `core.hooksPath` full of enforced hooks would fail every commit here and red the whole block.
+  const gitEnv = {
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
+    GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+  };
 
   // A local origin and a clone of it, so `@{u}` exists and no network is needed. `bun` is real (install.sh only checks
   // that it is on PATH before the update block); nothing here reaches `bun link`, because every run stops at the update
@@ -81,12 +86,12 @@ describe("install.sh and a checkout you develop in", () => {
       if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr.toString()}`);
       return r.stdout.toString().trim();
     };
-    Bun.spawnSync(["git", "init", "--quiet", upstream], { env: process.env });
+    Bun.spawnSync(["git", "init", "--quiet", upstream], { env: { ...process.env, ...gitEnv } });
     writeFileSync(join(upstream, "tracked.txt"), "one\n");
     git(upstream, "add", "tracked.txt");
     git(upstream, "commit", "--quiet", "-m", "one");
     git(upstream, "branch", "-M", "main");
-    Bun.spawnSync(["git", "clone", "--quiet", upstream, dev], { env: process.env });
+    Bun.spawnSync(["git", "clone", "--quiet", upstream, dev], { env: { ...process.env, ...gitEnv } });
     return { root, upstream, dev, git };
   }
 
@@ -148,10 +153,36 @@ describe("install.sh and a checkout you develop in", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain(`${realpathSync(dev)} has local work and upstream has commits it does not, so install.sh did not pull:`);
     expect(r.err).toContain("M tracked.txt");
-    expect(r.err).toContain("SEORI_NO_PULL=1 bash install.sh");
+    // The remedies name the script's own file, so they work from anywhere, and the keep-the-work one autostashes the
+    // very edits that triggered the refusal (plain `pull --rebase` refuses unstaged changes).
+    expect(r.err).toContain(`SEORI_NO_PULL=1 bash "${realpathSync(INSTALL)}"`);
+    expect(r.err).toContain("pull --rebase --autostash");
     expect(r.err).toContain(`see "Working on seori itself" in README.md`);
-    expect(r.err).toContain("git -C \"" + realpathSync(dev) + "\" pull --rebase");
     expect(readFileSync(join(dev, "tracked.txt"), "utf8")).toBe("edited\n");
+  });
+
+  // The ordering guarantee, pinned. A merge-first install.sh fast-forwards cleanly here — the edit is in a file upstream
+  // does not touch, so nothing conflicts — and the run would report success while the tree moved under the edit. That is
+  // the exact behaviour this PR exists to stop, and this test is what keeps a refactor from reintroducing it.
+  test("an edit upstream does not touch still stops the pull: the checkout does not fast-forward under it", () => {
+    const { root, upstream, dev, git } = checkout();
+    writeFileSync(join(dev, "mine.txt"), "a local file upstream never sees\n");
+    git(dev, "add", "mine.txt");
+    writeFileSync(join(dev, "tracked.txt"), "one\n"); // untouched relative to upstream: no conflict is possible
+    // Upstream moves a different file forward.
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    git(upstream, "commit", "--quiet", "-am", "two");
+    const headBefore = git(dev, "rev-parse", "HEAD");
+    const upstreamHead = git(upstream, "rev-parse", "HEAD");
+    expect(headBefore).not.toBe(upstreamHead);
+
+    const r = install(dev, root);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("has local work");
+    // And the checkout is exactly where it was: the pull never ran.
+    expect(git(dev, "rev-parse", "HEAD")).toBe(headBefore);
+    expect(readFileSync(join(dev, "mine.txt"), "utf8")).toBe("a local file upstream never sees\n");
+    expect(git(dev, "status", "--porcelain", "--untracked-files=no")).toContain("A  mine.txt");
   });
 
   test("local edits and nothing upstream to take: the reinstall still runs, touching no file", () => {
