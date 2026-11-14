@@ -11,6 +11,11 @@ export type InboundMessage = {
   readonly source: string;
   readonly chat: string;
   readonly thread?: string;
+  /**
+   * A reply in a thread outside DMs: the id (`<source>:<chat>:<message id>`) of that thread's first message. The lead
+   * channel counts the reply as the owner's alone only when that first message is a stored message of the owner.
+   */
+  readonly root?: string;
   readonly from: string;
   readonly at: number;
   readonly text: string;

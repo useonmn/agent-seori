@@ -39,7 +39,7 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
        "app_home": { "messages_tab_enabled": true, "messages_tab_read_only_enabled": false }
      },
      "oauth_config": {
-       "scopes": { "bot": ["chat:write", "im:history", "app_mentions:read", "channels:history", "reactions:write"] }
+       "scopes": { "bot": ["chat:write", "im:history", "app_mentions:read", "channels:history", "reactions:write", "users:read"] }
      },
      "settings": {
        "event_subscriptions": { "bot_events": ["message.im", "app_mention", "message.channels"] },
@@ -48,7 +48,7 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
    }
    ```
 
-   `app_mentions:read`, `channels:history`, `app_mention` and `message.channels` are only for channels; drop them if the owner wants DMs only. In a channel seori answers only a message that mentions it, and then every reply in that thread without a new mention.
+   `app_mentions:read`, `channels:history`, `app_mention` and `message.channels` are only for channels; drop them if the owner wants DMs only. `users:read` is only for `others` (section 5). In a channel seori answers only a message that mentions it, and then every reply in that thread without a new mention.
 2. Basic Information → App-Level Tokens → Generate, scope `connections:write`. That is the app token (`xapp-...`).
 3. Install App → Install to Workspace → allow. That gives the bot token (`xoxb-...`).
 4. The owner opens the app in Slack (Apps → the app → Messages tab) so the DM exists.
@@ -113,4 +113,4 @@ After `seori up`, the daemon receives the owner's messages into the lead pane an
 
 ## 5. Answering other people (optional)
 
-By default seori answers only its owner. On Slack the owner can let it answer other people too, under the same rule (a DM to the bot, a mention in a channel, a reply in the bot's thread): add `"others": true` to that messenger in `~/.seori/messengers.json`, for example `{ "messengers": [ { "source": "slack", "owner": "U012OWNER", "others": true } ] }`. That means people of the bot's own workspace, guests included; Slack Connect users from other organizations never reach the lead. Telegram refuses it, because anyone on Telegram can message a bot, and so does Discord for now, because anyone may share a server with a public bot. Their messages reach the lead marked `(not owner)`; the lead talks with them, but takes any work request from them to the owner for approval first and never shares internal data with them. Tell the owner plainly before turning it on: what those people write reaches a lead that can run commands, and only the lead's own rules (the `(not owner)` mark, approval in the owner's DM) stand between their words and its actions, so turn it on only in a workspace whose members, guests included, the owner trusts that far.
+By default seori answers only its owner. On Slack the owner can let it answer other people too, under the same rule (a DM to the bot, a mention in a channel, a reply in the bot's thread): add `"others": true` to that messenger in `~/.seori/messengers.json`, for example `{ "messengers": [ { "source": "slack", "owner": "U012OWNER", "others": true } ] }`. That means full members of the bot's own workspace: guests are left out (checked with `users.info`, so the app needs the `users:read` scope; without it only the owner is answered), and Slack Connect users from other organizations never reach the lead. Telegram refuses it, because anyone on Telegram can message a bot, and so does Discord for now, because anyone may share a server with a public bot. Their messages reach the lead marked `(not owner)`; the lead talks with them, but takes any work request from them to the owner for approval first and never shares internal data with them. Tell the owner plainly before turning it on: what those people write reaches a lead that can run commands, and only the lead's own rules (the `(not owner)` mark, approval in the owner's DM) stand between their words and its actions, so turn it on only in a workspace whose members the owner trusts that far.

@@ -32,6 +32,10 @@ type Mock = {
   repliesError: Record<string, Record<string, unknown>>;
   /** Answer one reply per page (has_more until the last), to see paging stop early. */
   repliesPaged: boolean;
+  /** users.info answers by user id (default: a full member); `usersError` answers every call when set. */
+  users: Record<string, Record<string, unknown>>;
+  usersError?: Record<string, unknown>;
+  usersCalls: string[];
   /** Called after hello on each new socket (1-based connection number). */
   onConnect: (ws: ServerWebSocket<unknown>, n: number) => void;
   sendHello: boolean;
@@ -62,6 +66,8 @@ function startMock(): Mock {
     replies: {},
     repliesError: {},
     repliesPaged: false,
+    users: {},
+    usersCalls: [],
     onConnect: () => {},
     sendHello: true,
     authAnswer: () => json({ ok: true, user: "seori", user_id: "UBOT", team: "Acme", team_id: "T1" }),
@@ -91,6 +97,12 @@ function startMock(): Mock {
         const oldest = q.get("oldest") ?? "0";
         const messages = (mock.history[q.get("channel") ?? ""] ?? []).filter((m) => compareTs(String(m["ts"]), oldest) > 0);
         return json({ ok: true, messages, has_more: false });
+      }
+      if (url.pathname === "/api/users.info") {
+        const user = url.searchParams.get("user") ?? "";
+        mock.usersCalls.push(user);
+        if (mock.usersError) return json(mock.usersError);
+        return json({ ok: true, user: { id: user, is_restricted: false, is_ultra_restricted: false, ...mock.users[user] } });
       }
       if (url.pathname === "/api/conversations.replies") {
         const q = url.searchParams;
@@ -549,6 +561,59 @@ describe("SlackAdapter receive", () => {
     expect(got.map((m) => [m.id, m.text])).toEqual([
       ["slack:C1:1700000000.000200", "<@UBOT> look"],
       ["slack:C1:1700000000.000300", "follow"],
+    ]);
+  });
+
+  test("others leaves guests out (users.info, asked once per user); without users:read only the owner gets through", async () => {
+    const mock = startMock();
+    mock.users["UGUEST"] = { is_restricted: true };
+    mock.users["USINGLE"] = { is_ultra_restricted: true };
+    const t1 = { team: "T1" };
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> guest", { user: "UGUEST", ...t1 })));
+      ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> single-channel guest", { user: "USINGLE", ...t1 })));
+      ws.send(envelope("e3", chan("1700000000.000300", "<@UBOT> member", { user: "UOTHER", ...t1 })));
+      ws.send(envelope("e4", chan("1700000000.000400", "<@UBOT> member again", { user: "UOTHER", ...t1 })));
+      ws.send(envelope("e5", chan("1700000000.000500", "<@UBOT> owner", t1)));
+    };
+    const got = await collect(adapter(mock, home(), { others: true }), () => mock.acks.length >= 5);
+    expect(got.map((m) => [m.id, m.from])).toEqual([
+      ["slack:C1:1700000000.000300", "UOTHER"],
+      ["slack:C1:1700000000.000400", "UOTHER"],
+      ["slack:C1:1700000000.000500", OWNER],
+    ]);
+    expect(mock.usersCalls.sort()).toEqual(["UGUEST", "UOTHER", "USINGLE"]);
+
+    const noScope = startMock();
+    noScope.usersError = { ok: false, error: "missing_scope", needed: "users:read" };
+    noScope.onConnect = (ws) => {
+      ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> member", { user: "UOTHER", ...t1 })));
+      ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> owner", t1)));
+    };
+    const errors: string[] = [];
+    const error = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a.join(" "));
+    try {
+      const only = await collect(adapter(noScope, home(), { others: true }), () => noScope.acks.length >= 2);
+      expect(only.map((m) => m.from)).toEqual([OWNER]);
+    } finally {
+      console.error = error;
+    }
+    expect(errors.filter((l) => l.includes("users:read"))).toHaveLength(1);
+  });
+
+  test("a reply in a channel thread carries its thread's first message as root; top-level messages and DMs carry none", async () => {
+    const mock = startMock();
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> top")));
+      ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> reply", { thread_ts: "1700000000.000050" })));
+      ws.send(envelope("e3", dm("1700000000.000300", { thread_ts: "1700000000.000250" })));
+    };
+    const got = await collect(adapter(mock, home()), (g) => g.length >= 3);
+    expect(got.map((m) => [m.id, m.root])).toEqual([
+      ["slack:C1:1700000000.000100", undefined],
+      ["slack:C1:1700000000.000200", "slack:C1:1700000000.000050"],
+      ["slack:D1:1700000000.000300", undefined],
     ]);
   });
 

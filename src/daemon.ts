@@ -241,6 +241,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           source: m.source,
           chat: m.chat,
           ...(m.thread !== undefined ? { thread: m.thread } : {}),
+          ...(m.root !== undefined ? { root: m.root } : {}),
           from: m.from,
           ...(notOwner ? { notOwner: true as const } : {}),
           at: m.at,

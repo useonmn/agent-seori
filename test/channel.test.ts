@@ -30,7 +30,7 @@ describe("owner-only by default", () => {
     c.appendInbound(row("fake:c1:1"));
     c.appendInbound({ id: "fake:c1:2", kind: "messenger", source: "fake", chat: "c1", thread: "2", from: "u2", notOwner: true, at: T0, text: "question" });
     // The owner's own reply inside that person's thread is theirs to see, not the owner's alone.
-    c.appendInbound({ id: "fake:c1:3", kind: "messenger", source: "fake", chat: "c1", thread: "2", from: "u1", at: T0, text: "@bot answer them" });
+    c.appendInbound({ id: "fake:c1:3", kind: "messenger", source: "fake", chat: "c1", thread: "2", root: "fake:c1:2", from: "u1", at: T0, text: "@bot answer them" });
     c.appendInbound({ id: "watch:w1:1", kind: "watch", watchId: "w1", name: "ci", at: T0, text: "done" });
     expect(c.inbound().map((r) => r.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
     expect(c.states().map((s) => s.row.id)).toEqual(["fake:c1:1", "watch:w1:1"]);
@@ -40,20 +40,34 @@ describe("owner-only by default", () => {
     expect([...c.othersIds()].sort()).toEqual(["fake:c1:2", "fake:c1:3"]);
   });
 
-  test("a thread with someone else's message is theirs unless the owner's stored message started it, even when its first message was never stored", () => {
+  test("deny by default: the owner's reply is the owner's alone only under a stored top-level message of the owner", () => {
     const c = fresh();
-    const m = (id: string, thread: string, other = false): InboundRow => ({ id: `fake:c1:${id}`, kind: "messenger", source: "fake", chat: "c1", thread, from: other ? "u2" : "u1", ...(other ? { notOwner: true as const } : {}), at: T0, text: id });
-    // Thread 50: its first message (no mention) was never stored; someone else asked, then the owner answered there.
-    c.appendInbound(m("51", "50", true));
-    c.appendInbound(m("52", "50"));
-    // Thread 60: the owner started it; someone else joined; the owner's thread stays the owner's.
-    c.appendInbound(m("60", "60"));
-    c.appendInbound(m("61", "60", true));
-    c.appendInbound(m("62", "60"));
-    // Thread 70: only the owner.
-    c.appendInbound(m("71", "70"));
-    expect([...c.othersIds()].sort()).toEqual(["fake:c1:51", "fake:c1:52", "fake:c1:61"]);
-    expect(c.inbound().map((r) => r.id)).toEqual(["fake:c1:60", "fake:c1:62", "fake:c1:71"]);
+    const m = (id: string, o: { root?: string; other?: boolean } = {}): InboundRow => ({
+      id: `fake:c1:${id}`,
+      kind: "messenger",
+      source: "fake",
+      chat: "c1",
+      thread: o.root?.split(":")[2] ?? id,
+      ...(o.root ? { root: o.root } : {}),
+      from: o.other ? "u2" : "u1",
+      ...(o.other ? { notOwner: true as const } : {}),
+      at: T0,
+      text: id,
+    });
+    // The reviewer's repro: Z's first message (no mention) was never stored; Y asked seori there; the owner replied.
+    c.appendInbound(m("51", { root: "fake:c1:50", other: true }));
+    c.appendInbound(m("52", { root: "fake:c1:50" }));
+    // The owner started thread 60 (stored, top-level); Y joined; the owner's reply there stays the owner's.
+    c.appendInbound(m("60"));
+    c.appendInbound(m("61", { root: "fake:c1:60", other: true }));
+    c.appendInbound(m("62", { root: "fake:c1:60" }));
+    // A reply under a first message never stored, even with nobody else stored in it: unknown root, so shared.
+    c.appendInbound(m("71", { root: "fake:c1:70" }));
+    // A reply under Y's own top-level message.
+    c.appendInbound(m("81", { other: true }));
+    c.appendInbound(m("82", { root: "fake:c1:81" }));
+    expect([...c.othersIds()].sort()).toEqual(["fake:c1:51", "fake:c1:52", "fake:c1:61", "fake:c1:71", "fake:c1:81", "fake:c1:82"]);
+    expect(c.inbound().map((r) => r.id)).toEqual(["fake:c1:60", "fake:c1:62"]);
   });
 });
 

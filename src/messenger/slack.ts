@@ -72,6 +72,8 @@ type Receiving = {
   readonly botTeam: string;
   /** `<channel>:<root ts>` of threads conversations.replies showed seori is not part of (see `involved`). */
   readonly untracked: Set<string>;
+  /** users.info answers per user for this receive: whether a non-owner is a full member (not a guest, bot or deleted). */
+  readonly members: Map<string, boolean>;
   readonly onMessage: (m: InboundMessage) => Promise<void>;
   readonly signal: AbortSignal;
 };
@@ -90,6 +92,8 @@ export class SlackApiError extends HttpError {
 
 /** Sources already warned about leftover agent-mode options in this process. */
 const warnedAgentOptions = new Set<string>();
+/** Sources already warned that "others" lacks the users:read scope in this process. */
+const warnedUsersScope = new Set<string>();
 
 /** onMessage rejected: receive() rethrows its error so the daemon restarts it, and catch-up redelivers the message. */
 class OnMessageFailed extends Error {}
@@ -255,6 +259,7 @@ export class SlackAdapter implements MessengerAdapter {
     const cursor: Cursor = { channels: { ...(saved?.channels ?? {}) }, threads: { ...(saved?.threads ?? {}) } };
     const delivered = new Set<string>();
     const untracked = new Set<string>();
+    const members = new Map<string, boolean>();
     let botUser: string | undefined;
     let botTeam = "";
     let failures = 0;
@@ -275,7 +280,7 @@ export class SlackAdapter implements MessengerAdapter {
         const url = (await this.api("apps.connections.open", appToken, undefined, "POST", signal)).url;
         usingAppToken = false;
         if (typeof url !== "string") throw new Error("apps.connections.open returned no url");
-        const ctx: Receiving = { cursor, file, delivered, untracked, botToken, botUser, botTeam, onMessage, signal };
+        const ctx: Receiving = { cursor, file, delivered, untracked, members, botToken, botUser, botTeam, onMessage, signal };
         const end = await this.session(url, ctx, () => {
           healthy = true;
           failures = 0;
@@ -522,13 +527,46 @@ export class SlackAdapter implements MessengerAdapter {
   }
 
   /**
-   * The sender of `m` when it may reach the lead: the owner, or with "others" on another person of the bot's own
-   * workspace (never a Slack Connect user from another organization, a message without a workspace, a bot, or seori).
+   * Who `m` is from when it may reach the lead, apart from the guest check: the owner, or with "others" on another
+   * person of the bot's own workspace (never a Slack Connect user from another organization, a message without a
+   * workspace, a bot, or seori).
    */
-  private sender(m: SlackMessage, ctx: Receiving): string | undefined {
+  private candidate(m: SlackMessage, ctx: Receiving): string | undefined {
     if (m.bot_id || typeof m.user !== "string" || m.user === "" || m.user === ctx.botUser) return undefined;
     if (m.user === this.config.owner) return m.user;
     return this.config.others === true && ctx.botTeam !== "" && (m.user_team ?? m.team) === ctx.botTeam ? m.user : undefined;
+  }
+
+  /** The sender of `m` when it may reach the lead: a `candidate`, and for anyone but the owner a full member, not a guest. */
+  private async sender(m: SlackMessage, ctx: Receiving): Promise<string | undefined> {
+    const id = this.candidate(m, ctx);
+    if (id === undefined || id === this.config.owner) return id;
+    return (await this.member(id, ctx)) ? id : undefined;
+  }
+
+  /**
+   * Whether `user` is a full member of the workspace per users.info: not a guest (`is_restricted`, single-channel
+   * `is_ultra_restricted`), bot or deleted account. Without the users:read scope nobody but the owner gets through,
+   * with one warning per process saying what to add; a user Slack cannot find or a rate limit is not a member.
+   */
+  private async member(user: string, ctx: Receiving): Promise<boolean> {
+    const known = ctx.members.get(user);
+    if (known !== undefined) return known;
+    let body: ApiBody;
+    try {
+      body = await this.api("users.info", ctx.botToken, { user }, "GET", ctx.signal);
+    } catch (e) {
+      if (!(e instanceof SlackApiError) || !(e.error === "missing_scope" || e.error === "user_not_found" || e.error === "ratelimited")) throw e;
+      if (e.error === "missing_scope" && !warnedUsersScope.has(this.source)) {
+        warnedUsersScope.add(this.source);
+        console.error(`slack ${this.source}: "others" needs the bot scope users:read to tell members from guests; add it in the Slack app settings (OAuth & Permissions) and reinstall the app. Until then only the owner is answered`);
+      }
+      return false;
+    }
+    const u = body.user as { is_restricted?: unknown; is_ultra_restricted?: unknown; is_bot?: unknown; deleted?: unknown } | undefined;
+    const full = u !== undefined && u.is_restricted !== true && u.is_ultra_restricted !== true && u.is_bot !== true && u.deleted !== true;
+    ctx.members.set(user, full);
+    return full;
   }
 
   /**
@@ -554,17 +592,19 @@ export class SlackAdapter implements MessengerAdapter {
   private async involved(channel: string, root: string, ctx: Receiving): Promise<boolean> {
     const key = `${channel}:${root}`;
     if (ctx.untracked.has(key) || ctx.botUser === "") return false;
-    const ours = (r: SlackMessage) => r.user === ctx.botUser || (mentions(r.text ?? "", ctx.botUser) && this.sender(r, ctx) !== undefined);
+    const seoris = (r: SlackMessage) => r.user === ctx.botUser;
+    const mention = (r: SlackMessage) => mentions(r.text ?? "", ctx.botUser) && this.candidate(r, ctx) !== undefined;
     let read = 0;
     let messages: SlackMessage[];
     try {
-      messages = await this.pages("conversations.replies", { channel, ts: root }, ctx, (page) => page.some(ours) || ++read >= INVOLVED_PAGES);
+      messages = await this.pages("conversations.replies", { channel, ts: root }, ctx, (page) => page.some((r) => seoris(r) || mention(r)) || ++read >= INVOLVED_PAGES);
     } catch (e) {
       const refused = e instanceof SlackApiError && (e.error === "thread_not_found" || e.error === "ratelimited" || UNREADABLE_ERRORS.has(e.error) || GONE_ERRORS.has(e.error));
       if (!refused && !(e instanceof HttpError && e.status === 429)) throw e;
       messages = [];
     }
-    if (messages.some(ours)) return true;
+    if (messages.some(seoris)) return true;
+    for (const r of messages) if (mention(r) && (await this.sender(r, ctx)) !== undefined) return true;
     ctx.untracked.add(key);
     if (ctx.untracked.size > UNTRACKED_LIMIT) ctx.untracked.delete(ctx.untracked.values().next().value as string);
     return false;
@@ -591,7 +631,7 @@ export class SlackAdapter implements MessengerAdapter {
       ? dm && !fromHistory && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
         ? ev.user
         : undefined
-      : this.sender(ev, ctx);
+      : await this.sender(ev, ctx);
     const text = from !== undefined && (await this.addressed(ev, channel, dm, ts, ctx, !fromHistory)) ? bodyText(ev) : "";
     if (from === undefined || !text) {
       if (ctx.botUser !== "" && ev.user === ctx.botUser) this.track(channel, ev.thread_ts ?? ts, ts, ctx); // replies in seori's thread need no mention
@@ -604,7 +644,8 @@ export class SlackAdapter implements MessengerAdapter {
     }
     this.track(channel, ev.thread_ts ?? ts, ts, ctx); // seori replies under this message: catch-up reads that thread
     const thread = dm ? ev.thread_ts : (ev.thread_ts ?? ts);
-    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(ts), text }, key, ctx);
+    const root = this.rootOf(ev, channel, dm, ts);
+    await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), ...(root ? { root } : {}), from, at: tsMs(ts), text }, key, ctx);
     this.advance(channel, ts, ctx);
   }
 
@@ -615,18 +656,24 @@ export class SlackAdapter implements MessengerAdapter {
     if (this.pairing || !m?.ts || !stamp) return; // unfurls also arrive as message_changed, without `edited`
     // An edit that adds a mention of the bot may make a thread seori's, as a new message would (see handle).
     if (m.thread_ts !== undefined && mentions(m.text ?? "", ctx.botUser)) ctx.untracked.delete(`${channel}:${m.thread_ts}`);
-    const from = this.sender(m, ctx);
+    const from = await this.sender(m, ctx);
     if (from === undefined) return;
     const key = `${channel}:${m.ts}:edit:${stamp}`;
     if (ctx.delivered.has(key)) return;
     const text = bodyText(m);
     if (!text || !(await this.addressed(m, channel, dm, m.ts, ctx, true))) return;
     const thread = dm ? m.thread_ts : (m.thread_ts ?? m.ts);
+    const root = this.rootOf(m, channel, dm, m.ts);
     await this.deliver(
-      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(stamp), text: `(edited) ${text}` },
+      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), ...(root ? { root } : {}), from, at: tsMs(stamp), text: `(edited) ${text}` },
       key,
       ctx,
     );
+  }
+
+  /** The id of the thread's first message when `m` is a reply in a channel thread (InboundMessage.root); DMs have none. */
+  private rootOf(m: SlackMessage, channel: string, dm: boolean, ts: string): string | undefined {
+    return !dm && m.thread_ts !== undefined && m.thread_ts !== ts ? messageId(this.source, channel, m.thread_ts) : undefined;
   }
 
   async send(target: SendTarget, text: string): Promise<{ messageId: string }> {

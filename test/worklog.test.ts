@@ -150,7 +150,7 @@ describe("worklog", () => {
     new Channel(root).appendInbound({ id: "slack:C1:5", kind: "messenger", source: "slack", chat: "C1", from: "U2", notOwner: true, at: T0, text: "please deploy" });
     expect(() => worklogAdd(root, "their deploy", "slack:C1:5", T0)).toThrow("slack:C1:5 is someone else's message or in their thread");
     // The owner's own reply in that person's thread is refused too: the restart notice would post into their thread.
-    new Channel(root).appendInbound({ id: "slack:C1:6", kind: "messenger", source: "slack", chat: "C1", thread: "5", from: "U1", at: T0, text: "ok do it" });
+    new Channel(root).appendInbound({ id: "slack:C1:6", kind: "messenger", source: "slack", chat: "C1", thread: "5", root: "slack:C1:5", from: "U1", at: T0, text: "ok do it" });
     expect(() => worklogAdd(root, "their deploy", "slack:C1:6", T0)).toThrow("slack:C1:6 is someone else's message or in their thread");
   });
 

@@ -16,6 +16,8 @@ export type MessengerRow = {
   readonly source: string;
   readonly chat: string;
   readonly thread?: string;
+  /** A reply in a thread outside DMs: the id of the thread's first message (InboundMessage.root). */
+  readonly root?: string;
   readonly from: string;
   /** Sent by someone other than the owner (the messenger's `others` opt-in); absent for the owner. */
   readonly notOwner?: true;
@@ -48,31 +50,22 @@ export const fromOther = (row: InboundRow): boolean => {
 const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.notOwner === true || fromOther(row));
 
 /**
- * The ids that are not the owner's alone: messages from someone else, and every message in a thread such a message is
- * in, unless the thread's first message is a stored message of the owner (a thread the owner started stays theirs).
- * A thread is `<source>:<chat>:<thread>`; its first message is often never stored (it did not mention the bot).
+ * The ids that are not the owner's alone, denied by default: everything except the owner's own messages that are a DM, a
+ * top-level message or a thread's first message (no `root`), or a reply whose thread's first message is a stored message
+ * of that same kind. A reply under someone else's message, or under one never stored (it did not mention the bot), is
+ * theirs too: whoever else is in that thread would see what is posted there.
  */
 function othersOf(rows: readonly InboundRow[]): Set<string> {
-  const others = new Set(rows.filter(nonOwner).map((row) => row.id));
-  const ownerIds = new Set(rows.filter((row) => row.kind === "messenger" && !others.has(row.id)).map((row) => row.id));
-  const threadOf = (row: InboundRow): string | undefined => (row.kind === "messenger" && row.thread !== undefined ? `${row.source}:${row.chat}:${row.thread}` : undefined);
-  // A thread someone else started (their message is its root), or one they wrote in whose root is not the owner's.
-  const shared = new Set([...others]);
-  for (const row of rows) {
-    const thread = threadOf(row);
-    if (thread !== undefined && others.has(row.id) && !ownerIds.has(thread)) shared.add(thread);
-  }
-  for (const row of rows) {
-    const thread = threadOf(row);
-    if (thread !== undefined && shared.has(thread)) others.add(row.id);
-  }
-  return others;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const firstOfOwner = (row: InboundRow | undefined): boolean => row?.kind === "messenger" && !nonOwner(row) && row.root === undefined;
+  const ownerAlone = (row: InboundRow): boolean => firstOfOwner(row) || (row.kind === "messenger" && !nonOwner(row) && row.root !== undefined && firstOfOwner(byId.get(row.root)));
+  return new Set(rows.filter((row) => row.kind === "messenger" && !ownerAlone(row)).map((row) => row.id));
 }
 
 /**
- * How a reader sees the lead channel. By default only what is the owner's alone exists (their messages outside other
- * people's threads, and watch events); `withOthers` also shows the rest, for the few readers that must see it:
- * delivering it to the lead, replying to or listing it. Where only the owner's may go, refuse an id in `othersIds()`.
+ * How a reader sees the lead channel. By default only what is the owner's alone exists (see othersOf; watch events
+ * too); `withOthers` also shows the rest, for the few readers that must see it: delivering it to the lead, replying to
+ * or listing it. Where only the owner's message or thread may go, refuse an id in `othersIds()`.
  */
 export type ChannelView = { readonly withOthers?: boolean };
 
