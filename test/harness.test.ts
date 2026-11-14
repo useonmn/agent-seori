@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
+import { ConfigError, loadConfig } from "../src/config.ts";
 import { defaultSeoriCmd, done, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { backlogAdd } from "../src/loop.ts";
 import { deliverOrThrow } from "../src/runtime/index.ts";
 import { ompJson, World, paneRef } from "./fake.ts";
 
@@ -142,6 +145,26 @@ describe("lanes", () => {
     const args = ["start", "fix-login", "--brief", brief, "--force", "--activity-path", "out", "--activity-path", "/data/run.log"];
     expect(await main(args, d)).toBe(0);
     expect(d.store.lane("fix-login")!.activityPaths).toEqual(["out", "/data/run.log"]);
+  });
+
+  test("config.json defaultCwd is where a lane and a backlog item start without --cwd; --cwd wins; ~/ is the home directory", async () => {
+    const { w, d, brief } = setup();
+    const config = join(d.store.root, "config.json");
+    const work = join(d.store.root, "assistant");
+    writeFileSync(config, JSON.stringify({ defaultCwd: work }));
+    const lane = await startLane(d, "research", brief, {});
+    expect(lane.cwd).toBe(work);
+    const opens = w.calls.filter((c) => c.cmd === "hc" && c.argv.includes("--cwd"));
+    expect(opens.map((c) => c.argv[c.argv.indexOf("--cwd") + 1])).toEqual([work]);
+    expect(backlogAdd(d, "later", brief).cwd).toBe(work);
+    expect((await startLane(d, "project", brief, { cwd: "/elsewhere" })).cwd).toBe("/elsewhere");
+
+    writeFileSync(config, JSON.stringify({ defaultCwd: "~/assistant" }));
+    expect(loadConfig(d.store.root).defaultCwd).toBe(join(homedir(), "assistant"));
+    for (const bad of ["assistant", "", 7]) {
+      writeFileSync(config, JSON.stringify({ defaultCwd: bad }));
+      expect(() => loadConfig(d.store.root)).toThrow(ConfigError);
+    }
   });
 
   test("up appends the lead's omp config to a PI_CONFIG_FILES already in the environment", async () => {
