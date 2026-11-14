@@ -159,6 +159,7 @@ describe("lanes", () => {
     const create = w.calls.find((c) => c.argv[1] === "run" && c.argv.includes("seori.role=lead"))!.argv;
     const prompts = join(d.store.root, "prompts");
     expect(create.find((a) => a.startsWith("PI_CONFIG_FILES="))).toBe(`PI_CONFIG_FILES=/etc/omp/a.yml${delimiter}${join(prompts, "agent-omp.yml")}${delimiter}${join(prompts, "lead-omp.yml")}`);
+    expect(readFileSync(join(prompts, "lead-omp.yml"), "utf8")).toBe("advisor:\n  enabled: true\n  syncBacklog: strict\n");
   });
 
   test("a lane's omp gets agent-omp.yml (no setup wizard) but not the lead's settings it inherits from the lead's shell", async () => {

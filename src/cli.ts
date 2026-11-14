@@ -14,9 +14,7 @@ import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUnti
 import { loadMessengers } from "./messenger/adapter.ts";
 import { adapterFor } from "./messenger/index.ts";
 import { PresenceConfigError, realPresenceDeps, redact, runPresence } from "./messenger/presence.ts";
-import {
-  flushLine, msgClose, msgDepsFor, msgDrafts, msgDrop, msgEdit, msgEditReplyOf, msgFlush, msgList, msgSend, parseTo,
-} from "./msg.ts";
+import { msgClose, msgDepsFor, msgEdit, msgEditReplyOf, msgList, msgSend, parseTo } from "./msg.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 import type { SessionRef } from "./runtime/index.ts";
 import { pidAlive, type Lane, type Role } from "./store.ts";
@@ -105,20 +103,16 @@ const USAGE = `seori - a proactive multi-session harness for omp on hc
                                               still runs after 30 s
   seori install-skill [--skills-dir DIR]       link the seori-mode skill into the agent's skills dir; install.sh runs it
   seori uninstall [--skills-dir DIR] [--purge] remove the skill link and the seori command; --purge also deletes $SEORI_HOME
-  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--now]
-                                              answer messenger messages (one reply per id) or send a notice; while the
-                                              lead extension runs it is drafted and goes out when the lead's turn ends
-                                              (--now: send at once); a second send to the same ids replaces the draft
-  seori msg send --replace DRAFT --text T      change the text of an open draft (reply or notice)
-  seori msg drafts                             open drafts: draft  age  reply IDS|notice SOURCE:CHAT  text
-  seori msg drop <draft> --why T               discard an open draft; its ids are open again
-  seori msg flush                              send every open draft now, oldest first
+  seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again]
+                                              answer messenger messages (one reply per id) or send a notice; it goes out
+                                              at once, so answer as soon as you have written it; --again sends another
+                                              reply to an id already answered (a correction)
   seori msg close <id> --why T                 close a lead channel message (messenger message or watch event) that needs no reply
   seori msg list [--all]                       open lead channel messages (messenger messages and watch events; --all: every one)
                                               columns: id  state  age  kind  sender-or-watch-name  text
   seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                               replace the text of a message seori sent: --reply-of edits seori's first reply
-                                              to that lead channel message (drafted or not); MID: the message= send printed
+                                              to that lead channel message; MID: the message= send printed
   seori msg check [SOURCE]                     verify messengers' tokens (prints who the bot is); SOURCE works before pairing
   seori msg pair <SOURCE> [--minutes N] [--write] [--all] [--force]
                                               setup: print the sender of the next DM to the bot; --write makes them the owner;
@@ -132,9 +126,8 @@ send, report and ready exit 3 and print HELD <target> when the delivery may or m
 it is held and never resent, so do not send it again: check the pane, then seori inbox ack or seori inbox resend it.
 QUEUED (exit 0) means it waits in the pane's inbox.
 msg send exits 3 with HELD when the messenger may or may not have the reply: check the chat, then pass --again.
-msg flush prints SENT, HELD or FAILED per draft; it exits 1 if a draft failed (it stays open), else 3 if one is HELD.
-msg edit acts at once (never drafted) and is safe to repeat; a messenger error prints FAILED and exits 1.
-A second reply to an id is refused (exit 2) unless --again is given.
+msg edit acts at once and is safe to repeat; a messenger error prints FAILED and exits 1.
+A second reply to an id is refused (exit 2) unless --again is given: send the correction as its own message.
 SEORI_MODEL=M passes --model M to every agent seori starts (lead, duty, lanes) and is the reviewer's default model.
 seori runs omp only: SEORI_AGENT or "agent" in $SEORI_HOME/config.json naming anything else is refused (exit 2); SEORI_AGENT_CMD overrides the omp command and must name omp (its basename is omp).
 watch add arms the watch for the lane in SEORI_LANE (set in every lane's pane), else for the lead; refusals exit 2.
@@ -145,7 +138,7 @@ type Args = { pos: string[]; flags: Map<string, string[]>; /** Everything after 
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "now", "purge", "help", "global"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "again", "all", "persistent", "write", "open", "purge", "help", "global"]);
 
 function parse(argv: readonly string[]): Args {
   const pos: string[] = [];
@@ -530,29 +523,43 @@ function workflowFlag(v: string): Workflow | null {
   return v;
 }
 
+/**
+ * Flags each `seori msg` subcommand accepts. The general parser reads every other `--name` as a value flag, which is
+ * right for relayed values (`--text "$MSG"`) but would let a stale or mistyped flag swallow the argument after it:
+ * `msg send --now --text 'hi'` used to take `--text` as the value of `--now` and then report an empty message. A flag
+ * outside its subcommand's list is refused by name instead.
+ */
+const MSG_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  send: ["reply-to", "to", "text", "again"],
+  close: ["why"],
+  list: ["all"],
+  check: [],
+  pair: ["minutes", "write", "all", "force"],
+  edit: ["reply-of", "to", "message", "text"],
+};
+
+/** Refuses flags a `seori msg` subcommand does not take, so no argument is silently read as their value. */
+function checkMsgFlags(a: Args, sub: string | undefined): void {
+  const allowed = MSG_FLAGS[sub ?? ""];
+  if (allowed === undefined) return; // an unknown subcommand is refused below, with the usage text
+  for (const name of a.flags.keys()) {
+    if (!allowed.includes(name)) throw new Refusal(`unknown flag --${name} for seori msg ${sub}\n\n${USAGE}`);
+  }
+}
+
 async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
   const root = d.store.root;
+  checkMsgFlags(a, sub);
   if (sub === "send") {
     const replyTo = a.flags.get("reply-to")?.flatMap((v) => v.split(",")).map((id) => id.trim()).filter(Boolean);
     const to = one(a, "to");
-    const replace = one(a, "replace");
     const r = await msgSend(root, {
       ...(replyTo ? { replyTo } : {}),
       ...(to !== undefined ? { to: parseTo(to) } : {}),
-      ...(replace !== undefined ? { replace } : {}),
       text: await textOf(a),
       again: one(a, "again") === "true",
-      sendNow: one(a, "now") === "true",
     }, msgDepsFor(root, d.now));
     const what = r.ids.length ? r.ids.join(",") : to!;
-    if (r.status === "DRAFTED") {
-      console.log(`DRAFTED ${r.draft} ${what}: goes out when your turn ends`);
-      return 0;
-    }
-    if (r.status === "REPLACED") {
-      console.log(`REPLACED ${r.draft}`);
-      return 0;
-    }
     if (r.status === "SENT") {
       console.log(`SENT ${what} message=${r.messageId}`);
       return 0;
@@ -567,22 +574,6 @@ async function msg(d: Deps, a: Args, sub: string | undefined): Promise<number> {
     msgClose(root, id, need(one(a, "why"), "--why"), d.now());
     console.log(`CLOSED ${id}`);
     return 0;
-  }
-  if (sub === "drafts") {
-    const lines = msgDrafts(root, d.now());
-    console.log(lines.length ? lines.join("\n") : "EMPTY");
-    return 0;
-  }
-  if (sub === "drop") {
-    const draft = need(a.pos[2], "draft id");
-    msgDrop(root, draft, need(one(a, "why"), "--why"), d.now());
-    console.log(`DROPPED ${draft}`);
-    return 0;
-  }
-  if (sub === "flush") {
-    const outcomes = await msgFlush(root, msgDepsFor(root, d.now));
-    console.log(outcomes.length ? outcomes.map(flushLine).join("\n") : "EMPTY");
-    return outcomes.some((o) => o.status === "FAILED") ? 1 : outcomes.some((o) => o.status === "HELD") ? 3 : 0;
   }
   if (sub === "list") {
     const lines = msgList(root, { all: one(a, "all") === "true" }, d.now());

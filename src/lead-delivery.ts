@@ -9,8 +9,7 @@ import { type IdState, type InboundRow, MAX_DELIVERIES } from "./channel.ts";
 //   triggerTurn starts one, so an idle lead always gets `followUp` and only a busy lead gets `aside`;
 // - an aborted or failed turn, or a delivery that never showed up, gets redelivered after a short grace; a compaction
 //   parks triggerTurn sends until it ends, so the grace is paused while one runs and counts from its end;
-// - nobody may be told twice what they already answered: replied, closed, send-uncertain and gave-up ids are final,
-//   and a drafted id (its reply waits in the outbox for the turn to end) is answered too;
+// - nobody may be told twice what they already answered: replied, closed, send-uncertain and gave-up ids are final;
 // - an id is given up only after its last delivery had the longest backoff to be answered, so three quick failures
 //   (a provider outage, three Escs) do not use up the cap within a minute.
 
@@ -101,7 +100,7 @@ export class DeliverySchedule {
     const deliver: { row: InboundRow; header: Header; attempt: number }[] = [];
     const giveUp: { id: string; attempts: number; watch: boolean }[] = [];
     for (const s of states) {
-      if (s.replied || s.closed || s.uncertain || s.gaveUp || s.drafted) continue;
+      if (s.replied || s.closed || s.uncertain || s.gaveUp) continue;
       if (s.deliveries === 0) {
         deliver.push({ row: s.row, header: "new", attempt: 1 });
         continue;

@@ -71,7 +71,7 @@ describe("seori msg", () => {
   test("a reply to a message an earlier seori stored from someone other than the owner is refused", async () => {
     const { w, d, channel, fake } = setup();
     channel.appendInbound({ id: "fake:c1:9", kind: "messenger", source: "fake", chat: "c1", from: "u2", sender: { kind: "person", id: "u2" }, at: w.clock, text: "hi" } as unknown as InboundRow);
-    await expect(main(["msg", "send", "--reply-to", "fake:c1:9", "--now", "--text", "x"], d)).rejects.toThrow(/fake:c1:9 came from someone other than the owner/);
+    await expect(main(["msg", "send", "--reply-to", "fake:c1:9", "--text", "x"], d)).rejects.toThrow(/fake:c1:9 came from someone other than the owner/);
     expect(fake.sent()).toEqual([]);
   });
 
@@ -121,48 +121,32 @@ describe("seori msg", () => {
     expect(await run(["msg", "list"], w.deps())).toEqual({ code: 0, out: "EMPTY" });
   });
 
-  test("with the lead extension consuming: DRAFTED, REPLACED, drafts, drop, flush and --now", async () => {
+  test("a reply goes out at once even while the lead extension holds the consumer lock", async () => {
     const { w, d, root, fake } = setup();
     w.consumerLock(root, "alive");
-    const drafted = await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "first try"], d);
-    const draft = /^DRAFTED ([0-9a-f]{8}) /.exec(drafted.out)?.[1];
-    expect(drafted).toEqual({ code: 0, out: `DRAFTED ${draft} fake:c1:1: goes out when your turn ends` });
-    expect(await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "second try"], d)).toEqual({ code: 0, out: `REPLACED ${draft}` });
-    const notice = (await run(["msg", "send", "--to", "fake:c9:t1", "--text", "heads up"], d)).out;
-    const noticeDraft = /^DRAFTED ([0-9a-f]{8}) fake:c9:t1: goes out when your turn ends$/.exec(notice)?.[1];
-    expect(noticeDraft).toBeDefined();
-    expect(await run(["msg", "send", "--replace", noticeDraft!, "--text", "heads up!"], d)).toEqual({ code: 0, out: `REPLACED ${noticeDraft}` });
-    expect((await run(["msg", "list"], d)).out.split("\n")[0]).toStartWith("fake:c1:1  drafted  ");
-    expect((await run(["msg", "drafts"], d)).out).toBe(`${draft}  0m  reply fake:c1:1  "second try"\n${noticeDraft}  0m  notice fake:c9:t1  "heads up!"`);
-    expect(fake.sent()).toEqual([]);
-
-    // --now: the one-line acknowledgement goes out at once.
-    expect(await run(["msg", "send", "--reply-to", "fake:c1:2", "--text", "on it", "--now"], d)).toEqual({ code: 0, out: "SENT fake:c1:2 message=1" });
-
-    await expect(main(["msg", "drop", noticeDraft!], d)).rejects.toThrow(/--why/);
-    expect(await run(["msg", "drop", noticeDraft!, "--why", "not needed"], d)).toEqual({ code: 0, out: `DROPPED ${noticeDraft}` });
-    expect(await run(["msg", "flush"], d)).toEqual({ code: 0, out: `SENT ${draft} fake:c1:1 message=2` });
-    expect(fake.sent().map((r) => [r.replyTo, r.text])).toEqual([["2", "on it"], ["1", "second try"]]);
-    expect(await run(["msg", "flush"], d)).toEqual({ code: 0, out: "EMPTY" });
-    expect(await run(["msg", "drafts"], d)).toEqual({ code: 0, out: "EMPTY" });
+    // The lock is held by a live consumer: nothing is held back, the messenger takes the reply now.
+    expect(await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "the answer"], d)).toEqual({ code: 0, out: "SENT fake:c1:1 message=1" });
+    expect(fake.sent().map((r) => [r.chat, r.replyTo, r.text])).toEqual([["c1", "1", "the answer"]]);
+    // It is recorded as answered at once, not held: the id is replied and off the open list.
+    expect((await run(["msg", "list", "--all"], d)).out.split("\n")[0]).toStartWith("fake:c1:1  replied  ");
+    expect((await run(["msg", "list"], d)).out).not.toContain("fake:c1:1");
   });
 
-  test("flush exits 3 when a draft is HELD and 1 when one failed (it stays open)", async () => {
+  test("a notice goes out at once while the lead extension holds the consumer lock", async () => {
     const { w, d, root, fake } = setup();
     w.consumerLock(root, "alive");
-    const a = /^DRAFTED (\w+)/.exec((await run(["msg", "send", "--reply-to", "fake:c1:1", "--text", "one"], d)).out)![1];
-    writeFileSync(fake.sendModePath, "timeout");
-    const held = await run(["msg", "flush"], d);
-    expect(held.code).toBe(3);
-    expect(held.out).toBe(`HELD ${a} fake:c1:1: the messenger may or may not have it; check the chat, it is not sent again`);
-    writeFileSync(fake.sendModePath, "ok");
-    // An unknown messenger is refused before anything is drafted.
-    await expect(main(["msg", "send", "--to", "nope:c1", "--text", "x"], d)).rejects.toThrow('no messenger "nope"');
-    const c = /^DRAFTED (\w+)/.exec((await run(["msg", "send", "--reply-to", "fake:c1:2", "--text", "two"], d)).out)![1];
-    w.messengers(root, [{ source: "other", owner: "u1" }]);
-    const failed = await run(["msg", "flush"], d);
-    expect(failed.code).toBe(1);
-    expect(failed.out).toBe(`FAILED ${c} fake:c1:2: no messenger "fake" in messengers.json; the draft stays open: flush again, or drop it`);
-    expect((await run(["msg", "drafts"], d)).out).toStartWith(`${c}  `);
+    expect(await run(["msg", "send", "--to", "fake:c9:t1", "--text", "heads up"], d)).toEqual({ code: 0, out: "SENT fake:c9:t1 message=1" });
+    expect(fake.sent().map((r) => [r.chat, r.thread, r.text])).toEqual([["c9", "t1", "heads up"]]);
+  });
+
+  test("a flag the subcommand does not take is refused by name, never read as the value of the flag before it", async () => {
+    const { d, fake } = setup();
+    // --now and --replace no longer exist; before this check they swallowed the next argument, so --text was lost.
+    await expect(main(["msg", "send", "--reply-to", "fake:c1:1", "--now", "--text", "hello there"], d)).rejects.toThrow(/unknown flag --now for seori msg send/);
+    await expect(main(["msg", "send", "--replace", "abcd1234", "--text", "hello there"], d)).rejects.toThrow(/unknown flag --replace for seori msg send/);
+    await expect(main(["msg", "drafts"], d)).rejects.toThrow(/unknown msg command drafts/);
+    await expect(main(["msg", "flush"], d)).rejects.toThrow(/unknown msg command flush/);
+    // Nothing was sent, and the message text was never mistaken for a flag value.
+    expect(fake.sent()).toEqual([]);
   });
 });

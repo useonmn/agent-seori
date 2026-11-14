@@ -12,7 +12,6 @@ const state = (id: string, s: Partial<Omit<IdState, "row">> = {}): IdState => ({
   closed: false,
   uncertain: false,
   gaveUp: false,
-  drafted: false,
   alerted: [],
   ...s,
 });

@@ -1,10 +1,8 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
-import { randomBytes } from "node:crypto";
 import { Channel, fromOther, type IdState, type MessengerRow } from "./channel.ts";
 import { Refusal } from "./harness.ts";
 import { loadMessengers, SendUncertain, type MessengerAdapter, type MessengerConfig, type SendTarget } from "./messenger/adapter.ts";
 import { adapterFor as defaultAdapterFor } from "./messenger/index.ts";
-import { type Draft, type DraftTarget, Outbox, targetLabel } from "./outbox.ts";
 
 // `seori msg ...`: the lead answers messenger messages. A reply closes its ids only after the messenger returned a
 // message id, so an id is never marked answered on a failed send; an uncertain send is recorded and refused afterwards
@@ -12,10 +10,9 @@ import { type Draft, type DraftTarget, Outbox, targetLabel } from "./outbox.ts";
 // to the ledger before the messenger is called, so a reply killed mid-send (Esc, timeout, SIGTERM) is uncertain too, and
 // the reply lock keeps two concurrent sends from both passing the check.
 //
-// While the lead extension is consuming, a send is checked exactly as above and then kept as a draft in the outbox
-// (src/outbox.ts) instead of going out: the extension flushes the drafts once the lead's turn, and the advisor review at
-// its end, are over, so a concern can still change a draft before the owner sees it. --now, or no live consumer (a
-// human at a shell, the lead offline), sends at once as before.
+// Every send goes out at once: the owner waits for the answer, so nothing is held back. The lead's omp runs omp's
+// advisor, and if the advisor raises a concern after the reply went out, the correction is an ordinary second reply to
+// the same id, sent with --again.
 
 export type MsgDeps = {
   readonly adapterFor: (c: MessengerConfig) => MessengerAdapter;
@@ -33,23 +30,18 @@ export type NoticeTarget = { readonly source: string; readonly chat: string; rea
 export type MsgSendOptions = {
   readonly replyTo?: readonly string[];
   readonly to?: NoticeTarget;
-  /** Replace the text of this open draft (a reply or a notice). */
-  readonly replace?: string;
   readonly text: string;
   readonly again?: boolean;
-  /** Send at once even while the lead extension is consuming (--now). */
-  readonly sendNow?: boolean;
 };
 
 /**
- * SENT / HELD: sent now (HELD: the messenger may or may not have it; the CLI exits 3 like seori's other HELD results).
- * DRAFTED / REPLACED: kept in the outbox as `draft` until the lead's turn ends.
+ * SENT: the messenger accepted it. HELD: it may or may not have it (the CLI exits 3 like seori's other HELD results);
+ * a held reply is recorded as uncertain and never resent on its own.
  */
 export type MsgSendResult = {
-  readonly status: "SENT" | "HELD" | "DRAFTED" | "REPLACED";
+  readonly status: "SENT" | "HELD";
   readonly messageId?: string;
   readonly ids: readonly string[];
-  readonly draft?: string;
 };
 
 /** `source:chat[:thread]`. Chat and thread may not be empty; a thread may itself contain colons. */
@@ -71,37 +63,17 @@ function adapterFor(d: MsgDeps, source: string): MessengerAdapter {
 }
 
 export async function msgSend(root: string, o: MsgSendOptions, d: MsgDeps): Promise<MsgSendResult> {
-  if ([o.replyTo, o.to, o.replace].filter((x) => x !== undefined).length !== 1) throw new Refusal("give exactly one of --reply-to, --to or --replace");
+  if ([o.replyTo, o.to].filter((x) => x !== undefined).length !== 1) throw new Refusal("give exactly one of --reply-to or --to");
   if (!o.text.trim()) throw new Refusal("refusing to send an empty message");
-  if (o.replace !== undefined) {
-    if (o.sendNow) throw new Refusal("--replace changes a draft and --now sends at once; to send the drafts now, run seori msg flush");
-    return replaceDraft(root, o.replace, o.text, o.again === true, d.now());
-  }
-  const draft = !o.sendNow && !new Channel(root).consumerOffline();
 
   if (o.to) {
     // A notice is not an answer to anything, so it neither needs nor touches the ledger.
     const adapter = adapterFor(d, o.to.source);
-    if (!draft) return sendNotice(adapter, o.to, o.text);
-    // A new notice draft overlaps nothing, so it is appended without the outbox lock.
-    const outbox = new Outbox(root);
-    const id = newDraftId(outbox);
-    outbox.append({ ev: "drafted", draft: id, at: d.now(), target: { kind: "notice", ...o.to }, text: o.text });
-    return { status: "DRAFTED", ids: [], draft: id };
+    return sendNotice(adapter, o.to, o.text);
   }
 
   const ids = [...new Set(o.replyTo)];
   if (!ids.length) throw new Refusal("--reply-to needs at least one id");
-  if (draft) return draftReply(root, ids, o, d);
-  // A reply sent now next to an open draft for the same id would be followed by the draft: a second reply.
-  const set = new Set(ids);
-  const pending = new Outbox(root).open().find((x) => x.target.kind === "reply" && x.target.ids.some((id) => set.has(id)));
-  if (pending) {
-    throw new Refusal(
-      `${targetLabel(pending.target)} has draft ${pending.draft} waiting to go out; change it with --replace ${pending.draft}, ` +
-        `send it now with seori msg flush, or drop it with seori msg drop ${pending.draft} --why '...'`,
-    );
-  }
   return replyNow(new Channel(root), ids, o, d);
 }
 
@@ -126,7 +98,7 @@ async function replyNow(channel: Channel, ids: readonly string[], o: { readonly 
   }
 }
 
-/** The refusals every reply gets, sent now or drafted: unknown ids, watch events, mixed chats, ALREADY_REPLIED, UNCERTAIN. */
+/** The refusals every reply gets: unknown ids, watch events, mixed chats, ALREADY_REPLIED, UNCERTAIN. */
 function checkReply(channel: Channel, ids: readonly string[], again: boolean): IdState & { readonly row: MessengerRow } {
   const states = channel.states();
   const picked = ids.map((id) => {
@@ -182,166 +154,8 @@ async function replyLocked(channel: Channel, ids: readonly string[], o: { readon
   }
 }
 
-// ---------- drafts ----------
-
-function newDraftId(outbox: Outbox): string {
-  const taken = new Set(outbox.events().map((e) => e.draft));
-  for (;;) {
-    const id = randomBytes(4).toString("hex");
-    if (!taken.has(id)) return id;
-  }
-}
-
-const lockOutbox = (outbox: Outbox, now: number, what: string): (() => void) => {
-  const release = outbox.lock(now);
-  if (!release) throw new Refusal(`BUSY: a seori msg flush is sending drafts right now (${outbox.lockPath}); ${what}, retry shortly`);
-  return release;
-};
-
-/**
- * A reply draft: checked like a reply sent now, then recorded. A send to exactly the ids of an open draft replaces its
- * text, so the lead fixes a draft by sending again; any other overlap is refused, as one id gets one reply.
- */
-function draftReply(root: string, ids: readonly string[], o: MsgSendOptions, d: MsgDeps): MsgSendResult {
-  const outbox = new Outbox(root);
-  const now = d.now();
-  const release = lockOutbox(outbox, now, "nothing was drafted");
-  try {
-    const first = checkReply(new Channel(root), ids, o.again === true);
-    adapterFor(d, first.row.source);
-    const set = new Set(ids);
-    const overlapping = outbox.open().filter((x) => x.target.kind === "reply" && x.target.ids.some((id) => set.has(id)));
-    const only = overlapping[0];
-    const t = only?.target;
-    // Both id lists are free of duplicates, so equal length and every id shared means the same ids.
-    if (only && overlapping.length === 1 && t?.kind === "reply" && t.ids.length === ids.length && t.ids.every((id) => set.has(id))) {
-      outbox.append({ ev: "replaced", draft: only.draft, at: now, text: o.text, ...(o.again ? { again: true as const } : {}) });
-      return { status: "REPLACED", ids, draft: only.draft };
-    }
-    if (only) {
-      const label = targetLabel(only.target);
-      throw new Refusal(
-        `draft ${only.draft} already replies to ${label}; to change it, send again with exactly --reply-to ${label} or use --replace ${only.draft}`,
-      );
-    }
-    const id = newDraftId(outbox);
-    outbox.append({ ev: "drafted", draft: id, at: now, target: { kind: "reply", ids }, text: o.text, ...(o.again ? { again: true as const } : {}) });
-    return { status: "DRAFTED", ids, draft: id };
-  } finally {
-    release();
-  }
-}
-
-function replaceDraft(root: string, draft: string, text: string, again: boolean, now: number): MsgSendResult {
-  const outbox = new Outbox(root);
-  const release = lockOutbox(outbox, now, "nothing was replaced");
-  try {
-    const x = outbox.open().find((o) => o.draft === draft);
-    if (!x) throw new Refusal(`no open draft ${draft} (seori msg drafts lists them)`);
-    if (x.inFlight) throw new Refusal(`draft ${draft} may already be in the chat: a flush was stopped while sending it; run seori msg flush`);
-    outbox.append({ ev: "replaced", draft, at: now, text, ...(again ? { again: true as const } : {}) });
-    return { status: "REPLACED", ids: x.target.kind === "reply" ? x.target.ids : [], draft };
-  } finally {
-    release();
-  }
-}
-
-/** `seori msg drop`: the draft is never sent; its reply ids are open again. */
-export function msgDrop(root: string, draft: string, why: string, now: number): void {
-  const outbox = new Outbox(root);
-  const release = lockOutbox(outbox, now, "nothing was dropped");
-  try {
-    if (!outbox.open().some((o) => o.draft === draft)) throw new Refusal(`no open draft ${draft} (seori msg drafts lists them)`);
-    outbox.append({ ev: "dropped", draft, at: now, why });
-  } finally {
-    release();
-  }
-}
-
-/** One line per open draft, oldest first: draft, age, kind and target, the first 60 characters of the text JSON-escaped. */
-export function msgDrafts(root: string, now: number): string[] {
-  return new Outbox(root).open().map((x) => `${x.draft}  ${age(now - x.at)}  ${x.target.kind} ${targetLabel(x.target)}  ${JSON.stringify(x.text.slice(0, 60))}`);
-}
-
-export type FlushOutcome = {
-  readonly draft: string;
-  readonly target: DraftTarget;
-  readonly status: "SENT" | "HELD" | "FAILED";
-  readonly messageId?: string;
-  readonly detail?: string;
-};
-
-/**
- * `seori msg flush`, and the lead extension at the end of a turn: sends every open draft, oldest first, through the
- * same path as a send now. Sent or uncertain: released (an uncertain reply is send-uncertain in the ledger, as
- * always). A definite failure, a refusal included: the draft stays open and is reported. The outbox lock is held
- * throughout, so two flushes never send one draft twice; a `sending` mark before each send keeps a flush killed
- * mid-send from sending it again next time.
- */
-/**
- * Which open drafts a flush takes; the CLI's flush takes all. The lead extension's turn-end flush takes the drafts
- * drafted at or after `since` (when it started, so a crashed earlier lead's leftovers go to duty's [DRAFTS] alert
- * instead) and last written at or before `until` (that turn's end, so a draft the next run wrote or changed waits for
- * that run's own end and its review).
- */
-export type FlushWindow = { readonly since?: number; readonly until?: number };
-
-/** The open drafts a flush with `window` would send. */
-export function draftsIn(root: string, window: FlushWindow = {}): Draft[] {
-  return new Outbox(root).open().filter((x) => x.at >= (window.since ?? -Infinity) && x.editedAt <= (window.until ?? Infinity));
-}
-
-export async function msgFlush(root: string, d: MsgDeps, window: FlushWindow = {}): Promise<FlushOutcome[]> {
-  const outbox = new Outbox(root);
-  const channel = new Channel(root);
-  const release = outbox.lock(d.now());
-  if (!release) throw new Refusal(`BUSY: another seori msg flush is sending drafts right now (${outbox.lockPath}); retry shortly`);
-  const outcomes: FlushOutcome[] = [];
-  try {
-    for (const x of draftsIn(root, window)) {
-      if (x.inFlight) {
-        // An earlier flush was stopped mid-send: it may be in the chat, so it is released as uncertain, never resent.
-        const detail = "an earlier flush was stopped while sending it";
-        if (x.target.kind === "reply") {
-          const states = channel.states();
-          for (const id of x.target.ids) {
-            if (!states.find((s) => s.row.id === id)?.replied) channel.appendLedger({ id, ev: "send-uncertain", at: d.now(), detail });
-          }
-        }
-        outbox.append({ ev: "released", draft: x.draft, at: d.now() });
-        outcomes.push({ draft: x.draft, target: x.target, status: "HELD", detail });
-        continue;
-      }
-      outbox.append({ ev: "sending", draft: x.draft, at: d.now() });
-      try {
-        const t = x.target;
-        const r = t.kind === "notice"
-          ? await sendNotice(adapterFor(d, t.source), t, x.text)
-          : await replyNow(channel, t.ids, { text: x.text, again: x.again }, d);
-        outbox.append({ ev: "released", draft: x.draft, at: d.now() });
-        outcomes.push({ draft: x.draft, target: t, status: r.status === "SENT" ? "SENT" : "HELD", ...(r.messageId !== undefined ? { messageId: r.messageId } : {}) });
-      } catch (e) {
-        const detail = e instanceof Error ? e.message : String(e);
-        outbox.append({ ev: "failed", draft: x.draft, at: d.now(), detail });
-        outcomes.push({ draft: x.draft, target: x.target, status: "FAILED", detail });
-      }
-    }
-  } finally {
-    release();
-  }
-  return outcomes;
-}
-
-/** The line `seori msg flush` prints for one draft (the lead extension logs the same). */
-export function flushLine(o: FlushOutcome): string {
-  const what = `${o.draft} ${targetLabel(o.target)}`;
-  if (o.status === "SENT") return `SENT ${what} message=${o.messageId}`;
-  if (o.status === "HELD") return `HELD ${what}: the messenger may or may not have it${o.detail ? ` (${o.detail})` : ""}; check the chat, it is not sent again`;
-  return `FAILED ${what}: ${o.detail}; the draft stays open: flush again, or drop it`;
-}
-
 // ---------- edit ----------
-// Acts on the messenger at once (never drafted) and never touches the ledger: an edit answers no id.
+// Never touches the ledger: an edit answers no id.
 
 function messengerRow(root: string, id: string): MessengerRow {
   const row = new Channel(root).inbound().find((r) => r.id === id);
@@ -359,7 +173,7 @@ export async function msgEdit(to: NoticeTarget, message: string, text: string, d
 
 /**
  * `seori msg edit --reply-of <id>`: new text for seori's FIRST reply to that message (the acknowledgement that serves as
- * the job's status message), found in the ledger, so a drafted or flushed reply can be edited without its message id.
+ * the job's status message), found in the ledger, so a reply can be edited without its message id.
  * Returns the edited message id.
  */
 export async function msgEditReplyOf(root: string, id: string, text: string, d: MsgDeps): Promise<string> {
@@ -384,7 +198,6 @@ export function msgClose(root: string, id: string, why: string, now: number): vo
 function stateOf(s: IdState): string {
   if (s.replied) return "replied";
   if (s.closed) return fromOther(s.row) ? "closed-other" : "closed";
-  if (s.drafted) return "drafted";
   if (s.uncertain) return "uncertain";
   if (s.gaveUp) return "gave-up";
   if (s.entered) return "entered";
