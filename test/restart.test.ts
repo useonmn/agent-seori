@@ -691,13 +691,15 @@ describe("the start-up line a new lead gets", () => {
 });
 
 describe("seori restart as a command", () => {
-  /** A home with `lanes` saved as lanes in `status`, and a spawn that records what it was asked to start. */
+  /** A home with `lanes` saved as lanes in `status`, each in a live pane of its own, and a spawn that records what it was asked to start. */
   function home(statuses: Record<string, string> = {}) {
     const w = new World();
     const d = w.deps();
-    for (const [key, status] of Object.entries(statuses)) {
+    for (const [i, [key, status]] of Object.entries(statuses).entries()) {
+      const id = `t${i + 1}`;
+      w.addPane(id);
       d.store.saveLane({
-        key, sessionRef: paneRef("t1"), paneId: "t1", tabId: "", brief: "/b.md", cwd: "/w",
+        key, sessionRef: paneRef(id), paneId: id, tabId: "", brief: "/b.md", cwd: "/w",
         status: status as never, createdAt: 1, lastActivityAt: 1, nudges: 0, log: [],
       });
     }
@@ -758,6 +760,29 @@ describe("seori restart as a command", () => {
     const script = started[0]!.argv.at(-1)!;
     for (const line of closed) expect(script).toContain(`echo ${shq(line)}`);
     expect(lines.at(-1)).toContain("RESTARTING detached");
+  });
+
+  test("a lane whose pane is already gone neither blocks the restart nor is named again: it closes nothing of it", async () => {
+    // A dead waiting lane duty has not marked lost yet, and a ready lane an earlier restart closed.
+    const { w, d, started } = home({ ci: "waiting", ui: "ready", docs: "paused" });
+    w.panes.delete("t1");
+    w.panes.delete("t2");
+    const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
+    const lines: string[] = [];
+    expect(await restart(d, undefined, false, (l) => void lines.push(l), { spawn, has: (b) => b === "setsid" })).toBe(0);
+    expect(lines.filter((l) => /^(ENDED|CLOSED) /.test(l)).map((l) => l.split(" ")[1])).toEqual(["docs"]);
+    expect(started[0]!.argv.at(-1)).not.toMatch(/(ENDED|CLOSED) (ci|ui) /);
+  });
+
+  test("a lane whose pane status cannot be read counts as open: a waiting one still blocks the restart", async () => {
+    const { d, started } = home({ ci: "waiting" });
+    const rt = d.runtime;
+    rt.status = async () => {
+      throw new Error("hc exploded");
+    };
+    const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
+    await expect(restart(d, undefined, false, () => {}, { spawn })).rejects.toThrow(/would end 1 lane\(s\) still owed work: ci \(waiting\)/);
+    expect(started).toEqual([]);
   });
 
   test("a host that cannot detach refuses before anything is stopped", async () => {

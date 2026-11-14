@@ -4,7 +4,8 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
-import { defaultSeoriCmd, done, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { defaultSeoriCmd, done, laneBusy, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { closeLane } from "../src/done-flow.ts";
 import { backlogAdd } from "../src/loop.ts";
 import { deliverOrThrow } from "../src/runtime/index.ts";
 import { refText } from "../src/refs.ts";
@@ -662,6 +663,9 @@ describe("duty loop", () => {
     const first = await startLane(d, "busy", brief, {});
     d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
     w.panes.delete(first.paneId);
+    const kept = readFileSync(first.brief, "utf8");
+    const other = join(d.store.root, "other.md");
+    writeFileSync(other, "Something else entirely.");
     const rt = d.runtime;
     const create = rt.create.bind(rt);
     let opened = "";
@@ -672,9 +676,80 @@ describe("duty loop", () => {
       d.store.saveLane({ ...d.store.lane("busy")!, status: "done" });
       return ref;
     };
-    await expect(startLane(d, "busy", brief, {})).rejects.toThrow("lane busy changed while it was being started again (now done)");
+    await expect(startLane(d, "busy", other, {})).rejects.toThrow("lane busy changed while it was being started again (now done)");
     expect(d.store.lane("busy")!.status).toBe("done");
     expect(w.panes.has(opened)).toBe(false);
+    // The closed record still points at its own brief, as it was.
+    expect(readFileSync(first.brief, "utf8")).toBe(kept);
+  });
+
+  test("a take-back whose kickoff fails puts the brief back as it was and leaves the claim ready", async () => {
+    const { w, d, brief } = setup();
+    const first = await startLane(d, "busy", brief, {});
+    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
+    w.panes.delete(first.paneId);
+    const kept = readFileSync(first.brief, "utf8");
+    const other = join(d.store.root, "other.md");
+    writeFileSync(other, "Something else entirely.");
+    w.startFails = true;
+    await expect(startLane(d, "busy", other, {})).rejects.toThrow("lane busy did not start");
+    expect(readFileSync(first.brief, "utf8")).toBe(kept);
+    expect(d.store.lane("busy")).toMatchObject({ status: "ready", paneId: first.paneId });
+  });
+
+  test("two starts of one key at once: the second is refused while the first holds the lane's lock, and one pane opens", async () => {
+    const { w, d, brief } = setup();
+    const panes = w.panes.size;
+    const [a, b] = await Promise.allSettled([startLane(d, "busy", brief, {}), startLane(d, "busy", brief, {})]);
+    expect(b).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: laneBusy("busy") }) });
+    if (a.status !== "fulfilled") throw a.reason;
+    expect(w.panes.size).toBe(panes + 1);
+    expect(d.store.lane("busy")!.paneId).toBe(a.value.paneId);
+    // The lock is released once the start ends: the next start is judged on the record again.
+    await expect(startLane(d, "busy", brief, {})).rejects.toThrow(`lane busy is already open in ${refText(a.value.sessionRef)}`);
+  });
+
+  test("a close while a take-back holds the key is refused, and a close of the old record afterwards never overwrites the new one", async () => {
+    const { w, d, brief } = setup();
+    const first = await startLane(d, "busy", brief, {});
+    d.store.saveLane({ ...d.store.lane("busy")!, status: "ready", final: { at: 5, text: "done", evidence: ["e"] } });
+    const old = d.store.lane("busy")!;
+    w.panes.delete(first.paneId);
+    const rt = d.runtime;
+    const create = rt.create.bind(rt);
+    let during: unknown;
+    rt.create = async (spec) => {
+      during = await done(d, "busy").catch((e: unknown) => e);
+      return create(spec);
+    };
+    const again = await startLane(d, "busy", brief, {});
+    expect(during).toBeInstanceOf(Refusal);
+    expect((during as Error).message).toBe(laneBusy("busy"));
+    // A close that read the ready record before the take-back (the done window, seori done) finds another session's record.
+    await expect(closeLane(d, old, "closed by lead")).rejects.toThrow(
+      `lane busy was started again before it was closed (now working in ${refText(again.sessionRef)}); nothing closed`,
+    );
+    expect(d.store.lane("busy")).toMatchObject({ status: "working", paneId: again.paneId });
+    expect(w.panes.has(again.paneId)).toBe(true);
+  });
+
+  test("with duty stopped, start takes back a working, waiting or paused lane whose pane vanished, ending its old watches", async () => {
+    const { w, d, brief } = setup();
+    d.store.setStop(w.clock, "maintenance", "duty");
+    for (const status of ["working", "waiting", "paused"] as const) {
+      const key = `gone-${status}`;
+      const first = await startLane(d, key, brief, {});
+      d.store.saveLane({ ...d.store.lane(key)!, status, ...(status === "paused" ? { pausedFrom: "working" as const } : {}) });
+      const watch = new WatchStore(d.store.root).add({ owner: { kind: "lane", key }, source: { kind: "file", path: "/tmp/x" } }, w.clock);
+      await expect(startLane(d, key, brief, {})).rejects.toThrow(`lane ${key} is already open in ${refText(first.sessionRef)}`);
+      w.panes.delete(first.paneId);
+      // Nothing marks it lost while duty is stopped.
+      expect(await dutyTick(d)).toEqual([{ action: "stopped", detail: "maintenance" }]);
+      expect(d.store.lane(key)!.status).toBe(status);
+      const again = await startLane(d, key, brief, {});
+      expect(d.store.lane(key)).toMatchObject({ status: "working", paneId: again.paneId });
+      expect(new WatchStore(d.store.root).list().find((x) => x.id === watch.id)).toMatchObject({ status: "stopped", reason: "owner lane started again" });
+    }
   });
 
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */
@@ -714,6 +789,40 @@ describe("duty loop", () => {
     expect((await dutyTick(d)).filter((e) => e.lane === "busy")).toEqual([]);
     expect(d.store.lane("busy")!.status).toBe("done");
     expect(lead.received.some((m) => m.includes("[LOST busy]"))).toBe(false);
+  });
+
+  test("a lane started again while dutyTick reads its old gone pane keeps the new session's record", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "busy", brief, {});
+    w.panes.delete(lane.paneId);
+    w.addPane("t9", "working");
+    duringStatusRead(d, lane.paneId, () => {
+      // `seori start busy` took the key back from another process meanwhile.
+      d.store.saveLane({ ...d.store.lane("busy")!, sessionRef: paneRef("t9"), paneId: "t9", createdAt: w.clock + 1 });
+    });
+    expect((await dutyTick(d)).filter((e) => e.lane === "busy")).toEqual([]);
+    expect(d.store.lane("busy")).toMatchObject({ status: "working", paneId: "t9" });
+    expect(lead.received.some((m) => m.includes("[LOST busy]"))).toBe(false);
+  });
+
+  test("a paused lane started again while duty reads its old gone pane keeps the new session's record", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "held", brief, {});
+    d.store.saveLane({ ...d.store.lane("held")!, status: "paused", pausedFrom: "working" });
+    w.panes.delete(lane.paneId);
+    w.addPane("t9", "working");
+    const rt = d.runtime;
+    const status = rt.status.bind(rt);
+    rt.status = async (ref) => {
+      const read = await status(ref);
+      if (ref.id === lane.paneId && d.store.lane("held")!.paneId === lane.paneId) {
+        d.store.saveLane({ ...d.store.lane("held")!, status: "working", sessionRef: paneRef("t9"), paneId: "t9", createdAt: w.clock + 1 });
+      }
+      return read;
+    };
+    await dutyTick(d);
+    expect(d.store.lane("held")).toMatchObject({ status: "working", paneId: "t9" });
+    expect(lead.received.some((m) => m.includes("[LOST held]"))).toBe(false);
   });
 });
 

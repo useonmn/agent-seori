@@ -6,7 +6,7 @@ import { DeliveryUncertain, ToolError } from "./runtime/index.ts";
 import { type Ceilings, type Lane, type LaneLogKind, lockFile } from "./store.ts";
 
 import { PAUSED_WORKING_MARKS } from "./pause.ts";
-import { refText } from "./refs.ts";
+import { refText, sameSession } from "./refs.ts";
 import { lostText } from "./restart.ts";
 import { runHook } from "./hooks.ts";
 
@@ -305,7 +305,10 @@ async function pausedCheck(d: Deps, lane: Lane, events: DutyEvent[]): Promise<vo
   const [seenMark, toldMark] = PAUSED_WORKING_MARKS;
   const st = await d.runtime.status(lane.sessionRef);
   if (st === "gone") {
-    // As dutyTick does for running lanes: otherwise the key stays paused with no pane, and done/start both refuse it.
+    // As dutyTick does for running lanes: otherwise the key stays paused with no pane. Re-read: a resume, or a start
+    // that took the key back with a new session, while the pane was read is kept.
+    const now = d.store.lane(lane.key);
+    if (now?.status !== "paused" || !sameSession(now.sessionRef, lane.sessionRef)) return;
     mark(d, lane.key, (l) => { l.status = "lost"; delete l.pausedFrom; }, { kind: "lost", text: "pane disappeared while paused" });
     void runHook(d, "onLost", { key: lane.key, text: "pane disappeared while paused", evidence: "" });
     await tell(d, lostText(lane, refText(lane.sessionRef), d.seoriCmd), lane.key, events);
