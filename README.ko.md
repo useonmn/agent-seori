@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh
 
 - 리드: 사람과 대화하는 유일한 에이전트 세션입니다. 요청을 받으면 브리프(작업 설명서)를 쓰고 레인을 엽니다. 레인이 보낸 결과를 확인하고 머지합니다.
 - 레인: 일 하나당 하나씩 여는 에이전트 세션이고, 터미널 하나를 혼자 씁니다. 브리프를 받아 목표 모드(goal mode)로 일하고, 끝나면 증거 링크를 붙여 READY를 보냅니다. 완료 조건(Done 줄)을 달고 시작한 레인은, READY 몇 분 뒤 그 조건을 실제로 다시 확인해서 모두 맞으면 seori가 직접 닫습니다(리드가 반대하지 않으면).
-- 듀티(duty): 레인들을 지켜보는 세션과 프로세스(`seori duty`)입니다. 바쁜 리드와 듀티 세션에 온 메시지는 모아 뒀다가 한가해지면 전해 줍니다. 조용한 레인은 깨우고, 그래도 안 되면 리드에게 알립니다. Done 줄이 맞는 레인을 닫고, 한도를 넘거나 멈춰 버린 레인, 컴퓨터 자원 부족을 리드에게 알리고, 레인의 진행 상황을 주인의 메신저 스레드에 올립니다.
+- 듀티(duty): 레인들을 지켜보는 세션과 프로세스(`seori duty`)입니다. 바쁜 리드와 듀티 세션에 온 메시지는 모아 뒀다가 한가해지면 전해 줍니다. 조용한 레인은 깨우고, 그래도 안 되면 리드에게 알립니다. Done 줄이 맞는 레인을 닫고, 한도를 넘거나 멈춰 버린 레인, 컴퓨터 자원 부족을 리드에게 알리고, `progressEveryMin`이 설정돼 있으면 레인의 진행 상황을 주인의 메신저 스레드에 올립니다.
 - 시간 단위 루프(hourly loop): `seori loop`입니다. 한 시간에 한 번 백로그(할 일 목록)를 보고, 레인 자리가 비어 있으면 다음 일을 시작합니다. 사람이 정해야 할 질문은 리드를 통해 묻습니다. 자세한 설계: [docs/hourly-loop.md](docs/hourly-loop.md)
 - 데몬: `seori daemon`입니다. 메신저로 온 메시지를 받아 리드에게 전할 수 있게 저장하고, 에이전트가 걸어 둔 감시(watch)를 돌립니다. 자세한 내용은 [메신저 채널](#메신저-채널)과 [감시](#감시)에 있습니다.
 - 리뷰와 머지 관문: PR은 정확히 지금 헤드(head) 커밋에 대한 CLEAR 리뷰 기록이 있고, 체크가 모두 통과하고, verify-pr도 통과해야만 머지됩니다.
@@ -604,11 +604,13 @@ config.json의 `hooks`는 argv 템플릿을 받습니다(비어 있지 않은 �
 | `transcribe` | 오디오 파일을 글로 바꿉니다: `seori transcribe <file>`과 텔레그램 음성 메시지 | `file` |
 | `threadReply` | 레인의 진행 상황을 그 스레드에 올립니다. 내장 메신저 대신 이 명령을 씁니다(진행 상황 올리기 참고) | `thread`, `text`, `key` |
 
-수명 주기 후크는 돌려 놓고 기다리지 않습니다. 실패하면 stderr에 `seori: hook <name> failed (...)` 한 줄을 남길 뿐 명령의 결과는 바뀌지 않고, CLI는 끝날 때 아직 도는 후크를 최대 2초까지만 기다립니다. 리뷰어를 대신하는 후크는 없습니다. `seori review`는 늘 omp를 돌리고, `hooks.reviewCommand` 키는 거절합니다. `transcribe`와 `threadReply`는 앞에서 돌고 0으로 끝나야 합니다: `transcribe`는 필사본을 stdout에 출력하고, `threadReply`가 0이 아닌 코드로 끝나거나 30초를 넘겨 강제 종료되면 아무것도 올리지 않으므로 다음 듀티 차례에 같은 보고를 다시 시도하고, 이벤트는 `post-failed`에 `hooks.threadReply: <후크의 첫 오류 줄>`로 남습니다. `transcribe`를 설정하지 않으면 음성 메시지는 그냥 첨부 줄로 남고, `threadReply`를 설정하지 않으면 진행 상황은 설정된 메신저로 갑니다. `hooks` 값이 잘못되면 설정 오류입니다(종료 코드 2).
+수명 주기 후크는 돌려 놓고 기다리지 않습니다. 실패하면 stderr에 `seori: hook <name> failed (...)` 한 줄을 남길 뿐 명령의 결과는 바뀌지 않고, CLI는 끝날 때 아직 도는 후크를 최대 2초까지만 기다립니다. 리뷰어를 대신하는 후크는 없습니다. `seori review`는 늘 omp를 돌리고, `hooks.reviewCommand` 키는 거절합니다. `transcribe`와 `threadReply`는 앞에서 돌고 0으로 끝나야 합니다: `transcribe`는 필사본을 stdout에 출력하고, `threadReply`가 0이 아닌 코드로 끝나거나 30초를 넘겨 강제 종료되면 아무것도 올리지 않으므로 다음 듀티 차례에 같은 보고를 다시 시도하고, 이벤트는 `post-failed`에 `hooks.threadReply: <후크의 첫 오류 줄>`로 남습니다(강제 종료되면 `hooks.threadReply: timed out after 30 s`). `transcribe`를 설정하지 않으면 음성 메시지는 그냥 첨부 줄로 남고, `threadReply`를 설정하지 않으면 진행 상황은 설정된 메신저로 갑니다. `hooks` 값이 잘못되면 설정 오류입니다(종료 코드 2).
 
 ```json
-{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"], "threadReply": ["agent-slackbot", "message", "send", "{thread}", "--text", "{text}"] } }
+{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"], "threadReply": ["/path/to/thread-reply", "{thread}", "{text}"] } }
 ```
+
+`{thread}`는 레인의 스레드 id 전체, 즉 `<source>:<chat>:<message id>`입니다. 그래서 `threadReply` 명령은 보통 이 id를 쪼개 보내는 도구가 받는 채팅과 메시지 id로 넘겨 주는 작은 래퍼 스크립트입니다. 스크립트는 마지막에 보내는 도구를 `exec`로 실행하세요. 30초 강제 종료는 seori가 띄운 프로세스에만 닿으므로, 스크립트의 자식으로 남은 보내는 도구는 스크립트가 끝난 뒤에도 계속 돕니다.
 
 ## 서리 모드 스킬
 

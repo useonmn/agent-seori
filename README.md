@@ -22,7 +22,7 @@ Roles:
 
 - Lead: an agent session with `prompts/lead.md` appended to its system prompt. The only session that talks to you. It writes briefs, opens lanes, reads what they send back, and merges.
 - Lane: an agent session in its own terminal, one per task, with the brief and the lane rules (`prompts/lane-footer.md`).
-- Duty: an agent session with `prompts/duty.md`, next to the duty loop process (`seori duty`), which flushes inboxes, nudges lanes that stop reporting, escalates, detects lost lanes, closes lanes whose Done line reads back live, reports ceilings, stalls and host guard crossings to the lead, and posts progress to the owner's thread.
+- Duty: an agent session with `prompts/duty.md`, next to the duty loop process (`seori duty`), which flushes inboxes, nudges lanes that stop reporting, escalates, detects lost lanes, closes lanes whose Done line reads back live, reports ceilings, stalls and host guard crossings to the lead, and, when `progressEveryMin` is set, posts progress to the owner's thread.
 - Hourly loop: `seori loop`, a process that syncs the backlog, audits missed work, starts the next item and asks open questions through the lead. Design: [docs/hourly-loop.md](docs/hourly-loop.md).
 - Daemon: `seori daemon`, a process that receives your messenger messages and stores them for the lead, and runs the watches agents arm. See [Messenger channel](#messenger-channel) and [Watches](#watches).
 
@@ -611,11 +611,13 @@ The commands that read the config (`start`, `ready` for a lane with a Done line,
 | `transcribe` | turns an audio file into text: `seori transcribe <file>`, and Telegram voice notes | `file` |
 | `threadReply` | posts a lane's progress into its thread, in place of the built-in messenger send (see Progress posts) | `thread`, `text`, `key` |
 
-The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name> failed (...)` line on stderr and never changes the command's result; the CLI waits at most 2 s for hooks still running at exit. No hook replaces the reviewer: `seori review` always runs omp, and a `hooks.reviewCommand` key is refused. `transcribe` and `threadReply` run in the foreground and must exit 0: `transcribe` prints the transcript on stdout, and a `threadReply` that exits non-zero (or hangs past 30 s, when it is killed) posts nothing, so the next duty pass tries the same report again and the event is `post-failed` with `hooks.threadReply: <the hook's first error line>`. When `transcribe` is not set a voice note stays a plain attachment line; when `threadReply` is not set, progress posts go through the configured messenger. A malformed `hooks` value is a config error (exit 2).
+The lifecycle hooks are fire-and-forget: a failure prints one `seori: hook <name> failed (...)` line on stderr and never changes the command's result; the CLI waits at most 2 s for hooks still running at exit. No hook replaces the reviewer: `seori review` always runs omp, and a `hooks.reviewCommand` key is refused. `transcribe` and `threadReply` run in the foreground and must exit 0: `transcribe` prints the transcript on stdout, and a `threadReply` that exits non-zero (or runs past 30 s, when it is killed) posts nothing, so the next duty pass tries the same report again and the event is `post-failed` with `hooks.threadReply: <the hook's first error line>` (`hooks.threadReply: timed out after 30 s` for a killed one). When `transcribe` is not set a voice note stays a plain attachment line; when `threadReply` is not set, progress posts go through the configured messenger. A malformed `hooks` value is a config error (exit 2).
 
 ```json
-{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"], "threadReply": ["agent-slackbot", "message", "send", "{thread}", "--text", "{text}"] } }
+{ "hooks": { "transcribe": ["whisper-cli", "-f", "{file}", "--no-timestamps"], "threadReply": ["/path/to/thread-reply", "{thread}", "{text}"] } }
 ```
+
+`{thread}` is the lane's whole thread id, `<source>:<chat>:<message id>`, so a `threadReply` command is usually a small wrapper script that splits it into the chat and message id its sender takes. Have the script `exec` its sender as the last step: the 30 s kill reaches only the process seori started, so a sender left running as a child of the script outlives it.
 
 ## seori mode skill
 

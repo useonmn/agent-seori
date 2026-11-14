@@ -3,9 +3,10 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/channel.ts";
-import { ConfigError, loadConfig, type SeoriConfig } from "../src/config.ts";
+import { ConfigError, DEFAULT_CONFIG, loadConfig, type SeoriConfig } from "../src/config.ts";
 import { SendUncertain } from "../src/messenger/adapter.ts";
 import { PROGRESS_HEADER, progressDue, progressTick, progressText, scrubForOwner, threadTarget } from "../src/progress.ts";
+import type { ExecOptions } from "../src/runtime/exec.ts";
 import type { Lane } from "../src/store.ts";
 import { World } from "./fake.ts";
 
@@ -42,7 +43,7 @@ const busy = (w: World, over: Partial<Lane> = {}): Lane => ({
   log: [{ at: w.clock, kind: "start", text: "started" }, { at: w.clock, kind: "report", text: "halfway" }], ...over,
 });
 
-const config = (progressEveryMin: number | null): SeoriConfig => ({ ...loadConfig(tmpdir()), progressEveryMin });
+const config = (progressEveryMin: number | null): SeoriConfig => ({ ...DEFAULT_CONFIG, progressEveryMin });
 
 describe("scrubForOwner", () => {
   test("home becomes ~ and pane ids become <pane>", () => {
@@ -224,7 +225,7 @@ describe("progressTick", () => {
     expect(w.notified).toEqual([]);
   });
 
-  test("the hook run is bounded: onSpawn gets the process and a killed run is a definite failure", async () => {
+  test("a hook run past the deadline is killed and is a definite failure, even when its exec never settles", async () => {
     const { w, d, lane, reportNow } = setup({
       progressEveryMin: 15,
       hooks: { threadReply: ["notify-owner", "{thread}", "{text}"] },
@@ -232,26 +233,24 @@ describe("progressTick", () => {
     lane();
     reportNow("halfway");
     w.clock += 15 * MIN;
-    // The tick awaits the sender, so it must be able to kill it (THREAD_REPLY_TIMEOUT_MS does that on a real run).
-    // Here the kill is fired straight away instead of waiting 30 s; the observable contract is the same.
-    let onSpawnGiven = false;
+    // A wrapper script's grandchild keeps the pipes open after the kill, so the real exec never settles either.
+    let kills = 0;
     const exec = d.exec;
     const hanging = {
       ...d,
-      exec: (cmd: string, argv: readonly string[], opts?: { onSpawn?: (p: { kill(): void }) => void }) => {
+      exec: (cmd: string, argv: readonly string[], opts?: ExecOptions) => {
         if (cmd !== "notify-owner") return exec(cmd, argv, opts);
-        const { promise, reject } = Promise.withResolvers<never>();
-        // Stand in for the deadline: the tick hands over a kill, and firing it must end the run as a definite failure.
-        const proc = { kill: () => reject(new Error("killed")) };
-        onSpawnGiven = opts?.onSpawn !== undefined;
-        opts?.onSpawn?.(proc);
-        proc.kill();
-        return promise;
+        opts?.onSpawn?.({ kill: () => kills++ });
+        return Promise.withResolvers<never>().promise;
       },
     };
-    expect(await progressTick(hanging)).toEqual([{ lane: "fix-a", action: "post-failed", detail: "hooks.threadReply: killed" }]);
-    expect(onSpawnGiven).toBe(true);
-    expect(d.store.lane("fix-a")!.posted).toBeUndefined();
+    expect(await progressTick(hanging, 20)).toEqual([
+      { lane: "fix-a", action: "post-failed", detail: "hooks.threadReply: timed out after 0.02 s" },
+    ]);
+    expect(kills).toBe(1);
+    const after = d.store.lane("fix-a")!;
+    expect(after.posted).toBeUndefined();
+    expect(after.log.some((e) => e.kind === "posted")).toBe(false);
   });
 
   test("skips lanes without a thread, without a report, or not working/waiting", async () => {

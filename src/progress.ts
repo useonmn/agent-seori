@@ -93,10 +93,13 @@ export function progressDue(lane: Lane, config: SeoriConfig, now: number): strin
   return now - (lane.posted?.at ?? lane.createdAt) >= config.progressEveryMin * 60_000 ? report : undefined;
 }
 
-const detailOf = (e: unknown): string => {
-  const first = (e instanceof Error ? e.message : String(e)).trim().split("\n")[0] ?? "";
+/** The first line of a failure reason, capped at 200 characters. */
+const firstLine = (s: string): string => {
+  const first = s.trim().split("\n")[0] ?? "";
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 };
+
+const detailOf = (e: unknown): string => firstLine(e instanceof Error ? e.message : String(e));
 
 /** Which transport carries a post into the thread: dori's hook when it is set, else the configured messenger. */
 type Transport = "hooks.threadReply" | "messenger";
@@ -106,9 +109,9 @@ type Transport = "hooks.threadReply" | "messenger";
  * "posted" log entry. With `hooks.threadReply` set, that argv runs with `{thread}`, `{text}` and `{key}` filled (dori's
  * mechanism); without it the configured messenger sends the same text. An uncertain send may have reached the owner and
  * counts as posted (never sent twice); a definite failure records nothing, so the next tick tries again, and its event
- * names the transport that failed.
+ * names the transport that failed. A hook run past `timeoutMs` is killed and counts as a definite failure.
  */
-export async function progressTick(d: Deps): Promise<DutyEvent[]> {
+export async function progressTick(d: Deps, timeoutMs = THREAD_REPLY_TIMEOUT_MS): Promise<DutyEvent[]> {
   const now = d.now();
   let config: SeoriConfig;
   try {
@@ -143,22 +146,27 @@ export async function progressTick(d: Deps): Promise<DutyEvent[]> {
     const text = progressText(report, d.store.root);
     let via: Transport;
     let uncertain: string | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     if (hook) {
       via = "hooks.threadReply";
       const [cmd, ...rest] = substitute(hook, { key: lane.key, text, thread });
+      let proc: { kill(): void } | undefined;
+      // The tick awaits this, so it races a deadline: the exec promise itself can outlive a kill (a wrapper's
+      // grandchild keeps the pipes open), and a sender that never returns must not hold up the rest of the pass.
+      const deadline = Promise.withResolvers<"timeout">();
+      const timer = setTimeout(() => deadline.resolve("timeout"), timeoutMs);
       try {
         const res =
           cmd === undefined
             ? { code: 127, stdout: "", stderr: "empty argv" }
-            : await d.exec(cmd, rest, {
-                onSpawn: (proc) => {
-                  timer = setTimeout(() => proc.kill(), THREAD_REPLY_TIMEOUT_MS);
-                },
-              });
+            : await Promise.race([d.exec(cmd, rest, { onSpawn: (p) => (proc = p) }), deadline.promise]);
+        if (res === "timeout") {
+          proc?.kill();
+          events.push({ lane: lane.key, action: "post-failed", detail: `hooks.threadReply: timed out after ${timeoutMs / 1000} s` });
+          continue;
+        }
         // A hook that exits non-zero may have sent anyway, but nothing is recorded: the next tick tries the same report.
         if (res.code !== 0) {
-          const why = (res.stderr || res.stdout).trim().split("\n")[0] || `exit ${res.code}`;
+          const why = firstLine(res.stderr || res.stdout) || `exit ${res.code}`;
           events.push({ lane: lane.key, action: "post-failed", detail: `hooks.threadReply: ${why}` });
           continue;
         }
@@ -166,7 +174,6 @@ export async function progressTick(d: Deps): Promise<DutyEvent[]> {
         events.push({ lane: lane.key, action: "post-failed", detail: `hooks.threadReply: ${detailOf(e)}` });
         continue;
       } finally {
-        // The tick awaits this: a sender that never returns must not hold up inbox flushing, nudges and the rest.
         clearTimeout(timer);
       }
     } else {
