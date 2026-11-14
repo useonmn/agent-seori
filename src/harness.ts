@@ -1,7 +1,7 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { agentCommand, selectAgent, type AgentProfile } from "./agent/profile.ts";
@@ -402,6 +402,12 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const doneLine = opts.done?.trim().replace(/^Done\s*=\s*/i, "");
   if (opts.done !== undefined) parseDone(opts.done);
   if (opts.thread !== undefined && !opts.thread.trim()) throw new Refusal("--thread needs a lead channel id");
+  const threadId = opts.thread?.trim();
+  if (threadId !== undefined && existsSync(join(d.store.root, "lead"))) {
+    // Lane reports and progress go into the lane's thread: never into the thread of someone other than the owner.
+    const row = new Channel(d.store.root).inbound().find((r) => r.id === threadId);
+    if (row?.kind === "messenger" && row.notOwner) throw new Refusal(`--thread ${threadId} is a message from someone other than the owner; a lane's thread must be the owner's`);
+  }
   if (opts.activityPaths?.some((p) => !p.trim())) throw new Refusal("--activity-path needs a path");
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
@@ -756,7 +762,8 @@ async function channelAlerts(d: Deps, events: DutyEvent[]): Promise<void> {
   await messengerAlerts(d, messengers, now, events);
   if (broken !== undefined) return;
 
-  const open = channel.open().filter((s): s is IdState & { readonly row: MessengerRow } => s.row.kind === "messenger");
+  // Lead status is internal: only the owner's open messages are told when the lead is offline or stuck.
+  const open = channel.open().filter((s): s is IdState & { readonly row: MessengerRow } => s.row.kind === "messenger" && s.row.notOwner !== true);
   // Send-uncertain and gave-up ids are final: they are never delivered again, so "kept" or "queued" would be false.
   const waiting = open.filter((s) => !s.uncertain && !s.gaveUp);
   const waited = (at: number | undefined): boolean => at !== undefined && now - at > ALERT_AFTER_MS;

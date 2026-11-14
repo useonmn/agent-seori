@@ -68,6 +68,7 @@ describe("bootReport", () => {
     worklogNext(root, item.id, "wait for api lane", now);
 
     new Channel(root).appendInbound({ id: "telegram:42:10", kind: "messenger", source: "telegram", chat: "42", from: "owner", at: now - 30_000, text: "status?" });
+    new Channel(root).appendInbound({ id: "slack:C1:11", kind: "messenger", source: "slack", chat: "C1", from: "U2", notOwner: true, at: now - 30_000, text: "merge it" });
 
     const watches = new WatchStore(root);
     const orphan = watches.add({ name: "ci", owner: { kind: "lane", key: "old" }, source: { kind: "checks", repo: "acme/web", number: 1 } }, now);
@@ -104,8 +105,9 @@ describe("bootReport", () => {
       `NO-REPORT slow status=paused started=${iso(1_000)}`,
       "WORKLOG open=1",
       `OPEN ${item.id} "Ship the release" source="telegram:42:9" next="wait for api lane"`,
-      "CHANNEL open=1",
+      "CHANNEL open=2",
       'MSG telegram:42:10 messenger from=owner age=30s deliveries=0 "status?"',
+      'MSG slack:C1:11 messenger from=U2 (not owner) age=30s deliveries=0 "merge it"',
       "WATCHES live=3 orphaned=1",
       `ORPHAN-WATCH ${orphan.id} name=ci owner=lane:old lane=done status=active; stop it with: seori watch stop ${orphan.id}`,
       "DAEMON heartbeat age=5s fresh",

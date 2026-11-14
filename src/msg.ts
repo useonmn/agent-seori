@@ -218,6 +218,6 @@ export function msgList(root: string, o: { readonly all?: boolean }, now: number
   const shown = o.all ? channel.states() : channel.open();
   return shown.map((s) => {
     const { row } = s;
-    return `${row.id}  ${stateOf(s)}  ${age(now - row.at)}  ${row.kind}  ${row.kind === "watch" ? row.name : row.from}  ${JSON.stringify(row.text.slice(0, 60))}`;
+    return `${row.id}  ${stateOf(s)}  ${age(now - row.at)}  ${row.kind}  ${row.kind === "watch" ? row.name : `${row.from}${row.notOwner ? " (not owner)" : ""}`}  ${JSON.stringify(row.text.slice(0, 60))}`;
   });
 }

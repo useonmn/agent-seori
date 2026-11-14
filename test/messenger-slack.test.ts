@@ -504,6 +504,28 @@ describe("SlackAdapter receive", () => {
     expect(mock.repliesCalls.filter((q) => q.get("ts") === "1700000000.000060").length).toBe(2);
   });
 
+  test("a thread found not to be seori's is looked up again once anyone mentions the bot in it", async () => {
+    const mock = startMock();
+    let socket: ServerWebSocket<unknown> | undefined;
+    mock.onConnect = (ws) => {
+      socket = ws;
+      ws.send(envelope("e1", chan("1700000000.000100", "just chatting", { thread_ts: "1700000000.000050" })));
+    };
+    const mention = { type: "message", user: "UOTHER", text: "<@UBOT> can you help", ts: "1700000000.000200", thread_ts: "1700000000.000050" };
+    const got = await collect(adapter(mock, home()), (g) => {
+      if (mock.acks.length === 1 && socket) {
+        // Seen as not seori's; then someone the bot does not answer (others off) mentions it there.
+        mock.replies["C1:1700000000.000050"] = [mention];
+        socket.send(envelope("e2", { ...mention, channel: "C1", channel_type: "channel" }));
+        socket.send(envelope("e3", chan("1700000000.000300", "yes please", { thread_ts: "1700000000.000050" })));
+        socket = undefined;
+      }
+      return g.length >= 1;
+    });
+    expect(got.map((m) => [m.id, m.from])).toEqual([["slack:C1:1700000000.000300", OWNER]]);
+    expect(mock.repliesCalls.map((q) => q.get("ts"))).toEqual(["1700000000.000050", "1700000000.000050"]);
+  });
+
   test("catch-up applies the same rule: channel chatter is dropped, a mention and a reply in a tracked thread arrive", async () => {
     const mock = startMock();
     const root = home();

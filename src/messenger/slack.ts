@@ -565,6 +565,8 @@ export class SlackAdapter implements MessengerAdapter {
     }
     const key = `${channel}:${ts}`;
     if (ctx.delivered.has(key)) return;
+    // A mention of the bot, whoever sent it, may make a thread seori's: the next reply there is looked up again.
+    if (ev.thread_ts !== undefined && mentions(ev.text ?? "", ctx.botUser)) ctx.untracked.delete(`${channel}:${ev.thread_ts}`);
     const from = this.pairing
       ? dm && !fromHistory && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
         ? ev.user

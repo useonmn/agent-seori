@@ -110,6 +110,15 @@ describe("duty channel alerts", () => {
     expect(w.notified).toHaveLength(1);
   });
 
+  test("lead status is never sent into the thread of someone other than the owner", async () => {
+    const { w, d, root, channel, advance } = setup();
+    channel.appendInbound({ id: "fake:c1:m2", kind: "messenger", source: "fake", chat: "c1", thread: "t2", from: "u2", notOwner: true, at: w.clock, text: "hey" });
+    w.consumerLock(root, "dead");
+    advance(3 * MIN);
+    expect(await dutyTick(d)).toEqual([{ action: "alerted", detail: "fake:c1:m1 lead-offline" }]);
+    expect(w.notified.map((n) => n.target.replyTo)).toEqual(["m1"]);
+  });
+
   test("lead offline is not raised while a live consumer holds the lock, or for a replied id", async () => {
     const { w, d, root, channel, advance } = setup();
     advance(5 * MIN);

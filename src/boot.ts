@@ -182,7 +182,7 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
     lines.push(`CHANNEL open=${states.length}`);
     for (const s of states) {
       const flags = [s.uncertain ? "uncertain" : "", s.gaveUp ? "gave-up" : "", s.entered ? "entered" : ""].filter(Boolean);
-      const who = s.row.kind === "watch" ? `watch=${s.row.name}` : `from=${s.row.from}`;
+      const who = s.row.kind === "watch" ? `watch=${s.row.name}` : `from=${s.row.from}${s.row.notOwner ? " (not owner)" : ""}`;
       lines.push(`MSG ${s.row.id} ${s.row.kind} ${who} age=${ageText(now - s.row.at)} deliveries=${s.deliveries}${flags.length ? ` ${flags.join(",")}` : ""} ${preview(s.row.text)}`);
     }
   } catch (e) {
