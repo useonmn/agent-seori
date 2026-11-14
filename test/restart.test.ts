@@ -8,8 +8,10 @@ import {
   LEAD_START_LINE, LEAD_START_WAIT_MS,
 } from "../src/cli.ts";
 import {
-  detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, restartLogPath, restartPidPath, restartScript, runningRestart,
+  detachWays, lanesARestartEnds, lanesRefusal, noDetachRefusal, pausedClosedLine, pausedLanesARestartCloses, restartLogPath,
+  restartPidPath, restartScript, runningRestart, startAgain,
 } from "../src/restart.ts";
+import { shq } from "../src/runtime/index.ts";
 import { MESSENGER_TOKEN_ENV } from "../src/runtime/hc/sessions.ts";
 import { BOOT_KIND, bootUnitInstalled, installBootUnit, unitCwd, unitDir, unitFile, unitName, writeUnits } from "../src/systemd.ts";
 import { liveRunners, recordPath } from "../src/down.ts";
@@ -98,10 +100,29 @@ describe("lanes a restart would end", () => {
   });
 
   test("the refusal names every key it would end and both ways on", () => {
-    const text = lanesRefusal([{ key: "api" }, { key: "tests" }], "seori");
+    const text = lanesRefusal([{ key: "api" }, { key: "tests" }], [], "seori");
     expect(text).toContain("2 working lane(s): api, tests");
     expect(text).toContain("--force");
     expect(text).toContain("seori start <key>");
+    expect(text).not.toContain("paused");
+  });
+
+  test("paused lanes never block, but the refusal names those it would also close", () => {
+    const lanes = [{ key: "api", status: "working" }, { key: "docs", status: "paused" }, { key: "ui", status: "ready" }];
+    expect(pausedLanesARestartCloses(lanes)).toEqual([{ key: "docs", status: "paused" }]);
+    const text = lanesRefusal(lanesARestartEnds(lanes), pausedLanesARestartCloses(lanes), "seori");
+    expect(text).toContain("would end 1 working lane(s): api");
+    expect(text).toContain("also close 1 paused lane(s), which do not block: docs");
+  });
+
+  test("a closed lane's way back is its own record: key, brief, cwd, and thread and Done line when it had them", () => {
+    const lane = { key: "docs", brief: "/h/briefs/docs.md", cwd: "/w/it's here" };
+    expect(startAgain(lane, "seori")).toBe(`seori start docs --brief '/h/briefs/docs.md' --cwd '/w/it'\\''s here'`);
+    expect(startAgain({ ...lane, thread: "slack:C1:2", done: "pr:merged" }, "seori")).toBe(
+      `seori start docs --brief '/h/briefs/docs.md' --cwd '/w/it'\\''s here' --thread 'slack:C1:2' --done 'pr:merged'`,
+    );
+    expect(pausedClosedLine(lane, "seori")).toStartWith("PAUSED-CLOSED docs: paused");
+    expect(pausedClosedLine(lane, "seori")).toEndWith(startAgain(lane, "seori"));
   });
 });
 
@@ -192,13 +213,27 @@ describe("the detached restart script", () => {
    * worker is nobody's child here, so its outcome is read where `--follow` reads it. The detach is whatever this host
    * offers (setsid on Linux, nohup on macOS): both must survive the pane that asked.
    */
-  async function runDetached(seori: string, env: Record<string, string>): Promise<number> {
+  async function runDetached(seori: string, env: Record<string, string>, notes?: readonly string[]): Promise<number> {
     const log = join(dir, "restart.log");
-    const script = restartScript({ home: dir, cwd: dir, seoriCmd: seori, log });
+    const script = restartScript({ home: dir, cwd: dir, seoriCmd: seori, log, ...(notes ? { notes } : {}) });
     const p = Bun.spawn([...firstWay(script, env)], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "ignore"] });
     await p.exited;
     return restartExit(log);
   }
+
+  test("the lanes a restart ends or closes are logged verbatim just before the down", async () => {
+    const seori = fakeSeori();
+    const pane = openPane();
+    const marker = join(dir, "pwned");
+    const notes = ["ENDED api (--force)", `PAUSED-CLOSED docs: ... seori start docs --brief '/h/b.md' --cwd '/w/$HOME $(touch ${marker})'`];
+    const env = { PATH: `${fakeHc(0)}:${process.env["PATH"]}`, PANE_PID: String(pane.pid), SEORI_HOME: dir };
+    expect(await runDetached(seori, env, notes)).toBe(0);
+    const lines = readFileSync(join(dir, "restart.log"), "utf8").split("\n");
+    const at = lines.indexOf(notes[0]!);
+    expect(at).toBeGreaterThan(lines.findIndex((l) => l.startsWith("RESTART_BEGIN")));
+    expect(lines.slice(at, at + 3)).toEqual([...notes, "CLOSED the caller pane"]);
+    expect(existsSync(marker)).toBe(false);
+  });
 
   test("the worker survives a SIGHUP mid-down, closes the pane, still runs the up, then reports its exit and ends", async () => {
     const gate = join(dir, "gate");
@@ -269,12 +304,15 @@ describe("the detached restart script", () => {
   test("no hc core means nothing is stopped and nothing opened", async () => {
     const seori = fakeSeori();
     const pane = openPane();
-    const code = await runDetached(seori, { PATH: `${fakeHc(5)}:${process.env["PATH"]}`, PANE_PID: String(pane.pid), SEORI_HOME: dir });
+    const code = await runDetached(seori, { PATH: `${fakeHc(5)}:${process.env["PATH"]}`, PANE_PID: String(pane.pid), SEORI_HOME: dir }, ["PAUSED-CLOSED docs"]);
     expect(code).not.toBe(0);
     expect(existsSync(join(dir, "calls.log"))).toBe(false);
     // No seori ran, so nothing could have closed the pane.
     expect(alive(pane.pid)).toBe(true);
-    expect(readFileSync(join(dir, "restart.log"), "utf8")).toContain("RESTART_FAILED hc (herdr-core) does not answer");
+    const log = readFileSync(join(dir, "restart.log"), "utf8");
+    expect(log).toContain("RESTART_FAILED hc (herdr-core) does not answer");
+    // Nothing was closed, so no lane is named as closed.
+    expect(log).not.toContain("PAUSED-CLOSED");
   });
 
   test("an up that fails ends the script non-zero with the reason", async () => {
@@ -657,7 +695,7 @@ describe("seori restart as a command", () => {
   test("refuses while a lane is working, naming the keys, and starts nothing", async () => {
     const { d, started } = home({ api: "working", docs: "paused" });
     const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
-    await expect(restart(d, undefined, false, () => {}, { spawn })).rejects.toThrow(/would end 1 working lane\(s\): api/);
+    await expect(restart(d, undefined, false, () => {}, { spawn })).rejects.toThrow(/would end 1 working lane\(s\): api.*also close 1 paused lane\(s\), which do not block: docs/);
     expect(started).toEqual([]);
   });
 
@@ -673,8 +711,26 @@ describe("seori restart as a command", () => {
     expect(started[0]!.argv.slice(0, 2)).toEqual(["setsid", "--fork"]);
     expect(started[0]!.argv.join(" ")).toContain("down all --keep-autostart");
     expect(lines.filter((l) => l.startsWith("ENDED ")).map((l) => l.split(" ")[1])).toEqual(["api", "tests"]);
+    expect(lines.filter((l) => l.startsWith("PAUSED-CLOSED ")).map((l) => l.split(" ")[1])).toEqual(["docs:"]);
     expect(lines.at(-1)).toContain("RESTARTING detached");
     expect(lines.at(-1)).toContain(join(d.store.root, "restart.log"));
+  });
+
+  test("paused lanes do not block; each is named with the command that resumes it, here and in the log", async () => {
+    const { d, started } = home({ docs: "paused", ui: "ready", wiki: "paused" });
+    const spawn = async (argv: readonly string[], cwd: string) => (started.push({ argv, cwd }), 0);
+    const lines: string[] = [];
+    expect(await restart(d, undefined, false, (l) => void lines.push(l), { spawn, has: (b) => b === "setsid" })).toBe(0);
+    const closed = lines.filter((l) => l.startsWith("PAUSED-CLOSED "));
+    expect(closed).toEqual([
+      pausedClosedLine({ key: "docs", brief: "/b.md", cwd: "/w" }, d.seoriCmd),
+      pausedClosedLine({ key: "wiki", brief: "/b.md", cwd: "/w" }, d.seoriCmd),
+    ]);
+    expect(closed[0]).toContain(`${d.seoriCmd} start docs --brief '/b.md' --cwd '/w'`);
+    // The worker logs the same lines, since the pane that printed them is closed by the down.
+    const script = started[0]!.argv.at(-1)!;
+    for (const line of closed) expect(script).toContain(`echo ${shq(line)}`);
+    expect(lines.at(-1)).toContain("RESTARTING detached");
   });
 
   test("a host that cannot detach refuses before anything is stopped", async () => {
