@@ -168,12 +168,13 @@ const namesId = (source: string, id: string): boolean => {
 
 /**
  * Records an owner request when it arrives. Title and source are each one line; the id is 8 random hex digits. A source
- * naming a message an earlier seori stored from someone other than the owner (channel.ts fromOther) is refused.
+ * naming a message from someone other than the owner (the `others` opt-in, or channel.ts fromOther from an earlier
+ * seori) is refused: the worklog and its threads are the owner's.
  */
 export function worklogAdd(root: string, title: string, source: string, now: number): WorklogItem {
   if (existsSync(join(root, "lead", "inbound.jsonl"))) {
-    const row = new Channel(root).inbound().findLast((r) => namesId(source, r.id) && fromOther(r));
-    if (row) throw new WorklogError(`${row.id} came from someone other than the owner; the worklog holds the owner's requests only`);
+    const row = new Channel(root).inbound().findLast((r) => namesId(source, r.id) && (fromOther(r) || (r.kind === "messenger" && r.notOwner === true)));
+    if (row) throw new WorklogError(`${row.id} came from someone other than the owner; the worklog holds the owner's requests only (log it against the owner's own message)`);
   }
   const known = new Set(worklogRead(root).items.map((item) => item.id));
   let id = randomBytes(4).toString("hex");

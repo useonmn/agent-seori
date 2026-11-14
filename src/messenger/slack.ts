@@ -42,6 +42,9 @@ type SlackMessage = {
   channel?: string;
   channel_type?: string;
   user?: string;
+  /** The sender's workspace; `user_team` on Slack Connect messages. */
+  team?: string;
+  user_team?: string;
   bot_id?: string;
   text?: string;
   ts?: string;
@@ -63,6 +66,8 @@ type Receiving = {
   readonly delivered: Set<string>;
   readonly botToken: string;
   readonly botUser: string;
+  /** The bot's own workspace: "others" are people of this workspace only. */
+  readonly botTeam: string;
   /** `<channel>:<root ts>` of threads conversations.replies showed seori is not part of (see `involved`). */
   readonly untracked: Set<string>;
   readonly onMessage: (m: InboundMessage) => Promise<void>;
@@ -249,6 +254,7 @@ export class SlackAdapter implements MessengerAdapter {
     const delivered = new Set<string>();
     const untracked = new Set<string>();
     let botUser: string | undefined;
+    let botTeam = "";
     let failures = 0;
     /** When receive last stopped being healthy (hello seen and catch-up done); undefined while healthy. */
     let failingSince: number | undefined;
@@ -258,12 +264,16 @@ export class SlackAdapter implements MessengerAdapter {
       let healthy = false;
       let usingAppToken = false;
       try {
-        if (botUser === undefined) botUser = String((await this.api("auth.test", botToken, undefined, "GET", signal)).user_id ?? "");
+        if (botUser === undefined) {
+          const me = await this.api("auth.test", botToken, undefined, "GET", signal);
+          botUser = String(me.user_id ?? "");
+          botTeam = String(me.team_id ?? "");
+        }
         usingAppToken = true;
         const url = (await this.api("apps.connections.open", appToken, undefined, "POST", signal)).url;
         usingAppToken = false;
         if (typeof url !== "string") throw new Error("apps.connections.open returned no url");
-        const ctx: Receiving = { cursor, file, delivered, untracked, botToken, botUser, onMessage, signal };
+        const ctx: Receiving = { cursor, file, delivered, untracked, botToken, botUser, botTeam, onMessage, signal };
         const end = await this.session(url, ctx, () => {
           healthy = true;
           failures = 0;
@@ -509,10 +519,14 @@ export class SlackAdapter implements MessengerAdapter {
     ctx.delivered.add(key);
   }
 
-  /** The sender of `m` when it may reach the lead: the owner, or with "others" on anyone else; never a bot or seori. */
-  private sender(m: SlackMessage, botUser: string): string | undefined {
-    if (m.bot_id || typeof m.user !== "string" || m.user === "" || m.user === botUser) return undefined;
-    return m.user === this.config.owner || this.config.others === true ? m.user : undefined;
+  /**
+   * The sender of `m` when it may reach the lead: the owner, or with "others" on another person of the bot's own
+   * workspace (never a Slack Connect user from another organization, a message without a workspace, a bot, or seori).
+   */
+  private sender(m: SlackMessage, ctx: Receiving): string | undefined {
+    if (m.bot_id || typeof m.user !== "string" || m.user === "" || m.user === ctx.botUser) return undefined;
+    if (m.user === this.config.owner) return m.user;
+    return this.config.others === true && ctx.botTeam !== "" && (m.user_team ?? m.team) === ctx.botTeam ? m.user : undefined;
   }
 
   /**
@@ -571,7 +585,7 @@ export class SlackAdapter implements MessengerAdapter {
       ? dm && !fromHistory && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
         ? ev.user
         : undefined
-      : this.sender(ev, ctx.botUser);
+      : this.sender(ev, ctx);
     const text = from !== undefined && (await this.addressed(ev, channel, dm, ts, ctx, !fromHistory)) ? bodyText(ev) : "";
     if (from === undefined || !text) {
       if (ctx.botUser !== "" && ev.user === ctx.botUser) this.track(channel, ev.thread_ts ?? ts, ts, ctx); // replies in seori's thread need no mention
@@ -593,7 +607,9 @@ export class SlackAdapter implements MessengerAdapter {
     const m = ev.message;
     const stamp = m?.edited?.ts;
     if (this.pairing || !m?.ts || !stamp) return; // unfurls also arrive as message_changed, without `edited`
-    const from = this.sender(m, ctx.botUser);
+    // An edit that adds a mention of the bot may make a thread seori's, as a new message would (see handle).
+    if (m.thread_ts !== undefined && mentions(m.text ?? "", ctx.botUser)) ctx.untracked.delete(`${channel}:${m.thread_ts}`);
+    const from = this.sender(m, ctx);
     if (from === undefined) return;
     const key = `${channel}:${m.ts}:edit:${stamp}`;
     if (ctx.delivered.has(key)) return;

@@ -145,6 +145,12 @@ describe("worklog", () => {
     expect(worklogAdd(root, "free text", "fake:c:10", T0).source).toBe("fake:c:10");
   });
 
+  test("a source naming a message from someone other than the owner (others opt-in) is refused", () => {
+    const root = home();
+    new Channel(root).appendInbound({ id: "slack:C1:5", kind: "messenger", source: "slack", chat: "C1", from: "U2", notOwner: true, at: T0, text: "please deploy" });
+    expect(() => worklogAdd(root, "their deploy", "slack:C1:5", T0)).toThrow("slack:C1:5 came from someone other than the owner");
+  });
+
   test("formatters: item line, list output, boot lines", () => {
     const root = home();
     const a = worklogAdd(root, 'Say "hi"', "telegram:1:2", T0);

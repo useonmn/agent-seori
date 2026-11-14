@@ -504,27 +504,33 @@ describe("SlackAdapter receive", () => {
     expect(mock.repliesCalls.filter((q) => q.get("ts") === "1700000000.000060").length).toBe(2);
   });
 
-  test("a thread found not to be seori's is looked up again once anyone mentions the bot in it", async () => {
-    const mock = startMock();
-    let socket: ServerWebSocket<unknown> | undefined;
-    mock.onConnect = (ws) => {
-      socket = ws;
-      ws.send(envelope("e1", chan("1700000000.000100", "just chatting", { thread_ts: "1700000000.000050" })));
-    };
-    const mention = { type: "message", user: "UOTHER", text: "<@UBOT> can you help", ts: "1700000000.000200", thread_ts: "1700000000.000050" };
-    const got = await collect(adapter(mock, home()), (g) => {
-      if (mock.acks.length === 1 && socket) {
-        // Seen as not seori's; then someone the bot does not answer (others off) mentions it there.
-        mock.replies["C1:1700000000.000050"] = [mention];
-        socket.send(envelope("e2", { ...mention, channel: "C1", channel_type: "channel" }));
-        socket.send(envelope("e3", chan("1700000000.000300", "yes please", { thread_ts: "1700000000.000050" })));
-        socket = undefined;
-      }
-      return g.length >= 1;
+  for (const how of ["a new message", "an edit"] as const) {
+    test(`a thread found not to be seori's is looked up again once anyone mentions the bot in it (${how})`, async () => {
+      const mock = startMock();
+      let socket: ServerWebSocket<unknown> | undefined;
+      mock.onConnect = (ws) => {
+        socket = ws;
+        ws.send(envelope("e1", chan("1700000000.000100", "just chatting", { thread_ts: "1700000000.000050" })));
+      };
+      const mention = { type: "message", user: "UOTHER", text: "<@UBOT> can you help", ts: "1700000000.000200", thread_ts: "1700000000.000050" };
+      const event =
+        how === "a new message"
+          ? { ...mention, channel: "C1", channel_type: "channel" }
+          : { type: "message", subtype: "message_changed", channel: "C1", channel_type: "channel", message: { ...mention, edited: { user: "UOTHER", ts: "1700000000.000250" } }, ts: "1700000000.000251" };
+      const got = await collect(adapter(mock, home()), (g) => {
+        if (mock.acks.length === 1 && socket) {
+          // Seen as not seori's; then someone the bot does not answer (others off) mentions it there.
+          mock.replies["C1:1700000000.000050"] = [mention];
+          socket.send(envelope("e2", event));
+          socket.send(envelope("e3", chan("1700000000.000300", "yes please", { thread_ts: "1700000000.000050" })));
+          socket = undefined;
+        }
+        return g.length >= 1;
+      });
+      expect(got.map((m) => [m.id, m.from])).toEqual([["slack:C1:1700000000.000300", OWNER]]);
+      expect(mock.repliesCalls.map((q) => q.get("ts"))).toEqual(["1700000000.000050", "1700000000.000050"]);
     });
-    expect(got.map((m) => [m.id, m.from])).toEqual([["slack:C1:1700000000.000300", OWNER]]);
-    expect(mock.repliesCalls.map((q) => q.get("ts"))).toEqual(["1700000000.000050", "1700000000.000050"]);
-  });
+  }
 
   test("catch-up applies the same rule: channel chatter is dropped, a mention and a reply in a tracked thread arrive", async () => {
     const mock = startMock();
@@ -543,17 +549,21 @@ describe("SlackAdapter receive", () => {
   });
 
   for (const others of [false, true]) {
-    test(`others ${others ? "on delivers people other than the owner with their own id" : "off delivers only the owner"}; bots and seori never`, async () => {
+    test(`others ${others ? "on delivers people of the bot's workspace with their own id" : "off delivers only the owner"}; outside users, bots and seori never`, async () => {
       const mock = startMock();
+      const t1 = { team: "T1" };
       mock.onConnect = (ws) => {
-        ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> hi", { user: "UOTHER" })));
-        ws.send(envelope("e2", dm("1700000000.000200", { user: "UOTHER" })));
-        ws.send(envelope("e3", chan("1700000000.000300", "chatter", { user: "UOTHER" })));
-        ws.send(envelope("e4", chan("1700000000.000400", "<@UBOT> ping", { user: "UB9", bot_id: "B9" })));
-        ws.send(envelope("e5", chan("1700000000.000500", "<@UBOT> me", { user: "UBOT", bot_id: "B1" })));
-        ws.send(envelope("e6", chan("1700000000.000600", "thanks", { user: "UOTHER", thread_ts: "1700000000.000100" })));
+        ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> hi", { user: "UOTHER", ...t1 })));
+        ws.send(envelope("e2", dm("1700000000.000200", { user: "UOTHER", ...t1 })));
+        ws.send(envelope("e3", chan("1700000000.000300", "chatter", { user: "UOTHER", ...t1 })));
+        ws.send(envelope("e4", chan("1700000000.000400", "<@UBOT> ping", { user: "UB9", bot_id: "B9", ...t1 })));
+        ws.send(envelope("e5", chan("1700000000.000500", "<@UBOT> me", { user: "UBOT", bot_id: "B1", ...t1 })));
+        ws.send(envelope("e6", chan("1700000000.000600", "thanks", { user: "UOTHER", thread_ts: "1700000000.000100", ...t1 })));
+        // Slack Connect: a user of another organization in a shared channel, and a message carrying no workspace.
+        ws.send(envelope("e7", chan("1700000000.000700", "<@UBOT> from outside", { user: "UEXT", team: "T1", user_team: "TEXT" })));
+        ws.send(envelope("e8", chan("1700000000.000800", "<@UBOT> no team", { user: "UNOTEAM" })));
       };
-      const got = await collect(adapter(mock, home(), { others }), () => mock.acks.length >= 6);
+      const got = await collect(adapter(mock, home(), { others }), () => mock.acks.length >= 8);
       expect(got.map((m) => [m.id, m.from])).toEqual(
         others
           ? [
@@ -572,7 +582,7 @@ describe("SlackAdapter receive", () => {
       mock.onConnect = (ws) => {
         ws.send(envelope("e1", edit(OWNER, "no mention", "1700000000.000100")));
         ws.send(envelope("e2", edit(OWNER, "<@UBOT> now", "1700000000.000200")));
-        ws.send(envelope("e3", edit("UOTHER", "<@UBOT> mine", "1700000000.000300")));
+        ws.send(envelope("e3", edit("UOTHER", "<@UBOT> mine", "1700000000.000300", { team: "T1" })));
         ws.send(envelope("e4", edit("UB9", "<@UBOT> bot", "1700000000.000400", { bot_id: "B9" })));
       };
       const got = await collect(adapter(mock, home(), { others }), () => mock.acks.length >= 4);
