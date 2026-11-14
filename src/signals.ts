@@ -415,7 +415,7 @@ export async function checkSignals(d: Deps, lane: Lane, io: SignalIo = defaultSi
         return `${p} -> ${e instanceof Error ? e.message : String(e)}`;
       }
       try {
-        const why = await signalFailure(d, sig, lane.cwd, io);
+        const why = await signalFailure(d, sig, lane.worktree ?? lane.cwd, io);
         return why === undefined ? undefined : `${p} -> ${why}`;
       } catch (e) {
         return `${p} -> ${short(e instanceof Error ? e.message : String(e))}`;

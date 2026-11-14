@@ -262,7 +262,7 @@ function mark(d: Deps, key: string, change: (lane: Lane) => void, log?: { kind: 
  * - working/waiting lanes: each ceiling (lane.ceilings ?? config defaults) is reported once when reached, as
  *   `[BLOCKED <key>] ...` with a "blocked" log entry; a raised limit can be reported again. Tokens and cost are read
  *   only when such a ceiling is set; an unknown reading is shown once as a `usage-unknown` event.
- * - working lanes that hc reads working: no report (lastActivityAt) and no file change in lane.cwd (see
+ * - working lanes that hc reads working: no report (lastActivityAt) and no file change in lane.worktree ?? lane.cwd (see
  *   fileActivity) for config.supervision.hungAfterMin is a stall, reported once per stretch as `[STALLED <key>] ...`
  *   with a "stalled" log entry. A waiting lane said it waits, so its quiet is no stall (as it gets no nudge).
  * - paused lanes: no ceiling or stall report; a pane read working on two passes in a row is reported once per working
@@ -352,7 +352,7 @@ async function ceilingCheck(d: Deps, lane: Lane, config: SeoriConfig, events: Du
 
 async function stallCheck(d: Deps, lane: Lane, config: SeoriConfig, activity: ActivityState, events: DutyEvent[]): Promise<void> {
   const now = d.now();
-  const files = await fileActivity(d, lane.cwd, [...config.supervision.activityPaths, ...(lane.activityPaths ?? [])]);
+  const files = await fileActivity(d, lane.worktree ?? lane.cwd, [...config.supervision.activityPaths, ...(lane.activityPaths ?? [])]);
   const before = activity[lane.key];
   const changedAt = before === undefined ? undefined : before.fingerprint !== files.fingerprint ? now : before.changedAt;
   activity[lane.key] = { fingerprint: files.fingerprint, ...(changedAt !== undefined ? { changedAt } : {}) };
