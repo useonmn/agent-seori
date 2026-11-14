@@ -405,7 +405,7 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   if (opts.model !== undefined && !opts.model.trim()) throw new Refusal("--model needs a model name");
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
   if (workflow !== undefined) await requireWorkflowExtension(d, workflow, opts.workflow === undefined);
-  const cwd = resolve(opts.cwd ?? process.cwd());
+  const cwd = resolve(opts.cwd ?? loadConfig(d.store.root).defaultCwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
   const closeAfterMin = doneLine === undefined ? 0 : loadConfig(d.store.root).closeAfterMin;
   const footer = prompt("lane-footer.md", { key, seori: d.seoriCmd, close_rule: closeRule(d.seoriCmd, key, doneLine, closeAfterMin) });

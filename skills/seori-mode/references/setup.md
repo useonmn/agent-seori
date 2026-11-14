@@ -80,6 +80,7 @@ Tell the owner the lead is up and which terminal it is in.
 Write it only with the owner's go, and only the fields they want changed.
 
 - `workflow`: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` starts every lane under that omp-ulw workflow (below); leave it out for plain omp goal mode. `seori start --workflow <W>|none` picks it per lane.
+- `defaultCwd`: the folder a lane starts in when `seori start`, `seori backlog add` or `seori backlog import` gets no `--cwd` (an absolute path or `~/...`); leave it out to start lanes where the command runs.
 
 ### Optional: omp-ulw
 

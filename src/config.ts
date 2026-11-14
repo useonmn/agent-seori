@@ -1,6 +1,7 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import type { Ceilings } from "./store.ts";
 import { isWorkflow, type Workflow, WORKFLOWS } from "./workflow.ts";
 
@@ -57,6 +58,8 @@ export type SeoriConfig = {
   readonly heavy: { readonly slots: number; readonly maxLoadPct: number };
   /** Every lane's workflow (src/workflow.ts) unless `seori start --workflow` says otherwise; unset: stock omp goal mode. */
   readonly workflow?: Workflow;
+  /** Where a lane starts when `seori start` or `seori backlog add` gets no `--cwd`, `~/` expanded; unset: the folder the command runs in. */
+  readonly defaultCwd?: string;
 };
 
 /** The name of an instance whose config.json sets none: the first seori on a PC keeps the label it always had. */
@@ -128,7 +131,7 @@ export function loadConfig(root: string): SeoriConfig {
   if ("runtime" in raw && raw["runtime"] !== "hc") {
     throw new ConfigError(`${path}: "runtime" ${JSON.stringify(raw["runtime"])} is not supported; seori runs on hc only: remove "runtime" from config.json`);
   }
-  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "talkWithOthers", "agentTurnLimit", "trusted"], path);
+  only(raw, ["name", "agent", "runtime", "repoIdentities", "closeAfterMin", "progressEveryMin", "blockedPromptMin", "startupWaitSeconds", "supervision", "guard", "heavy", "hooks", "workflow", "defaultCwd", "talkWithOthers", "agentTurnLimit", "trusted"], path);
   const D = DEFAULT_CONFIG;
 
   const name = raw["name"] ?? D.name;
@@ -167,6 +170,12 @@ export function loadConfig(root: string): SeoriConfig {
     throw new ConfigError(`${path}: workflow must be one of ${WORKFLOWS.map((w) => JSON.stringify(w)).join(", ")} (omp-ulw workflows run under omp's goal), got ${JSON.stringify(workflow)}`);
   }
 
+  const defaultCwd = raw["defaultCwd"];
+  const fromHome = typeof defaultCwd === "string" && (defaultCwd === "~" || defaultCwd.startsWith("~/"));
+  if (defaultCwd !== undefined && !(fromHome || (typeof defaultCwd === "string" && isAbsolute(defaultCwd)))) {
+    throw new ConfigError(`${path}: defaultCwd must be an absolute path or start with ~/, got ${JSON.stringify(defaultCwd)}`);
+  }
+
   const heavy = raw["heavy"] ?? {};
   if (!isObj(heavy)) throw new ConfigError(`${path}: heavy must be an object`);
   only(heavy, ["slots", "maxLoadPct"], `${path} heavy`);
@@ -198,6 +207,7 @@ export function loadConfig(root: string): SeoriConfig {
     },
     heavy: { slots, maxLoadPct: num(heavy, "maxLoadPct", `${path} heavy`, D.heavy.maxLoadPct) },
     ...(workflow !== undefined ? { workflow } : {}),
+    ...(typeof defaultCwd === "string" ? { defaultCwd: fromHome ? join(homedir(), defaultCwd.slice(1)) : defaultCwd } : {}),
   };
 }
 

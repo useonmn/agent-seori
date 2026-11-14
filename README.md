@@ -574,6 +574,7 @@ Before it opens a pane, `seori start` checks `omp plugin list --json` and refuse
 | `progressEveryMin` | `null` | a lane with `--thread` gets its newest report posted at most this often (minutes); `null` is off, `0` is refused |
 | `blockedPromptMin` | `10` | minutes a lane's pane may show a dialog (`blocked`) before the lead gets one `[BLOCKED-PROMPT <key>]`; fractions work (`0.5` is 30 s) |
 | `workflow` | unset | every lane's workflow unless `seori start --workflow` says otherwise: `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"` or `"ulw-execute"` runs lanes under that omp-ulw workflow; unset is plain omp goal mode. See [Workflows](#workflows) |
+| `defaultCwd` | unset | where a lane starts when `seori start`, `seori backlog add` or `seori backlog import` gets no `--cwd` (so also the hourly loop's items): an absolute path, or `~/...` for one under your home. Unset: the folder the command runs in, which for the lead is the folder `seori up` opened it in (`$SEORI_HOME` unless `--cwd`) |
 | `startupWaitSeconds` | `180` | how long `seori start` watches a new lane for a startup verdict (first check 20 s after the kickoff, then every 10 s); see [How a lane starts](#how-a-lane-starts) |
 | `supervision.defaults.wallMinutes` | `null` | wall-clock ceiling per lane, in minutes; `null` is off |
 | `supervision.defaults.tokens` | `null` | token ceiling per lane; `null` is off |

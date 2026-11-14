@@ -4,6 +4,7 @@
 import { appendFileSync, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { loadConfig } from "./config.ts";
 import { KEY_RE, Refusal, reservedKey, startLane, tellLead, type Deps } from "./harness.ts";
 import { bootCutoff, type Item, type Lane, type LoopRun } from "./store.ts";
 import { refText } from "./refs.ts";
@@ -43,7 +44,7 @@ export function backlogAdd(
   copyFileSync(briefFile, d.store.itemBrief(id));
   const now = d.now();
   const item: Item = {
-    id, title: opts.title ?? id, brief: d.store.itemBrief(id), cwd: resolve(opts.cwd ?? process.cwd()), priority,
+    id, title: opts.title ?? id, brief: d.store.itemBrief(id), cwd: resolve(opts.cwd ?? loadConfig(d.store.root).defaultCwd ?? process.cwd()), priority,
     status: "open", attempts: 0, createdAt: now, updatedAt: now, log: [],
     ...(opts.decision ? { decision: opts.decision } : {}),
     ...(opts.source ? { source: opts.source } : {}),

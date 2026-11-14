@@ -567,6 +567,7 @@ seori watch stop dev
 | `progressEveryMin` | `null` | `--thread`가 있는 레인의 최신 보고를 최대 몇 분마다 올리는지. `null`은 끔, `0`은 거절 |
 | `blockedPromptMin` | `10` | 레인 창에 대화 상자(`blocked`)가 몇 분 열려 있으면 리드에게 `[BLOCKED-PROMPT <key>]`를 한 번 보내는지. 소수도 됩니다(`0.5`는 30초) |
 | `workflow` | 없음 | `seori start --workflow`로 따로 정하지 않은 모든 레인의 워크플로입니다. `"ulw"`, `"mass-ulw"`, `"ulw-research"`, `"ulw-plan"`, `"ulw-loop"`, `"ulw-execute"` 가운데 하나면 레인을 그 omp-ulw 워크플로로 돌립니다. 없으면 omp 기본 목표 모드입니다. [워크플로](#워크플로) 참고 |
+| `defaultCwd` | 없음 | `seori start`, `seori backlog add`, `seori backlog import`에 `--cwd`가 없을 때 레인이 시작하는 폴더입니다(그래서 시간 단위 루프의 항목에도 적용됩니다). 절대 경로나 홈 아래를 뜻하는 `~/...`로 씁니다. 없으면 명령을 실행한 폴더이고, 리드에게는 `seori up`이 리드를 연 폴더(`--cwd`가 없으면 `$SEORI_HOME`)입니다 |
 | `startupWaitSeconds` | `180` | `seori start`가 새 레인의 시작 판정을 위해 몇 초까지 지켜보는지(시작 명령 20초 뒤 첫 확인, 그 뒤 10초마다). [레인이 시작되는 방법](#레인이-시작되는-방법) 참고 |
 | `supervision.defaults.wallMinutes` | `null` | 레인마다 걸린 시간 한도(분). `null`은 끔 |
 | `supervision.defaults.tokens` | `null` | 레인마다 토큰 한도. `null`은 끔 |
