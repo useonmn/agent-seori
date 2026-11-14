@@ -19,7 +19,7 @@ import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClai
 import { guardTick } from "./guard.ts";
 import { agentGone, panesTick } from "./panes.ts";
 import { progressTick } from "./progress.ts";
-import { superviseTick } from "./supervision.ts";
+import { recordCloseCost, superviseTick } from "./supervision.ts";
 import { checkSignals, parseDone } from "./signals.ts";
 import { GLOBAL_LESSONS_HEADING, LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
@@ -430,6 +430,12 @@ export async function openLaneSession(d: Deps, key: string, briefFile: string, o
   const source = readFileSync(briefFile, "utf8").replace(LESSONS_RE, "").replace(FOOTER_RE, "").trimEnd();
   await Bun.write(briefPath, `${renderLessons(lessons.lessons)}${source}\n\n${footer}`);
 
+  // The ready lane this start takes back is closed by it: what its session spent is recorded, as `seori done` would.
+  if (existing?.status === "ready") {
+    await recordCloseCost(d, existing).catch((e: unknown) => {
+      process.stderr.write(`seori: lane ${key}: cost not recorded (${e instanceof Error ? e.message : String(e)})\n`);
+    });
+  }
   const env = { SEORI_LANE: key, ...paneEnv(d.store.root), ...d.agent.agentEnv(d.store.root) };
   const rt = d.runtime;
   const ref = await rt.create({ name: key, cwd, env, role: "lane", group: loadConfig(d.store.root).name, home: d.store.root });

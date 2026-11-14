@@ -514,7 +514,7 @@ describe("duty loop", () => {
     expect(told).toEndWith(`to resume it: ${startAgain(d.store.lane("busy")!, d.seoriCmd)}`);
   });
 
-  test("start takes back a ready lane's key once its pane is gone (a restart closed it), and only then", async () => {
+  test("start takes back a ready lane's key once its pane is gone (a restart closed it), and only then, recording its spend", async () => {
     const { w, d, brief } = setup();
     const first = await startLane(d, "busy", brief, {});
     d.store.saveLane({ ...d.store.lane("busy")!, status: "ready" });
@@ -523,6 +523,9 @@ describe("duty loop", () => {
     const again = await startLane(d, "busy", brief, {});
     expect(again.paneId).not.toBe(first.paneId);
     expect(d.store.lane("busy")).toMatchObject({ status: "working", paneId: again.paneId });
+    // The ready session is closed by the take-back, so its spend goes to the ledger as `seori done` would record it.
+    const ledger = readFileSync(join(d.store.root, "cost.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { closeKey: string });
+    expect(ledger.map((r) => r.closeKey)).toEqual([`busy@${first.createdAt}`]);
   });
 
   /** Runs `during` on disk while dutyTick awaits the lane pane's status read, as a pause or close from another process would. */
