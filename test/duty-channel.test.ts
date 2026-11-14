@@ -155,19 +155,24 @@ describe("duty channel alerts", () => {
     ]);
   });
 
-  test("the owner's follow-up in a thread under seori's own message is the owner's alone only when that message answered a message of the owner's alone", async () => {
+  test("the owner's follow-up in a thread under seori's own message is the owner's alone only when that message answered only messages of the owner's alone", async () => {
     const { w, d, root, channel } = setup();
-    // seori answered the owner's top-level m1 top-level (its message r1), and someone else's s1 with r2.
+    // seori answered the owner's top-level m1 top-level (its message r1), someone else's s1 with r2, and the owner's m3
+    // together with s1 in one reply r3 (`msg send --reply-to m3,s1`).
     channel.appendInbound({ id: "fake:c1:s1", kind: "messenger", source: "fake", chat: "c1", from: "u2", notOwner: true, at: w.clock, text: "@seori hi" });
+    channel.appendInbound({ id: "fake:c1:m3", kind: "messenger", source: "fake", chat: "c1", from: "u1", at: w.clock, text: "@seori and this" });
     channel.appendLedger({ id: "fake:c1:m1", ev: "replied", at: w.clock, messageId: "r1" });
     channel.appendLedger({ id: "fake:c1:s1", ev: "replied", at: w.clock, messageId: "r2" });
+    channel.appendLedger({ id: "fake:c1:m3", ev: "replied", at: w.clock, messageId: "r3" });
+    channel.appendLedger({ id: "fake:c1:s1", ev: "replied", at: w.clock, messageId: "r3" });
     const under = (id: string, root: string) =>
       channel.appendInbound({ id: `fake:c1:${id}`, kind: "messenger", source: "fake", chat: "c1", thread: root, root: `fake:c1:${root}`, rootBySeori: true, from: "u1", at: w.clock, text: "and then" });
     under("f1", "r1"); // under seori's answer to the owner
     under("f2", "r2"); // under seori's answer to someone else
     under("f3", "r9"); // under a seori message the ledger has no reply for (a notice, an alert)
+    under("f5", "r3"); // under one reply that answered the owner and someone else
     channel.appendInbound({ id: "fake:c1:f4", kind: "messenger", source: "fake", chat: "c1", thread: "r1", root: "fake:c1:r1", rootBySeori: true, from: "u2", notOwner: true, at: w.clock, text: "me too" });
-    expect([...channel.othersIds()].sort()).toEqual(["fake:c1:f2", "fake:c1:f3", "fake:c1:f4", "fake:c1:s1"]);
+    expect([...channel.othersIds()].sort()).toEqual(["fake:c1:f2", "fake:c1:f3", "fake:c1:f4", "fake:c1:f5", "fake:c1:s1"]);
     expect(worklogAdd(root, "and then", "fake:c1:f1", w.clock).source).toBe("fake:c1:f1");
     const brief = join(root, "brief.md");
     writeFileSync(brief, "Then.");

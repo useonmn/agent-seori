@@ -58,7 +58,7 @@ const nonOwner = (row: InboundRow): boolean => row.kind === "messenger" && (row.
  * The ids that are not the owner's alone, denied by default: everything except the owner's own messages that are a DM, a
  * top-level message or a thread's first message (no `root`), a reply in a thread whose first message the platform
  * says the owner wrote (`rootByOwner`), or a reply in a thread whose first message the platform says seori wrote
- * (`rootBySeori`) when the ledger shows that message was seori's reply to a message of the owner's alone (on Slack seori
+ * (`rootBySeori`) when the ledger shows that message answered only messages of the owner's alone (on Slack seori
  * answers a top-level message top-level, so the owner's follow-up thread hangs under seori's answer). A reply under
  * someone else's message, or under one of unknown author, is shared: whoever else is in that thread would see what is
  * posted there. Nothing is inferred from which rows happen to be stored.
@@ -67,16 +67,19 @@ function othersOf(rows: readonly InboundRow[], ledger: () => readonly LedgerEven
   const messengers = rows.filter((row): row is MessengerRow => row.kind === "messenger");
   const plain = (row: MessengerRow): boolean => !nonOwner(row) && (row.root === undefined || row.rootByOwner === true);
   let answers: Set<string> | undefined;
-  /** Whether `root` is `<source>:<chat>:<message id>` of a reply seori sent to a message of the owner's alone. */
+  /** Whether `root` is `<source>:<chat>:<message id>` of a reply seori sent only to messages of the owner's alone. */
   const answersOwner = (root: string): boolean => {
     if (answers === undefined) {
-      const owners = new Map(messengers.filter(plain).map((row) => [row.id, row]));
-      answers = new Set();
+      const byId = new Map(messengers.map((row) => [row.id, row]));
+      const owner = new Set<string>();
+      // One reply may answer several ids (`msg send --reply-to a,b`): answering anyone else as well makes it shared.
+      const shared = new Set<string>();
       for (const e of ledger()) {
         if (e.ev !== "replied") continue;
-        const row = owners.get(e.id);
-        if (row) answers.add(`${row.source}:${row.chat}:${e.messageId}`);
+        const row = byId.get(e.id);
+        if (row) (plain(row) ? owner : shared).add(`${row.source}:${row.chat}:${e.messageId}`);
       }
+      answers = new Set([...owner].filter((key) => !shared.has(key)));
     }
     return answers.has(root);
   };
