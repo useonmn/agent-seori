@@ -67,16 +67,17 @@ env_prefix=""
 [ "$src" = "$home/src" ] || env_prefix="$(cat_words "SEORI_SRC=$(q "$src")" "$env_prefix")"
 [ "$home" = "$HOME/.seori" ] || env_prefix="$(cat_words "SEORI_HOME=$(q "$home")" "$env_prefix")"
 [ "$skills" = "$HOME/.omp/agent/skills" ] || env_prefix="$(cat_words "SKILLS_DIR=$(q "$skills")" "$env_prefix")"
-# `getent` is not on macOS, and awk over a missing /etc/passwd can fail: under `set -o pipefail` a missing command makes
-# the whole pipeline exit 127, which would end the script before any remedy. Each source is therefore checked first, and
-# an empty answer just skips the HOME-differs check below.
-login_home=""
-if command -v getent >/dev/null 2>&1; then
-  login_home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)" || login_home=""
-fi
-if [ -z "$login_home" ] && [ -r /etc/passwd ]; then
-  login_home="$(awk -F: -v u="$(id -u)" '$3==u{print $6; exit}' /etc/passwd 2>/dev/null)" || login_home=""
-fi
+# The login home comes from the account database, never from re-reading text through the shell: `eval` on a user name
+# such as `o'brien` is code, not a path. `getent` covers every NSS source on Linux; macOS has no `getent` and keeps
+# login accounts in Directory Services, not /etc/passwd, so `dscl` reads it there (its value is on the next line when
+# it contains a space); awk over /etc/passwd covers the rest. Any of them may be missing or fail, which under
+# `set -euo pipefail` would end the run, so each may fail and an empty result just skips the HOME-differs check.
+login_home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)" || login_home=""
+# awk reads to the end instead of `exit`ing on the match, so dscl never takes a SIGPIPE that pipefail would report.
+[ -n "$login_home" ] || login_home="$(dscl /Search -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null |
+  awk '!found && sub(/^NFSHomeDirectory: ?/, "") { found = 1; if ($0 != "") { print; done = 1 }; next }
+       found && !done { sub(/^ /, ""); print; done = 1 }')" || login_home=""
+[ -n "$login_home" ] || login_home="$(awk -F: -v u="$(id -u)" '$3==u{print $6; exit}' /etc/passwd 2>/dev/null)" || login_home=""
 [ -z "$login_home" ] || [ "$HOME" = "$login_home" ] || env_prefix="$(cat_words "HOME=$(q "$HOME")" "$env_prefix")"
 [ -z "${BUN_INSTALL:-}" ] || env_prefix="$(cat_words "BUN_INSTALL=$(q "$BUN_INSTALL")" "$env_prefix")"
 

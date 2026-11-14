@@ -95,7 +95,7 @@ describe("install.sh and a checkout you develop in", () => {
    * has to: a plain path appears as `SEORI_SRC=/tmp/x/dev`. Both the quoted and the bare form are accepted.
    */
   const remedyField = (line: string, name: string) =>
-    line.match(new RegExp(`${name}=(?:"([^"]+)"|(\\S+))`))?.slice(1).find((v) => v !== undefined);
+    line.match(new RegExp(`(?:^|\\s)${name}=(?:"([^"]+)"|(\\S+))`))?.slice(1).find((v) => v !== undefined);
 
   /**
    * The value a shell would see for `NAME` in a printed remedy. `printf %q` escapes metacharacters (`dev\$\(touch\ …`),
@@ -208,8 +208,32 @@ describe("install.sh and a checkout you develop in", () => {
     expect(samePath(remedyField(remedy!, "SKILLS_DIR"), join(root, "skills"))).toBe(true);
     expect(samePath(remedy!.split("bash ")[1]!.replace(/"/g, ""), INSTALL)).toBe(true);
     expect(remedy).toContain("SEORI_NO_PULL=1");
+    // HOME is the temp one, not the login home the account database names, so the remedy carries it.
+    expect(samePath(remedyField(remedy!, "HOME"), join(root, "home"))).toBe(true);
     expect(r.err).toContain("pull --rebase --autostash");
     expect(readFileSync(join(dev, "tracked.txt"), "utf8")).toBe("edited\n");
+  });
+
+  // The login-home lookup is optional: with getent, dscl and awk all failing as a missing command does (macOS has no
+  // getent; a minimal system may have none of them), the run must not die under `set -euo pipefail`. It skips only the
+  // HOME-differs check and still refuses with the other remedies intact.
+  test("no way to read the login home: the refusal still runs, its remedy just leaves HOME out", () => {
+    const { root, upstream, dev, git } = checkout();
+    writeFileSync(join(dev, "tracked.txt"), "edited\n");
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    git(upstream, "commit", "--quiet", "-am", "two");
+    const stubs = join(root, "stubs");
+    mkdirSync(stubs);
+    for (const cmd of ["getent", "dscl", "awk"]) writeFileSync(join(stubs, cmd), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+
+    const r = install(dev, root, { PATH: `${stubs}:${process.env.PATH ?? ""}` });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(`${realpathSync(dev)} has local work and upstream has commits it does not, so install.sh did not pull:`);
+    const remedy = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
+    expect(remedy).toBeDefined();
+    expect(remedyField(remedy!, "HOME")).toBeUndefined();
+    expect(samePath(remedyField(remedy!, "SEORI_SRC"), dev)).toBe(true);
+    expect(samePath(remedyField(remedy!, "BUN_INSTALL"), join(root, "bun"))).toBe(true);
   });
 
   // The ordering guarantee, pinned. A merge-first install.sh fast-forwards cleanly here — the edit is in a file upstream
