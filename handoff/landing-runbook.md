@@ -1,10 +1,12 @@
-CURRENT HEADS at handoff (2026-11-14 12:06 KST), superseding the frozen state below:
-  #75 install.sh dev workflow — branch `home-split-docs`, head `ed28baa` (WIP checkpoint, review round 4 fixes in progress)
-  #76 restart recovery       — branch `feat/restart-autorestart`, head `6367cdf` (WIP checkpoint, hc-start hook included)
-  #77 progress posts off     — branch `progress-every-min-off`, head `0e1367c` (WIP checkpoint, this runbook's fixes committed)
+CURRENT HEADS (2026-11-14 12:30 KST), superseding the frozen state below:
+  #75 install.sh dev workflow — branch `home-split-docs`, head `c42c544` (all round-four findings fixed: one escape
+      path q()/cat_words for every remedy; a metacharacter test that pastes all three remedies and proves nothing runs
+      from the path; home/skills resolved; HOME/BUN_INSTALL carried. CI 3/3 green. NOT yet reviewed at this head.)
+  #76 restart recovery       — branch `feat/restart-autorestart`, head `6367cdf` (WIP checkpoint; hc-start hook included)
+  #77 progress posts off     — branch `progress-every-min-off`, head `575fde1` (WIP checkpoint + this handoff/ dir)
 The owner stopped all three lanes and may continue on another machine. Lanes are paused, the duty and hourly loops are
-stopped, and the messenger daemon is left running. Resume with `seori resume <key>` per lane, or start fresh lanes from
-these heads.
+stopped, and the messenger daemon is left running (it receives, nothing processes it). Resume with `seori resume <key>`
+per lane, or start fresh lanes from these heads.
 
 
 # progress-off landing runbook
