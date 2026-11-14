@@ -725,7 +725,8 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       const now = d.now();
       // Re-read: a pause, report, ready or done may have landed while the pane was read (or an earlier lane nudged).
       const lane = d.store.lane(listed.key);
-      if (!dutyOwned(lane)) continue;
+      // A start that took the key back meanwhile saved a new session's record: the pane read was the old one's.
+      if (!dutyOwned(lane) || !sameSession(lane.sessionRef, listed.sessionRef)) continue;
       if (st === "gone") {
         const lost = updateDutyLane(d, lane.key, (l) => {
           l.status = "lost";

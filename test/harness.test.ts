@@ -790,6 +790,40 @@ describe("duty loop", () => {
     expect(d.store.lane("busy")!.status).toBe("done");
     expect(lead.received.some((m) => m.includes("[LOST busy]"))).toBe(false);
   });
+
+  test("a lane started again while dutyTick reads its old gone pane keeps the new session's record", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "busy", brief, {});
+    w.panes.delete(lane.paneId);
+    w.addPane("t9", "working");
+    duringStatusRead(d, lane.paneId, () => {
+      // `seori start busy` took the key back from another process meanwhile.
+      d.store.saveLane({ ...d.store.lane("busy")!, sessionRef: paneRef("t9"), paneId: "t9", createdAt: w.clock + 1 });
+    });
+    expect((await dutyTick(d)).filter((e) => e.lane === "busy")).toEqual([]);
+    expect(d.store.lane("busy")).toMatchObject({ status: "working", paneId: "t9" });
+    expect(lead.received.some((m) => m.includes("[LOST busy]"))).toBe(false);
+  });
+
+  test("a paused lane started again while duty reads its old gone pane keeps the new session's record", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "held", brief, {});
+    d.store.saveLane({ ...d.store.lane("held")!, status: "paused", pausedFrom: "working" });
+    w.panes.delete(lane.paneId);
+    w.addPane("t9", "working");
+    const rt = d.runtime;
+    const status = rt.status.bind(rt);
+    rt.status = async (ref) => {
+      const read = await status(ref);
+      if (ref.id === lane.paneId && d.store.lane("held")!.paneId === lane.paneId) {
+        d.store.saveLane({ ...d.store.lane("held")!, status: "working", sessionRef: paneRef("t9"), paneId: "t9", createdAt: w.clock + 1 });
+      }
+      return read;
+    };
+    await dutyTick(d);
+    expect(d.store.lane("held")).toMatchObject({ status: "working", paneId: "t9" });
+    expect(lead.received.some((m) => m.includes("[LOST held]"))).toBe(false);
+  });
 });
 
 describe("review + merge gate", () => {
