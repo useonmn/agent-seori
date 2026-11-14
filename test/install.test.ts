@@ -69,6 +69,24 @@ describe("install.sh and a checkout you develop in", () => {
   const INSTALL = join(import.meta.dir, "..", "install.sh");
   // The fixture's git must not inherit this host's config: a developer with `commit.gpgsign = true`, a signing key that
   // wants a pinentry, or a `core.hooksPath` full of enforced hooks would fail every commit here and red the whole block.
+
+  /**
+   * The same directory, whichever form the path is written in. install.sh resolves what it can with `cd … pwd -P`, and
+   * the two sides of an assertion can still differ: on macOS /var is a symlink to /private/var (and TMPDIR lives under
+   * it), while a hand-built expected path keeps the form it was built from. Resolve the longest existing prefix on each
+   * side and compare that plus the remainder, which also works for directories that do not exist yet.
+   */
+  const samePath = (a: string, b: string) => {
+    const norm = (p: string) => {
+      const parts = p.split("/").filter(Boolean);
+      for (let n = parts.length; n > 0; n--) {
+        const head = "/" + parts.slice(0, n).join("/");
+        if (existsSync(head)) return realpathSync(head) + "/" + parts.slice(n).join("/");
+      }
+      return p;
+    };
+    return norm(a) === norm(b);
+  };
   const gitEnv = {
     GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
@@ -157,11 +175,18 @@ describe("install.sh and a checkout you develop in", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain(`${realpathSync(dev)} has local work and upstream has commits it does not, so install.sh did not pull:`);
     expect(r.err).toContain("M tracked.txt");
-    // The remedies name the script's own file, so they work from anywhere, and the keep-the-work one autostashes the
-    // The remedies reproduce this very install: they name the script's own file (so they run from anywhere) and carry
-    // the resolved SEORI_SRC. Without that, pasting the printed line installs a *different* tree — the default checkout —
-    // and repoints the machine-wide `seori` at it, which is the failure this PR exists to prevent.
-    expect(r.err).toContain(`SEORI_NO_PULL=1 SKILLS_DIR="${join(root, "skills")}" SEORI_HOME="${join(root, "state")}" SEORI_SRC="${realpathSync(dev)}" bash "${realpathSync(INSTALL)}"`);
+    // The remedies reproduce this very install: they carry the resolved SEORI_SRC (without it, pasting the printed line
+    // installs a *different* tree — the default checkout — and repoints the machine-wide `seori` at it), the homes that
+    // differ from the defaults, and the script's own path so they run from anywhere. Each field is compared after
+    // resolving both sides: on macOS /var is a symlink to /private/var, so a hand-built expected string mixes forms.
+    const remedy = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
+    expect(remedy).toBeDefined();
+    const field = (name: string) => remedy!.match(new RegExp(`${name}="([^"]+)"`))?.[1];
+    expect(samePath(field("SEORI_SRC")!, dev)).toBe(true);
+    expect(samePath(field("SEORI_HOME")!, join(root, "state"))).toBe(true);
+    expect(samePath(field("SKILLS_DIR")!, join(root, "skills"))).toBe(true);
+    expect(samePath(remedy!.split("bash ")[1]!.replace(/"/g, ""), INSTALL)).toBe(true);
+    expect(remedy).toContain("SEORI_NO_PULL=1");
     expect(r.err).toContain("pull --rebase --autostash");
     expect(readFileSync(join(dev, "tracked.txt"), "utf8")).toBe("edited\n");
   });
@@ -330,7 +355,12 @@ describe("install.sh and a checkout you develop in", () => {
     expect(r.exitCode).toBe(1);
     const line = r.stderr.toString().split("\n").find((l) => l.includes("install this checkout as it is:"));
     expect(line).toBeDefined();
-    expect(line).toContain(`SEORI_SRC="${realpathSync(dev)}"`);
+    // Every path field compared with the same resolved-prefix rule as the file mode: /var and /private/var are one place
+    // on macOS, and a hand-built `toContain(realpathSync(...))` string mixes the two forms.
+    const field = (name: string) => line!.match(new RegExp(`${name}="([^"]+)"`))?.[1];
+    expect(samePath(field("SEORI_SRC")!, dev)).toBe(true);
+    expect(samePath(field("SEORI_HOME")!, join(root, "state"))).toBe(true);
+    expect(samePath(field("SKILLS_DIR")!, join(root, "skills"))).toBe(true);
     expect(line).toContain("curl -fsSL");
   });
 });
