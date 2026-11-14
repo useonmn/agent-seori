@@ -641,7 +641,8 @@ describe("SlackAdapter receive", () => {
     console.error = (...a: unknown[]) => void errors.push(a.join(" "));
     let got: InboundMessage[];
     try {
-      got = await collect(adapter(mock, home(), { others: true }), (g) => g.length >= 1);
+      // Done once the redelivered envelope is acked, so the ack is never raced by the abort.
+      got = await collect(adapter(mock, home(), { others: true }), (g) => g.length >= 1 && mock.acks.includes("e2"));
     } finally {
       console.error = error;
     }
