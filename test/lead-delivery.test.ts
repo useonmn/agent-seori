@@ -219,6 +219,13 @@ describe("renderDelivery", () => {
     expect(text.endsWith("Answer these, then continue your current task.")).toBe(true);
   });
 
+  test("a message from someone other than the owner is marked; the owner's line is unchanged", () => {
+    const other = { id: "fake:c1:3", kind: "messenger" as const, source: "fake", chat: "c1", from: "u2", notOwner: true as const, at: T0, text: "text of fake:c1:3" };
+    const text = renderDelivery([{ row: state("fake:c1:2").row, header: "new", attempt: 1 }, { row: other, header: "new", attempt: 1 }], "seori");
+    expect(text).toContain("[fake:c1:2] fake from u1: text of fake:c1:2");
+    expect(text).toContain("[fake:c1:3] fake from u2 (not owner): text of fake:c1:3");
+  });
+
   test("watch events get their own section after the messages and need no reply", () => {
     const both = [{ row: watchState("watch:w1:1").row, header: "new" as const, attempt: 1 }, { row: state("fake:c1:2").row, header: "new" as const, attempt: 1 }];
     const text = renderDelivery(both, "seori");

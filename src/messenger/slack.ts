@@ -17,6 +17,8 @@ const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
 /** Threads per channel catch-up reads with conversations.replies (the most recently active), and how long they stay. */
 const THREAD_LIMIT = 20;
 const THREAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Threads per receive remembered as not involving seori, so a busy thread is looked up once (see `involved`). */
+const UNTRACKED_LIMIT = 1000;
 const DEFAULT_API = "https://slack.com/api";
 const BOT_ENV = "SEORI_SLACK_BOT_TOKEN";
 const APP_ENV = "SEORI_SLACK_APP_TOKEN";
@@ -61,6 +63,8 @@ type Receiving = {
   readonly delivered: Set<string>;
   readonly botToken: string;
   readonly botUser: string;
+  /** `<channel>:<root ts>` of threads conversations.replies showed seori is not part of (see `involved`). */
+  readonly untracked: Set<string>;
   readonly onMessage: (m: InboundMessage) => Promise<void>;
   readonly signal: AbortSignal;
 };
@@ -110,6 +114,8 @@ function tsMs(ts: string): number {
 const unescape = (text: string): string => text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 /** Escaped outgoing text cannot form `<!channel>`, `<@U…>` or `<#C…>` control sequences, so a reply never pings anyone. */
 const escape = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** Whether Slack text mentions `user` (`<@U…>` or `<@U…|name>`). */
+const mentions = (text: string, user: string): boolean => user !== "" && (text.includes(`<@${user}>`) || text.includes(`<@${user}|`));
 
 function bodyText(m: SlackMessage): string {
   const lines = (m.files ?? []).map((f) => {
@@ -241,6 +247,7 @@ export class SlackAdapter implements MessengerAdapter {
     const saved = file.load();
     const cursor: Cursor = { channels: { ...(saved?.channels ?? {}) }, threads: { ...(saved?.threads ?? {}) } };
     const delivered = new Set<string>();
+    const untracked = new Set<string>();
     let botUser: string | undefined;
     let failures = 0;
     /** When receive last stopped being healthy (hello seen and catch-up done); undefined while healthy. */
@@ -256,7 +263,7 @@ export class SlackAdapter implements MessengerAdapter {
         const url = (await this.api("apps.connections.open", appToken, undefined, "POST", signal)).url;
         usingAppToken = false;
         if (typeof url !== "string") throw new Error("apps.connections.open returned no url");
-        const ctx: Receiving = { cursor, file, delivered, botToken, botUser, onMessage, signal };
+        const ctx: Receiving = { cursor, file, delivered, untracked, botToken, botUser, onMessage, signal };
         const end = await this.session(url, ctx, () => {
           healthy = true;
           failures = 0;
@@ -473,6 +480,7 @@ export class SlackAdapter implements MessengerAdapter {
    * a rejected reply is still caught up); a newer ts in a known thread rides on the next cursor save.
    */
   private track(channel: string, root: string, ts: string, ctx: Receiving): void {
+    ctx.untracked.delete(`${channel}:${root}`);
     if (ctx.cursor.channels[channel] === undefined) return;
     const threads = (ctx.cursor.threads[channel] ??= {});
     const seen = threads[root];
@@ -499,6 +507,46 @@ export class SlackAdapter implements MessengerAdapter {
     ctx.delivered.add(key);
   }
 
+  /** The sender of `m` when it may reach the lead: the owner, or with "others" on anyone else; never a bot or seori. */
+  private sender(m: SlackMessage, botUser: string): string | undefined {
+    if (m.bot_id || typeof m.user !== "string" || m.user === "" || m.user === botUser) return undefined;
+    return m.user === this.config.owner || this.config.others === true ? m.user : undefined;
+  }
+
+  /**
+   * Whether `m` (its own ts is `ts`) is meant for the bot. A DM always is; in a channel only a mention of the bot, or a
+   * reply in a thread seori follows: one it tracks, or (`live` only) one conversations.replies shows it is part of.
+   */
+  private async addressed(m: SlackMessage, channel: string, dm: boolean, ts: string, ctx: Receiving, live: boolean): Promise<boolean> {
+    if (dm) return true;
+    if (mentions(m.text ?? "", ctx.botUser)) return true;
+    const root = m.thread_ts;
+    if (root === undefined || root === ts) return false;
+    if (ctx.cursor.threads[channel]?.[root] !== undefined) return true;
+    return live && this.involved(channel, root, ctx);
+  }
+
+  /**
+   * A live reply in a thread the cursor does not track (never seen, or pruned past THREAD_LIMIT or THREAD_MAX_AGE_MS):
+   * the thread is followed when seori posted in it or a message in it mentions the bot. A thread found not to be is
+   * remembered until it is tracked, so chatter in it costs one conversations.replies call per receive.
+   */
+  private async involved(channel: string, root: string, ctx: Receiving): Promise<boolean> {
+    const key = `${channel}:${root}`;
+    if (ctx.untracked.has(key) || ctx.botUser === "") return false;
+    let messages: SlackMessage[];
+    try {
+      messages = await this.pages("conversations.replies", { channel, ts: root }, ctx);
+    } catch (e) {
+      if (!(e instanceof SlackApiError) || !(e.error === "thread_not_found" || UNREADABLE_ERRORS.has(e.error) || GONE_ERRORS.has(e.error))) throw e;
+      messages = [];
+    }
+    if (messages.some((r) => r.user === ctx.botUser || mentions(r.text ?? "", ctx.botUser))) return true;
+    ctx.untracked.add(key);
+    if (ctx.untracked.size > UNTRACKED_LIMIT) ctx.untracked.delete(ctx.untracked.values().next().value as string);
+    return false;
+  }
+
   /** One message event (live or from history). Commits its ts once handled; never for an edit (history has no edits). */
   private async handle(ev: SlackMessage, ctx: Receiving, fromHistory: boolean): Promise<void> {
     const channel = ev.channel;
@@ -507,24 +555,21 @@ export class SlackAdapter implements MessengerAdapter {
     if (ev.subtype === "message_changed") return this.handleEdit(ev, channel, dm, ctx);
     const ts = ev.ts;
     if (!ts) return;
-    // A thread_broadcast is a thread reply also sent to the channel: the owner's words like any other message.
+    // A thread_broadcast is a thread reply also sent to the channel: the sender's words like any other message.
     if (ev.subtype !== undefined && ev.subtype !== "file_share" && ev.subtype !== "thread_broadcast") {
       if (ev.subtype === "bot_message") this.advance(channel, ts, ctx);
       return;
     }
     const key = `${channel}:${ts}`;
     if (ctx.delivered.has(key)) return;
-    const owner = this.pairing
+    const from = this.pairing
       ? dm && !fromHistory && typeof ev.user === "string" && ev.user !== "" && !ev.bot_id && ev.user !== ctx.botUser
-      : ev.user === this.config.owner && !ev.bot_id;
-    // Catch-up reads every message of a channel; outside DMs only those addressed to the bot are commands.
-    // A reply in a thread seori tracks (it or the owner posted there) is addressed like a live
-    // thread event: the owner answers seori's thread without mentioning it again.
-    const followed = ev.thread_ts !== undefined && ev.thread_ts !== ts && ctx.cursor.threads[channel]?.[ev.thread_ts] !== undefined;
-    const addressed = dm || !fromHistory || followed || (ctx.botUser !== "" && (ev.text ?? "").includes(`<@${ctx.botUser}>`));
-    const text = owner && addressed ? bodyText(ev) : "";
-    if (!text) {
-      if (ctx.botUser !== "" && ev.user === ctx.botUser) this.track(channel, ev.thread_ts ?? ts, ts, ctx); // the owner may answer in seori's thread
+        ? ev.user
+        : undefined
+      : this.sender(ev, ctx.botUser);
+    const text = from !== undefined && (await this.addressed(ev, channel, dm, ts, ctx, !fromHistory)) ? bodyText(ev) : "";
+    if (from === undefined || !text) {
+      if (ctx.botUser !== "" && ev.user === ctx.botUser) this.track(channel, ev.thread_ts ?? ts, ts, ctx); // replies in seori's thread need no mention
       return this.advance(channel, ts, ctx);
     }
     if (ctx.cursor.channels[channel] === undefined) {
@@ -534,22 +579,24 @@ export class SlackAdapter implements MessengerAdapter {
     }
     this.track(channel, ev.thread_ts ?? ts, ts, ctx); // seori replies under this message: catch-up reads that thread
     const thread = dm ? ev.thread_ts : (ev.thread_ts ?? ts);
-    const from = this.pairing ? (ev.user as string) : this.config.owner;
     await this.deliver({ id: messageId(this.source, channel, ts), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(ts), text }, key, ctx);
     this.advance(channel, ts, ctx);
   }
 
+  /** An edit reaches the lead under the rules of a new message: from an accepted sender, and addressed to the bot. */
   private async handleEdit(ev: SlackMessage, channel: string, dm: boolean, ctx: Receiving): Promise<void> {
     const m = ev.message;
     const stamp = m?.edited?.ts;
-    if (this.pairing || !m?.ts || !stamp || m.bot_id || m.user !== this.config.owner) return; // unfurls also arrive as message_changed, without `edited`
+    if (this.pairing || !m?.ts || !stamp) return; // unfurls also arrive as message_changed, without `edited`
+    const from = this.sender(m, ctx.botUser);
+    if (from === undefined) return;
     const key = `${channel}:${m.ts}:edit:${stamp}`;
     if (ctx.delivered.has(key)) return;
     const text = bodyText(m);
-    if (!text) return;
+    if (!text || !(await this.addressed(m, channel, dm, m.ts, ctx, true))) return;
     const thread = dm ? m.thread_ts : (m.thread_ts ?? m.ts);
     await this.deliver(
-      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from: this.config.owner, at: tsMs(stamp), text: `(edited) ${text}` },
+      { id: editId(this.source, channel, m.ts, stamp), source: this.source, chat: channel, ...(thread ? { thread } : {}), from, at: tsMs(stamp), text: `(edited) ${text}` },
       key,
       ctx,
     );

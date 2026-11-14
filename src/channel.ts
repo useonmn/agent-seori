@@ -17,6 +17,8 @@ export type MessengerRow = {
   readonly chat: string;
   readonly thread?: string;
   readonly from: string;
+  /** Sent by someone other than the owner (the messenger's `others` opt-in); absent for the owner. */
+  readonly notOwner?: true;
   readonly at: number;
   readonly text: string;
 };

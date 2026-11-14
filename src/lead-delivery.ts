@@ -170,7 +170,7 @@ export function renderDelivery(deliver: Decision["deliver"], cmd: string): strin
       const group = messages.filter((d) => d.header === header);
       if (!group.length) continue;
       lines.push("", HEADERS[header]);
-      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}: ${row.text}`);
+      for (const { row } of group) if (row.kind === "messenger") lines.push(`[${row.id}] ${row.source} from ${row.from}${row.notOwner ? " (not owner)" : ""}: ${row.text}`);
     }
   } else lines.push("seori lead channel: events from your watches.");
   const events = deliver.filter((d) => d.row.kind === "watch");

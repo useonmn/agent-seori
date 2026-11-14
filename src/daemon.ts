@@ -233,7 +233,8 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
     const runOne = async (config: MessengerConfig): Promise<void> => {
       // Synchronous on purpose: appendInbound fsyncs before returning, so when this resolves the adapter may commit.
       const onMessage = async (m: InboundMessage): Promise<void> => {
-        if (m.from !== config.owner) return emit({ ev: "dropped", id: m.id, from: m.from });
+        const notOwner = m.from !== config.owner;
+        if (notOwner && config.others !== true) return emit({ ev: "dropped", id: m.id, from: m.from });
         const stored = channel.appendInbound({
           id: m.id,
           kind: "messenger",
@@ -241,6 +242,7 @@ export async function runDaemon(root: string, opts: DaemonOptions = {}): Promise
           chat: m.chat,
           ...(m.thread !== undefined ? { thread: m.thread } : {}),
           from: m.from,
+          ...(notOwner ? { notOwner: true as const } : {}),
           at: m.at,
           text: m.text,
         });

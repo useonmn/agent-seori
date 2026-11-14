@@ -56,12 +56,17 @@ export interface MessengerAdapter {
 
 export type MessengerConfig = {
   readonly source: string;
-  /** Only messages from this sender id reach the lead (the same owner-only rule as dori). */
+  /** The owner's sender id: their messages reach the lead as the owner's. */
   readonly owner: string;
+  /**
+   * Also deliver people other than the owner (never bots), under the same addressing rule: a DM to the bot, a mention
+   * in a channel, or a reply in a thread the bot follows. Their messages reach the lead with their own sender id.
+   */
+  readonly others?: boolean;
   readonly options?: Readonly<Record<string, unknown>>;
 };
 
-/** `$SEORI_HOME/messengers.json`: `{ "messengers": [ { "source": "fake", "owner": "u1" } ] }`. Missing file: none. */
+/** `$SEORI_HOME/messengers.json`: `{ "messengers": [ { "source": "fake", "owner": "u1", "others": true } ] }`. Missing file: none. */
 export function loadMessengers(root: string): MessengerConfig[] {
   const path = join(root, "messengers.json");
   if (!existsSync(path)) return [];
@@ -75,6 +80,9 @@ export function loadMessengers(root: string): MessengerConfig[] {
   return parsed.messengers.map((m, i) => {
     const c = m as Partial<MessengerConfig>;
     if (typeof c.source !== "string" || typeof c.owner !== "string") throw new ConfigError(`${path}: messengers[${i}] needs string "source" and "owner"`);
-    return { source: c.source, owner: c.owner, ...(c.options ? { options: c.options } : {}) };
+    if (c.others !== undefined && typeof c.others !== "boolean") throw new ConfigError(`${path}: messengers[${i}].others must be true or false, got ${JSON.stringify(c.others)}`);
+    // Anyone on Telegram can message a bot, and the adapter cannot see whether group privacy mode limits it to mentions.
+    if (c.others === true && c.source === "telegram") throw new ConfigError(`${path}: messengers[${i}].others is not supported for telegram; only the owner is answered there`);
+    return { source: c.source, owner: c.owner, ...(c.others !== undefined ? { others: c.others } : {}), ...(c.options ? { options: c.options } : {}) };
   });
 }

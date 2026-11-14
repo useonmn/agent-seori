@@ -70,6 +70,19 @@ describe("runDaemon", () => {
     expect(new FakeAdapter(root).offset()).toBe(2);
   });
 
+  test("with others on, a non-owner message is stored with its real sender, marked notOwner", async () => {
+    const root = home([{ source: "fake", owner: "u1", others: true }]);
+    fakeIn(root, { msgId: "1", chat: "c", from: "u2", text: "question", at: 3 });
+    fakeIn(root, { msgId: "2", chat: "c", from: "u1", text: "mine", at: 4 });
+    const d = start(root, { adapterFor: fakePoll });
+    await until("both stored", () => d.events.filter((e) => e.ev === "stored").length === 2);
+    await d.stop();
+    expect(new Channel(root).inbound()).toEqual([
+      { id: "fake:c:1", kind: "messenger", source: "fake", chat: "c", from: "u2", notOwner: true, at: 3, text: "question" },
+      { id: "fake:c:2", kind: "messenger", source: "fake", chat: "c", from: "u1", at: 4, text: "mine" },
+    ]);
+  });
+
   test("a message replayed after a crash between append and offset commit is stored once", async () => {
     const root = home([{ source: "x", owner: "u1" }]);
     let attempts = 0;

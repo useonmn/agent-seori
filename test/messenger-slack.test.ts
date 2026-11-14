@@ -124,10 +124,10 @@ function startMock(): Mock {
   return mock;
 }
 
-type Extra = { sleeps?: number[]; options?: Record<string, unknown>; env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number };
+type Extra = { sleeps?: number[]; options?: Record<string, unknown>; env?: Record<string, string | undefined>; sleep?: (ms: number) => Promise<void>; now?: () => number; others?: boolean };
 
 function adapter(mock: Mock, root: string, extra: Extra = {}) {
-  return new SlackAdapter({ source: "slack", owner: OWNER, options: { apiBase: mock.apiBase, ...extra.options } }, root, {
+  return new SlackAdapter({ source: "slack", owner: OWNER, ...(extra.others ? { others: true } : {}), options: { apiBase: mock.apiBase, ...extra.options } }, root, {
     env: extra.env ?? { SEORI_SLACK_BOT_TOKEN: "xoxb-1", SEORI_SLACK_APP_TOKEN: "xapp-1" },
     sleep:
       extra.sleep ??
@@ -435,6 +435,94 @@ describe("SlackAdapter receive", () => {
     expect(got.map((m) => m.id)).toEqual(["slack:D1:1700000000.000100"]);
     expect(clock).toBeGreaterThanOrEqual(100_000);
   });
+
+  const chan = (ts: string, text: string, extra: Record<string, unknown> = {}) => ({ type: "message", channel_type: "channel", channel: "C1", user: OWNER, text, ts, ...extra });
+  const edit = (user: string, text: string, ts: string, extra: Record<string, unknown> = {}) => ({
+    type: "message",
+    subtype: "message_changed",
+    channel: "C1",
+    channel_type: "channel",
+    message: { type: "message", user, text, ts, edited: { user, ts: `${ts}9` }, ...extra },
+    ts: `${ts}8`,
+  });
+
+  test("in a channel only a mention or a reply in a thread seori follows is delivered, also after the thread was pruned", async () => {
+    const mock = startMock();
+    // An older thread seori answered in, no longer in the cursor: conversations.replies shows seori's message.
+    mock.replies["C1:1700000000.000060"] = [{ type: "message", user: "UBOT", bot_id: "B1", text: "done", ts: "1700000000.000070", thread_ts: "1700000000.000060" }];
+    mock.onConnect = (ws) => {
+      ws.send(envelope("e1", chan("1700000000.000100", "hello all")));
+      ws.send(envelope("e2", chan("1700000000.000200", "<@UBOT> do x")));
+      ws.send(envelope("e3", chan("1700000000.000300", "and y", { thread_ts: "1700000000.000200" })));
+      ws.send(envelope("e4", chan("1700000000.000400", "someone else's thread", { thread_ts: "1700000000.000050" })));
+      ws.send(envelope("e5", chan("1700000000.000500", "still not ours", { thread_ts: "1700000000.000050" })));
+      ws.send(envelope("e6", chan("1700000000.000600", "back to this", { thread_ts: "1700000000.000060" })));
+    };
+    const got = await collect(adapter(mock, home()), () => mock.acks.length >= 6);
+    expect(got.map((m) => [m.id, m.thread, m.from, m.text])).toEqual([
+      ["slack:C1:1700000000.000200", "1700000000.000200", OWNER, "<@UBOT> do x"],
+      ["slack:C1:1700000000.000300", "1700000000.000200", OWNER, "and y"],
+      ["slack:C1:1700000000.000600", "1700000000.000060", OWNER, "back to this"],
+    ]);
+    // The thread found not to be seori's is looked up once; tracked threads never.
+    expect(mock.repliesCalls.map((q) => q.get("ts"))).toEqual(["1700000000.000050", "1700000000.000060"]);
+  });
+
+  test("catch-up applies the same rule: channel chatter is dropped, a mention and a reply in a tracked thread arrive", async () => {
+    const mock = startMock();
+    const root = home();
+    writeCursor(root, { channels: { C1: "1700000000.000001" }, threads: { C1: { "1700000000.000010": "1700000000.000010" } } });
+    mock.history["C1"] = [
+      { type: "message", user: OWNER, text: "<@UBOT> look", ts: "1700000000.000200" },
+      { type: "message", user: OWNER, text: "chatter", ts: "1700000000.000100" },
+    ];
+    mock.replies["C1:1700000000.000010"] = [{ type: "message", user: OWNER, text: "follow", ts: "1700000000.000300", thread_ts: "1700000000.000010" }];
+    const got = await collect(adapter(mock, root), () => cursorOf(root).channels["C1"] === "1700000000.000300");
+    expect(got.map((m) => [m.id, m.text])).toEqual([
+      ["slack:C1:1700000000.000200", "<@UBOT> look"],
+      ["slack:C1:1700000000.000300", "follow"],
+    ]);
+  });
+
+  for (const others of [false, true]) {
+    test(`others ${others ? "on delivers people other than the owner with their own id" : "off delivers only the owner"}; bots and seori never`, async () => {
+      const mock = startMock();
+      mock.onConnect = (ws) => {
+        ws.send(envelope("e1", chan("1700000000.000100", "<@UBOT> hi", { user: "UOTHER" })));
+        ws.send(envelope("e2", dm("1700000000.000200", { user: "UOTHER" })));
+        ws.send(envelope("e3", chan("1700000000.000300", "chatter", { user: "UOTHER" })));
+        ws.send(envelope("e4", chan("1700000000.000400", "<@UBOT> ping", { user: "UB9", bot_id: "B9" })));
+        ws.send(envelope("e5", chan("1700000000.000500", "<@UBOT> me", { user: "UBOT", bot_id: "B1" })));
+        ws.send(envelope("e6", chan("1700000000.000600", "thanks", { user: "UOTHER", thread_ts: "1700000000.000100" })));
+      };
+      const got = await collect(adapter(mock, home(), { others }), () => mock.acks.length >= 6);
+      expect(got.map((m) => [m.id, m.from])).toEqual(
+        others
+          ? [
+              ["slack:C1:1700000000.000100", "UOTHER"],
+              ["slack:D1:1700000000.000200", "UOTHER"],
+              ["slack:C1:1700000000.000600", "UOTHER"],
+            ]
+          : [],
+      );
+    });
+  }
+
+  for (const others of [false, true]) {
+    test(`an edit in a channel follows the same rule (others ${others ? "on" : "off"})`, async () => {
+      const mock = startMock();
+      mock.onConnect = (ws) => {
+        ws.send(envelope("e1", edit(OWNER, "no mention", "1700000000.000100")));
+        ws.send(envelope("e2", edit(OWNER, "<@UBOT> now", "1700000000.000200")));
+        ws.send(envelope("e3", edit("UOTHER", "<@UBOT> mine", "1700000000.000300")));
+        ws.send(envelope("e4", edit("UB9", "<@UBOT> bot", "1700000000.000400", { bot_id: "B9" })));
+      };
+      const got = await collect(adapter(mock, home(), { others }), () => mock.acks.length >= 4);
+      const owner = ["slack:C1:1700000000.000200:edit:1700000000.0002009", OWNER, "(edited) <@UBOT> now"];
+      const other = ["slack:C1:1700000000.000300:edit:1700000000.0003009", "UOTHER", "(edited) <@UBOT> mine"];
+      expect(got.map((m) => [m.id, m.from, m.text])).toEqual(others ? [owner, other] : [owner]);
+    });
+  }
 });
 
 describe("SlackAdapter send", () => {

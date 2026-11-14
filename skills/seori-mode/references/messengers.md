@@ -1,6 +1,6 @@
 # Messengers
 
-seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. Only the owner's messages reach the lead; the bot's own messages never do.
+seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. Only the owner's messages reach the lead, unless the owner turns on `others` (section 5); bots' messages, the bot's own included, never do. Outside DMs only a message that mentions the bot, or (Slack) a reply in a thread the bot is part of or (Discord) a reply to the bot's message, reaches the lead; plain channel chatter never does.
 
 Do every login and every click in the browser with the owner; never ask them to paste a password into this session.
 
@@ -48,7 +48,7 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
    }
    ```
 
-   `app_mentions:read`, `channels:history`, `app_mention` and `message.channels` are only for channels; drop them if the owner wants DMs only.
+   `app_mentions:read`, `channels:history`, `app_mention` and `message.channels` are only for channels; drop them if the owner wants DMs only. In a channel seori answers only a message that mentions it, and then every reply in that thread without a new mention.
 2. Basic Information → App-Level Tokens → Generate, scope `connections:write`. That is the app token (`xapp-...`).
 3. Install App → Install to Workspace → allow. That gives the bot token (`xoxb-...`).
 4. The owner opens the app in Slack (Apps → the app → Messages tab) so the DM exists.
@@ -110,3 +110,7 @@ seori msg send --to <source>:<chat> --text '...'
 `SENT` means it arrived. `HELD` (exit 3) means it may or may not have: ask the owner whether it came through before sending it again (a `--to` notice keeps no ledger, so sending it again simply sends a second copy).
 
 After `seori up`, the daemon receives the owner's messages into the lead pane and the lead answers them with `seori msg send --reply-to <id>`.
+
+## 5. Answering other people (optional)
+
+By default seori answers only its owner. On Slack and Discord the owner can let it answer other people too, under the same rule (a DM to the bot, a mention in a channel, a reply in the bot's thread): add `"others": true` to that messenger in `~/.seori/messengers.json`, for example `{ "messengers": [ { "source": "slack", "owner": "U012OWNER", "others": true } ] }`. Telegram refuses it, because anyone on Telegram can message a bot. Their messages reach the lead marked `(not owner)`; the lead talks with them, but takes any work request from them to the owner for approval first and never shares internal data with them.
