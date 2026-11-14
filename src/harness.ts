@@ -1,9 +1,9 @@
 // Portions adapted from dori-superagent (commits after ba96abf) under the Sustainable Use License; see THIRD_PARTY_NOTICES.md.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { agentCommand, selectAgent, type AgentProfile } from "./agent/profile.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { Channel, type IdState, type MessengerRow } from "./channel.ts";
@@ -16,12 +16,13 @@ import { KEY_RE, reservedKey, Store, type Ceilings, type DeliveryAttempt, type H
 import { DEFAULT_CONFIG, loadConfig } from "./config.ts";
 import { OMP_ULW_URL, type Workflow, workflowPrefix } from "./workflow.ts";
 import { SEORI_SRC } from "./install.ts";
+import { inInstall, real } from "./paths.ts";
 import { autoCloseTick, claimLeadLine, claimText, closeLane, closeRule, sameClaim } from "./done-flow.ts";
 import { guardTick } from "./guard.ts";
 import { agentGone, panesTick } from "./panes.ts";
 import { progressTick, threadTarget } from "./progress.ts";
 import { recordCloseCost, superviseTick } from "./supervision.ts";
-import { checkSignals, parseDone } from "./signals.ts";
+import { checkSignals, INSTALL_HOLD_ADVICE, installHold, parseDone } from "./signals.ts";
 import { GLOBAL_LESSONS_HEADING, LESSONS_HEADING, lessonsForRepo, lessonWarnings, renderLessons } from "./lessons.ts";
 import { verifyPr } from "./verify-pr.ts";
 import { resolveTarget } from "./target.ts";
@@ -442,10 +443,19 @@ async function openLocked(d: Deps, key: string, briefFile: string, opts: StartOp
   const workflow = opts.workflow === undefined ? loadConfig(d.store.root).workflow : (opts.workflow ?? undefined);
   if (workflow !== undefined) await requireWorkflowExtension(d, workflow, opts.workflow === undefined);
   const cwd = resolve(opts.cwd ?? loadConfig(d.store.root).defaultCwd ?? process.cwd());
-  // The default install is the checkout at $SEORI_HOME/src. Only a home inside the checkout (the other nesting) is
-  // exempt: a folder in it is seori's state, never its code.
-  const inInstall = within(cwd, d.installDir) && !(within(d.store.root, d.installDir) && within(cwd, d.store.root));
-  const worktree = inInstall ? await laneWorktree(d, key) : undefined;
+  // Read before anything is made for the lane: a brief that cannot be read must not leave a worktree or branch behind.
+  let brief: string;
+  try {
+    brief = readFileSync(briefFile, "utf8");
+  } catch (e) {
+    throw new Refusal(`cannot read the brief ${briefFile}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const started = inInstall(cwd, d.installDir, d.store.root);
+  // The lane's work is in its worktree; a pane opened elsewhere would not see it and the record would lose it.
+  if (takeBack?.worktree !== undefined && !started) {
+    throw new Refusal(`lane ${key} has its work in the worktree ${takeBack.worktree}; start it again in the checkout seori runs from (--cwd ${d.installDir}, as the resume command does), or close it first`);
+  }
+  const worktree = started ? await laneWorktree(d, key) : undefined;
   const briefPath = d.store.briefPath(key);
   const closeAfterMin = doneLine === undefined ? 0 : loadConfig(d.store.root).closeAfterMin;
   const footer = prompt("lane-footer.md", {
@@ -456,7 +466,7 @@ async function openLocked(d: Deps, key: string, briefFile: string, opts: StartOp
   for (const line of lessonWarnings(lessons.problems)) process.stderr.write(`${line}\n`);
   // The lead may pass briefs/<key>.md itself (e.g. on a retry): drop the lessons block and the footer seori already
   // added, whatever the path, so the brief always carries exactly one of each.
-  const source = readFileSync(briefFile, "utf8").replace(LESSONS_RE, "").replace(FOOTER_RE, "").trimEnd();
+  const source = brief.replace(LESSONS_RE, "").replace(FOOTER_RE, "").trimEnd();
   // The brief of the record this start replaces stays as it was until the new record is saved: a start that fails (no
   // pane, no kickoff, or a take-back whose record changed meanwhile) puts it back.
   const before = existsSync(briefPath) ? readFileSync(briefPath) : undefined;
@@ -537,34 +547,53 @@ async function openLocked(d: Deps, key: string, briefFile: string, opts: StartOp
   return { lane, kickedAt, took };
 }
 
-/** The path, symlinks resolved when it exists. */
-const real = (path: string): string => (existsSync(path) ? realpathSync(path) : resolve(path));
+/** How long `git fetch origin main` may take when a lane start makes its worktree. */
+export const FETCH_TIMEOUT_MS = 60_000;
 
-/** Whether `path` is `dir` or inside it. */
-const within = (path: string, dir: string): boolean => {
-  const [p, r] = [real(path), real(dir)];
-  return p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
-};
+/** The worktrees `git worktree list --porcelain` reports, each with its branch ref (none when detached). */
+function worktreeRecords(porcelain: string): { path: string; branch?: string }[] {
+  return porcelain.split("\n\n").flatMap((block) => {
+    const lines = block.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined) return [];
+    const branch = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length);
+    return [{ path, ...(branch !== undefined ? { branch } : {}) }];
+  });
+}
 
 /**
  * The worktree a lane gets when it is asked to start in the checkout seori runs from: an edit made there, before the
  * lane moves to a worktree of its own or through a relative path, lands in the code seori is running. It is
  * `$SEORI_HOME/work/<key>` on a new branch `<key>` from origin/main (fetched first); when that directory is already a
- * worktree of the install's repository (the lane started again) it is taken as it is, and when only the branch is left
- * the worktree checks it out. Anything else at that path, or a git step that fails, refuses the start.
+ * worktree of the install's repository on branch `<key>` (the lane started again) it is taken as it is, and when only
+ * the branch is left the worktree checks it out. A directory deleted by hand that git still has registered loses that
+ * one record first (other lanes' records are left alone), so the branch is checked out again rather than refused.
+ * Anything else at that path (another branch, a detached HEAD, not a worktree), or a git step that fails, refuses the
+ * start. Git never prompts here (no credential
+ * prompt, and no terminal for ssh to ask on) and the fetch is killed with everything it started after
+ * FETCH_TIMEOUT_MS: a start must not hang on a remote that does not answer.
  */
 async function laneWorktree(d: Deps, key: string): Promise<string> {
   const dir = join(d.store.root, "work", key);
-  const git = (...argv: string[]): Promise<ExecResult> => d.exec("git", ["-C", d.installDir, ...argv]);
+  const opts = { env: { GIT_TERMINAL_PROMPT: "0" }, detached: true };
+  const git = (...argv: string[]): Promise<ExecResult> => d.exec("git", ["-C", d.installDir, ...argv], opts);
   const refuse = (why: string): Refusal =>
     new Refusal(`lane ${key} would start in the checkout seori runs from (${d.installDir}), so it gets the worktree ${dir}, but ${why}`);
   const failed = (step: string, r: ExecResult): Refusal => refuse(`${step} failed: ${(r.stderr.trim() || r.stdout.trim()).split("\n")[0] ?? ""}`);
+  // Compared with the parent's symlinks resolved, so a directory that is gone still matches its record.
+  const target = join(real(dirname(dir)), basename(dir));
+  const list = await git("worktree", "list", "--porcelain");
+  if (list.code !== 0) throw failed("git worktree list", list);
+  const record = worktreeRecords(list.stdout).find((r) => join(real(dirname(r.path)), basename(r.path)) === target);
   if (existsSync(dir)) {
-    const list = await git("worktree", "list", "--porcelain");
-    if (list.code !== 0) throw failed("git worktree list", list);
-    const listed = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => real(l.slice("worktree ".length)));
-    if (listed.includes(real(dir))) return dir;
-    throw refuse(`${dir} is not a worktree of that checkout; move it away and start again`);
+    if (!record) throw refuse(`${dir} is not a worktree of that checkout; move it away and start again`);
+    if (record.branch === `refs/heads/${key}`) return dir;
+    const on = record.branch === undefined ? "a detached HEAD" : `branch ${record.branch.replace(/^refs\/heads\//, "")}`;
+    throw refuse(`${dir} is on ${on}, not branch ${key}; check out ${key} there or move it away, and start again`);
+  }
+  if (record) {
+    const remove = await git("worktree", "remove", "--force", record.path);
+    if (remove.code !== 0) throw failed("git worktree remove", remove);
   }
   mkdirSync(join(d.store.root, "work"), { recursive: true });
   const branch = await git("rev-parse", "--verify", "--quiet", `refs/heads/${key}`);
@@ -573,7 +602,15 @@ async function laneWorktree(d: Deps, key: string): Promise<string> {
     if (add.code !== 0) throw failed("git worktree add", add);
     return dir;
   }
-  const fetch = await git("fetch", "origin", "main");
+  let proc: { kill(): void } | undefined;
+  const timedOut = Promise.withResolvers<"timeout">();
+  const timer = setTimeout(() => {
+    proc?.kill();
+    timedOut.resolve("timeout");
+  }, FETCH_TIMEOUT_MS);
+  const fetching = d.exec("git", ["-C", d.installDir, "fetch", "origin", "main"], { ...opts, onSpawn: (p) => (proc = p) });
+  const fetch = await Promise.race([fetching, timedOut.promise]).finally(() => clearTimeout(timer));
+  if (fetch === "timeout") throw refuse(`git fetch origin main timed out after ${FETCH_TIMEOUT_MS / 1000} s`);
   if (fetch.code !== 0) throw failed("git fetch origin main", fetch);
   const add = await git("worktree", "add", "--no-track", "-b", key, dir, "origin/main");
   if (add.code !== 0) throw failed("git worktree add", add);
@@ -641,7 +678,8 @@ export async function ready(d: Deps, key: string, text: string, evidence: readon
 
 /**
  * The lead closes a READY lane. A lane with a Done line closes only when checkSignals finds nothing: every signal
- * reads back live and no tracked work is uncommitted or on no remote; otherwise the refusal lists the reasons.
+ * reads back live and no tracked work is uncommitted or on no remote. Any lane started in the install checkout also
+ * waits while that checkout has uncommitted tracked changes (installHold). Otherwise the refusal lists the reasons.
  */
 export async function done(d: Deps, key: string): Promise<void> {
   const lane = d.store.lane(key);
@@ -655,9 +693,11 @@ export async function done(d: Deps, key: string): Promise<void> {
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   const st = await d.runtime.status(lane.sessionRef);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
-  if (lane.done !== undefined) {
-    const failures = await checkSignals(d, lane);
-    if (failures.length) throw new Refusal(`lane ${key} is not done:\n${failures.map((f) => `- ${f}`).join("\n")}`);
+  const failures = lane.done === undefined ? [] : await checkSignals(d, lane);
+  const hold = await installHold(d, lane);
+  if (hold !== undefined) failures.push(hold);
+  if (failures.length) {
+    throw new Refusal(`lane ${key} is not done:\n${failures.map((f) => `- ${f}`).join("\n")}${hold === undefined ? "" : `\n${INSTALL_HOLD_ADVICE}`}`);
   }
   // The lead may have objected, paused it or a new READY may have come in while its pane and signals were read.
   const fresh = sameClaim(d, lane);

@@ -1,10 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { describe, expect, jest, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
 import { ConfigError, loadConfig } from "../src/config.ts";
-import { defaultSeoriCmd, done, laneBusy, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
+import { defaultSeoriCmd, done, FETCH_TIMEOUT_MS, laneBusy, paneEnv, dutyTick, mergeGate, ready, Refusal, report, review, reviewerAnswer, send, startLane } from "../src/harness.ts";
 import { closeLane } from "../src/done-flow.ts";
 import { backlogAdd } from "../src/loop.ts";
 import { deliverOrThrow } from "../src/runtime/index.ts";
@@ -365,6 +365,89 @@ describe("lanes started in the checkout seori runs from", () => {
     expect(opened(w)).toEqual([]);
     expect(d.store.lane("fix-login")).toBeUndefined();
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("a brief that cannot be read refuses the start before anything is made: no worktree, no branch", async () => {
+    const { w, d, top, install, worktree } = await installed();
+    await expect(startLane(d, "fix-login", join(top, "missing.md"), { cwd: install })).rejects.toThrow(`cannot read the brief ${join(top, "missing.md")}`);
+    expect(existsSync(worktree)).toBe(false);
+    expect((await spawnExec("git", ["-C", install, "rev-parse", "--verify", "--quiet", "refs/heads/fix-login"])).code).not.toBe(0);
+    expect(opened(w)).toEqual([]);
+  });
+
+  test("git never prompts and runs with no terminal, and a fetch that does not answer within the limit is killed and refuses the start", async () => {
+    const { w, d, brief, install, worktree } = await installed();
+    const envs: (string | undefined)[] = [];
+    const detached: (boolean | undefined)[] = [];
+    let killed = false;
+    const hung: typeof d = {
+      ...d,
+      exec: (cmd, argv, o) => {
+        if (cmd === "git") {
+          envs.push(o?.env?.GIT_TERMINAL_PROMPT);
+          detached.push(o?.detached);
+        }
+        if (cmd !== "git" || !argv.includes("fetch")) return d.exec(cmd, argv, o);
+        o?.onSpawn?.({ kill: () => (killed = true) });
+        jest.advanceTimersByTime(FETCH_TIMEOUT_MS);
+        return new Promise(() => undefined);
+      },
+    };
+    jest.useFakeTimers();
+    try {
+      await expect(startLane(hung, "fix-login", brief, { cwd: install })).rejects.toThrow("git fetch origin main timed out after 60 s");
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(killed).toBe(true);
+    expect(envs.length).toBeGreaterThan(0);
+    expect(envs.every((e) => e === "0")).toBe(true);
+    expect(detached.every((x) => x === true)).toBe(true);
+    expect(opened(w)).toEqual([]);
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("a worktree there on another branch or a detached HEAD is refused, naming what it is on", async () => {
+    const { w, d, brief, install, worktree } = await installed();
+    await startLane(d, "fix-login", brief, { cwd: install });
+    d.store.saveLane({ ...d.store.lane("fix-login")!, status: "done" });
+    const panes = opened(w).length;
+    await git(worktree, "checkout", "-q", "--detach");
+    await expect(startLane(d, "fix-login", brief, { cwd: install })).rejects.toThrow(`${worktree} is on a detached HEAD, not branch fix-login`);
+    await git(worktree, "checkout", "-q", "-b", "other");
+    await expect(startLane(d, "fix-login", brief, { cwd: install })).rejects.toThrow(`${worktree} is on branch other, not branch fix-login`);
+    expect(opened(w)).toHaveLength(panes);
+  });
+
+  test("a worktree deleted by hand that git still has registered is made again from the lane's branch; other lanes' records stay", async () => {
+    const { d, brief, install, worktree } = await installed();
+    await startLane(d, "fix-login", brief, { cwd: install });
+    writeFileSync(join(worktree, "work.txt"), "x");
+    await git(worktree, "add", "work.txt");
+    await git(worktree, "commit", "-q", "-m", "lane work");
+    const work = await git(worktree, "rev-parse", "HEAD");
+    d.store.saveLane({ ...d.store.lane("fix-login")!, status: "done" });
+    rmSync(worktree, { recursive: true, force: true });
+    const other = join(d.store.root, "work", "other-lane");
+    await git(install, "worktree", "add", "-q", "-b", "other-lane", other);
+    rmSync(other, { recursive: true, force: true });
+    expect(await git(install, "worktree", "list", "--porcelain")).toContain("branch refs/heads/fix-login");
+
+    expect((await startLane(d, "fix-login", brief, { cwd: install })).worktree).toBe(worktree);
+    expect(await git(worktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe("fix-login");
+    expect(await git(worktree, "rev-parse", "HEAD")).toBe(work);
+    // git lists the path with symlinks resolved (/var is /private/var on macOS); the folder itself is gone.
+    expect(await git(install, "worktree", "list", "--porcelain")).toContain(`worktree ${join(realpathSync(dirname(other)), "other-lane")}\n`);
+  });
+
+  test("taking back a lane that has a worktree, in a directory outside the checkout, is refused before a pane opens", async () => {
+    const { w, d, brief, install, top, worktree } = await installed();
+    const lane = await startLane(d, "fix-login", brief, { cwd: install });
+    w.panes.delete(lane.paneId);
+    const panes = opened(w).length;
+    await expect(startLane(d, "fix-login", brief, { cwd: top })).rejects.toThrow(`lane fix-login has its work in the worktree ${worktree}; start it again in the checkout seori runs from (--cwd ${install}`);
+    expect(opened(w)).toHaveLength(panes);
+    expect(d.store.lane("fix-login")!.worktree).toBe(worktree);
   });
 });
 

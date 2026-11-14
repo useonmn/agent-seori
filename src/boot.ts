@@ -13,6 +13,7 @@ import { WatchStore } from "./watch/store.ts";
 import { worklogLines, worklogPath, worklogRead } from "./worklog.ts";
 import { HerdrRecord, refText } from "./refs.ts";
 import { closedNote } from "./restart.ts";
+import { installState } from "./signals.ts";
 
 // `seori boot`: the read-only check a lead runs after a restart or a compaction, so it resumes from the record and not
 // from memory. It changes nothing: no lane or role write, no relaunch, no stopped watch, no closed message, and it
@@ -86,10 +87,12 @@ function readJson(path: string): unknown {
  * `CONFIG`, `MESSENGERS`; `LEAD`/`DUTY` pane and status; `PANES` summary, `VANISHED` (an open lane whose pane is gone),
  * `UNREGISTERED` (agent panes no role and no open lane owns); per open lane `READY`, `PAUSED`, then `REPORT`/`NO-REPORT`
  * (its last report); `WORKLOG`/`OPEN` items; `CHANNEL`/`MSG` open lead channel messages; `WATCHES`/`ORPHAN-WATCH` live
- * watches whose owner lane is closed; `DAEMON` heartbeat age and `MESSENGER` health; then `BOOT checked` or
+ * watches whose owner lane is closed; `INSTALL` the checkout seori runs from (clean, or its uncommitted tracked files);
+ * `DAEMON` heartbeat age and `MESSENGER` health; then `BOOT checked` or
  * `BOOT incomplete` (an input could not be read; each such input has its own line) or `BOOT failed` (registry drift).
  * `DRIFT` lines (an open lane whose session is gone; an agent session in the home's seori.group without a lane or role
- * record) fail the boot, one line per problem. Other findings such as a stale heartbeat are reported, not failures:
+ * record) fail the boot, one line per problem. Other findings such as a stale heartbeat or uncommitted changes in the
+ * install checkout are reported, not failures:
  * `complete` is false when an input could not be read or the registry drifted.
  */
 export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: boolean }> {
@@ -212,6 +215,14 @@ export async function bootReport(d: Deps): Promise<{ lines: string[]; complete: 
   } catch (e) {
     failed(`WATCHES unreadable (${e instanceof Error ? e.message : String(e)})`);
   }
+
+  // A lane that edited the code seori runs instead of its worktree leaves it dirty, whichever lane it was.
+  const install = await installState(d);
+  if (install.kind === "unreadable") failed(`INSTALL unreadable ${d.installDir} (${install.why})`);
+  else if (install.kind === "dirty") {
+    const n = install.files.length;
+    lines.push(`INSTALL dirty ${d.installDir} ${n} uncommitted tracked file(s): ${install.files.slice(0, 5).join(" ")}${n > 5 ? " ..." : ""}; a lane started there may have edited the code seori runs`);
+  } else lines.push(`INSTALL ${install.kind} ${d.installDir}`);
 
   const beat = readJson(heartbeatPath(root)) as { at?: unknown } | "unreadable" | undefined;
   if (beat === undefined) lines.push("DAEMON no heartbeat");

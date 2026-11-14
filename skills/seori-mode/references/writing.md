@@ -35,7 +35,7 @@ When the job is done, send the result reply with `--again` first (before the clo
 
 Finished files (videos, images, reports) go to the main channel the moment they exist, not buried in a thread. For visual work, show before and after. seori sends files through agent-messenger when the owner installed it, with its bot command:
 
-- Slack: `agent-slackbot file upload <channel> <path> --comment '...'`.
+- Slack: `agent-slackbot file upload <channel> <path> --comment '...'` (bot scope `files:write`; without it the upload fails with `missing_scope`).
 - Discord: `agent-discordbot file upload <channel> <path> --text '...'`.
 - Telegram: `agent-telegrambot message upload <chat> <path> --caption '...'` (a document in the chat; no topic or reply).
 

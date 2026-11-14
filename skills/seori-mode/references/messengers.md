@@ -39,7 +39,7 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
        "app_home": { "messages_tab_enabled": true, "messages_tab_read_only_enabled": false }
      },
      "oauth_config": {
-       "scopes": { "bot": ["chat:write", "im:history", "app_mentions:read", "channels:history", "reactions:write", "users:read"] }
+       "scopes": { "bot": ["chat:write", "im:history", "app_mentions:read", "channels:history", "reactions:write", "users:read", "files:write"] }
      },
      "settings": {
        "event_subscriptions": { "bot_events": ["message.im", "app_mention", "message.channels"] },
@@ -49,6 +49,8 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
    ```
 
    `app_mentions:read`, `channels:history`, `app_mention` and `message.channels` are only for channels; drop them if the owner wants DMs only. `users:read` is only for `others` (section 5). In a channel seori answers only a message that mentions it, in the place it was written (a top-level message gets a top-level answer; seori opens no thread for it), and then, without a new mention, every reply in a thread under that message or under its answer; a new top-level message needs a new mention.
+
+   `files:write` lets the lead upload finished files (videos, images, reports) with `agent-slackbot file upload`; without it an upload fails with `missing_scope`. An app already installed without it needs the scope added under OAuth & Permissions and the app reinstalled.
 2. Basic Information → App-Level Tokens → Generate, scope `connections:write`. That is the app token (`xapp-...`).
 3. Install App → Install to Workspace → allow. That gives the bot token (`xoxb-...`).
 4. The owner opens the app in Slack (Apps → the app → Messages tab) so the DM exists.
