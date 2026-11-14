@@ -474,8 +474,9 @@ export async function installHold(d: Deps, lane: Lane): Promise<string | undefin
 /** What the lead is told with an install hold: the changes may be someone else's, so nobody discards them blindly. */
 export const INSTALL_HOLD_ADVICE =
   "The install checkout's changes may not be this lane's (another lane's, or the owner's own work there): find who " +
-  "made them, then move them to a worktree and commit them there, or discard them; never commit them in the install " +
-  "checkout. The lane is not told: they are not its to discard.";
+  "made them. A lane's edits move to a worktree and are committed there; changes no lane made are the owner's, so " +
+  "ask the owner and never discard them yourself. Never commit them in the install checkout. The lane is not told: " +
+  "they are not its to discard.";
 
 /**
  * Why the lane may not close for reasons it can fix itself (empty: none): every signal of its Done line read back live

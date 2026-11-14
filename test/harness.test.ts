@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { LEAD_EXTENSION, main } from "../src/cli.ts";
@@ -436,7 +436,8 @@ describe("lanes started in the checkout seori runs from", () => {
     expect((await startLane(d, "fix-login", brief, { cwd: install })).worktree).toBe(worktree);
     expect(await git(worktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe("fix-login");
     expect(await git(worktree, "rev-parse", "HEAD")).toBe(work);
-    expect(await git(install, "worktree", "list", "--porcelain")).toContain(`worktree ${other}\n`);
+    // git lists the path with symlinks resolved (/var is /private/var on macOS); the folder itself is gone.
+    expect(await git(install, "worktree", "list", "--porcelain")).toContain(`worktree ${join(realpathSync(dirname(other)), "other-lane")}\n`);
   });
 
   test("taking back a lane that has a worktree, in a directory outside the checkout, is refused before a pane opens", async () => {
