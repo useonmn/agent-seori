@@ -170,6 +170,9 @@ describe("install.sh and a checkout you develop in", () => {
       SEORI_SRC: dev,
       SKILLS_DIR: join(root, "skills"),
     }, extra);
+    // The script's own git calls (fetch, merge, status) are isolated the same way the fixture's are: a host
+    // `core.hooksPath` or `fetch.*` setting would otherwise reach them and red a case that has nothing to do with it.
+    Object.assign(env, gitEnv);
     const r = Bun.spawnSync(["bash", INSTALL], { env, stdout: "pipe", stderr: "pipe" });
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
   }
@@ -263,11 +266,12 @@ describe("install.sh and a checkout you develop in", () => {
 
     const r = install(dev, root);
     expect(r.code).toBe(1);
-    // With no upstream there is no update to wait for, so the refusal block stays out of it; the merge fails on git's own
-    // "no upstream" line, and the fallback names the state it found — the local work that is still there.
+    // With no upstream there is nothing to wait for, so the refusal block stays out of it and the merge fails on git's own
+    // line. The fallback names that cause — a missing upstream, not local work, which stashing would not fix.
     expect(r.err).not.toContain("has commits it does not");
     expect(r.err).toContain("Could not update");
-    expect(r.err).toContain("it has local work (listed below), so nothing was merged");
+    expect(r.err).toContain("its branch has no upstream to merge from");
+    expect(r.err).not.toContain("it has local work (listed below)");
     expect(readFileSync(join(dev, "tracked.txt"), "utf8")).toBe("edited\n");
   });
 
@@ -425,5 +429,38 @@ describe("install.sh and a checkout you develop in", () => {
     const line = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
     expect(samePath(remedyField(line!, "SEORI_SRC"), dev)).toBe(true);
     expect(remedyField(line!, "SEORI_SRC")).not.toBe(link);
+  });
+
+  // A directory name with shell syntax in it is the sharpest test of "safe to paste": every path in a remedy has to be
+  // `printf %q`-escaped, or pasting the line runs `$(…)` out of the path instead of installing it. This checkout sits in
+  // a directory literally named `dev$(touch …)`, and the pasted remedy must install it and run nothing from the name.
+  test("a checkout at a path containing shell syntax: the printed remedy installs it and runs nothing from the name", () => {
+    const { root, upstream, dev } = seoriCheckout();
+    const canary = join(root, "PWNED");
+    const nasty = `${dev}$(touch ${canary})`;
+    mkdirSync(nasty, { recursive: true });
+    writeFileSync(join(nasty, "tracked.txt"), "one\n");
+    writeFileSync(join(nasty, "package.json"), readFileSync(join(dev, "package.json")));
+    mkdirSync(join(nasty, "skills", "seori-mode"), { recursive: true });
+    writeFileSync(join(nasty, "skills", "seori-mode", "SKILL.md"), "skill\n");
+    mkdirSync(join(nasty, "src"), { recursive: true });
+    writeFileSync(join(nasty, "src", "cli.ts"), "#!/usr/bin/env bun\n", { mode: 0o755 });
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+
+    const r = install(nasty, root);
+    // Whatever it decides, nothing in the path may have executed.
+    expect(existsSync(canary)).toBe(false);
+    const line = r.err.split("\n").find((l) => l.includes("install this checkout as it is:"));
+    expect(line).toBeDefined();
+    const command = line!.slice(line!.indexOf("SEORI_NO_PULL=1"));
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const k of Object.keys(env)) if (k.startsWith("SEORI_")) delete env[k];
+    Object.assign(env, { HOME: join(root, "home"), BUN_INSTALL: join(root, "bun"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache") }, gitEnv);
+    // Pasting it, as a user would, must not execute the name and must reach the install.
+    const pasted = Bun.spawnSync(["bash", "-c", command], { env, stdout: "pipe", stderr: "pipe" });
+    expect(existsSync(canary)).toBe(false);
+    // The install itself may fail for reasons unrelated to escaping (no origin for this copy), but the path it names
+    // must be the one that printed the line, and the canary must still not exist.
+    expect(pasted.stdout.toString() + pasted.stderr.toString()).toContain(nasty);
   });
 });

@@ -9,7 +9,7 @@
 #   SEORI_HOME    seori's state directory (default ~/.seori)
 #   SKILLS_DIR    where omp loads user skills (default ~/.omp/agent/skills)
 #   SEORI_NO_PULL 1, true or yes: install the existing checkout as it is, without pulling (what you want while
-#                 developing: a checkout with local work is never pulled, and this says so instead of asking you)
+#                 developing: a checkout with local work *and* commits waiting upstream is not pulled, and this says so)
 #   BUN_INSTALL   where bun keeps its global bin and its package links (default ~/.bun). A throwaway install must set
 #                 this, HOME, SEORI_HOME and SKILLS_DIR: `bun link` below writes the machine's global `seori` otherwise.
 set -euo pipefail
@@ -31,25 +31,47 @@ command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
 mkdir -p "$home"
 chmod 700 "$home"
 
-# Absolute, so the skill symlink resolves from the skills directory whatever SEORI_SRC was relative to.
+# All three are resolved to absolute paths here, and only then compared with their defaults and carried into a remedy: a
+# relative SEORI_HOME or SKILLS_DIR pasted back from another directory would name a different place (an empty home, a
+# skill link nobody loads), and the default comparisons below would be cwd-dependent.
+home="$(cd "$home" && pwd -P)"
 mkdir -p "$src"
 src="$(cd "$src" && pwd -P)"
+mkdir -p "$skills"
+skills="$(cd "$skills" && pwd -P)"
 
-# How the remedies below tell the user to run this script again. The command has to reproduce *this* install, so it
-# carries the resolved values (SEORI_SRC plumbed in by `cd … pwd -P` above, so a relative or symlinked path is not echoed
-# raw), plus SEORI_HOME and SKILLS_DIR when they are not the defaults. Values are `printf %q`-escaped: the line is meant
-# to be pasted, so a quote or a `$` inside one must not become shell syntax. Run from a file, the remedy names that file;
-# through a pipe or a redirect there is no file to name, so it re-fetches the current script — a different revision than
-# the one that refused, which the message itself says.
+# Remedy construction, in one place. A remedy is a line the user pastes, so every value in it must survive a shell
+# re-read, and every value here is already an absolute path (SEORI_SRC, SEORI_HOME and SKILLS_DIR went through
+# `cd … pwd -P` above). Two rules keep that true, and no remedy below may bypass them:
+#   q VALUE        escapes one value for pasting (printf %q, so a quote, `$` or backtick in a path cannot become syntax)
+#   cat_words …    joins already-escaped words with single spaces; a value reaches a remedy only through q
+q() { printf '%q' "$1"; }
+cat_words() { local out="" w; for w in "$@"; do out="$out $w"; done; printf '%s' "${out# }"; }
+
+# The command that re-runs this script. From a file it names that file; through a pipe or a redirect there is no file to
+# name, so it re-fetches the current script — a different revision than the one that refused, which the refusal says.
 if [ -f "${BASH_SOURCE[0]:-}" ]; then
   selfdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  self="bash $(printf '%q' "$selfdir/$(basename "${BASH_SOURCE[0]}")")"
+  self="bash $(q "$selfdir/$(basename "${BASH_SOURCE[0]}")")"
 else
   self="bash <(curl -fsSL https://raw.githubusercontent.com/useonmn/agent-seori/main/install.sh)"
 fi
-[ "$src" = "$home/src" ] || self="SEORI_SRC=$(printf '%q' "$src") $self"
-[ "$home" = "$HOME/.seori" ] || self="SEORI_HOME=$(printf '%q' "$home") $self"
-[ "$skills" = "$HOME/.omp/agent/skills" ] || self="SKILLS_DIR=$(printf '%q' "$skills") $self"
+
+# The environment that reproduces *this* install, carried only where it differs from the defaults: SEORI_SRC whenever it is
+# not the default checkout, SEORI_HOME and SKILLS_DIR when they are not theirs, and HOME and BUN_INSTALL when they are not
+# the login values — those last two decide where `bun link` writes the machine's global `seori`, so a throwaway refusal
+# pasted into a normal shell would otherwise repoint it.
+env_prefix=""
+[ "$src" = "$home/src" ] || env_prefix="$(cat_words "SEORI_SRC=$(q "$src")" "$env_prefix")"
+[ "$home" = "$HOME/.seori" ] || env_prefix="$(cat_words "SEORI_HOME=$(q "$home")" "$env_prefix")"
+[ "$skills" = "$HOME/.omp/agent/skills" ] || env_prefix="$(cat_words "SKILLS_DIR=$(q "$skills")" "$env_prefix")"
+# `~$(id -un)` is expanded from the passwd entry, so it stays the login home even when HOME is the variable overridden.
+login_home="$(eval printf '%s' "~$(id -un)")"
+[ "$login_home" = "~$(id -un)" ] || [ "$HOME" = "$login_home" ] || env_prefix="$(cat_words "HOME=$(q "$HOME")" "$env_prefix")"
+[ -z "${BUN_INSTALL:-}" ] || env_prefix="$(cat_words "BUN_INSTALL=$(q "$BUN_INSTALL")" "$env_prefix")"
+
+# The remedy that installs this checkout as it is: the one line every refusal offers.
+remedy_install_as_is="$(cat_words "SEORI_NO_PULL=1" "$env_prefix" "$self")"
 
 # Local work: edits to tracked files, or commits upstream does not have. Untracked files never count (a test log, or
 # anything else `bun test` leaves behind, does not block a fast-forward), so they are filtered out here.
@@ -89,18 +111,23 @@ elif local_work && update_waits; then
     printf '%s\n' "$ahead" >&2
   fi
   echo "This is a checkout you develop in; see \"Working on seori itself\" in README.md." >&2
-  echo "  install this checkout as it is:  SEORI_NO_PULL=1 $self" >&2
-  # Autostash can stop on a conflict and still exit 0, leaving the tree conflicted, so the install only runs on success.
-  echo "  update it and keep the work:     git -C \"$src\" pull --rebase --autostash && $self" >&2
-  echo "  update it and drop the work:     git -C \"$src\" reset --hard '@{u}' && $self" >&2
+  echo "  install this checkout as it is:  $remedy_install_as_is" >&2
+  # The git remedies are built the same way: the path goes through `q`, the rest are literal words. Hand-quoting `"$src"`
+  # would still expand `$(…)`, a backtick or a quote from a directory name the moment the line is pasted.
+  echo "  update it and keep the work:     $(cat_words "git -C $(q "$src") pull --rebase --autostash &&" "$self")" >&2
+  echo "  update it and drop the work:     $(cat_words "git -C $(q "$src") reset --hard '@{u}' &&" "$self")" >&2
   echo "If the autostash stops on a conflict, resolve it and commit before installing again." >&2
   exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
-  # Local work lands here after a remedy changed the tree under it, so name that state, not only git's own message.
-  if local_work; then
+  # Three states land here: no upstream at all (a scratch branch, a detached HEAD), local work a remedy left behind, or
+  # something only git can explain. Name the one it is instead of blaming local work by default.
+  if ! git -C "$src" rev-parse --verify --quiet '@{u}' >/dev/null; then
+    echo "Could not update $src: its branch has no upstream to merge from (git's message above names the branch)." >&2
+    echo "Set one with $(cat_words "git -C $(q "$src") branch --set-upstream-to=origin/main,") or install it as it is with $remedy_install_as_is." >&2
+  elif local_work; then
     echo "Could not update $src: it has local work (listed below), so nothing was merged." >&2
     git -C "$src" status --short --branch --untracked-files=no >&2
-    echo "Install it as it is with SEORI_NO_PULL=1 $self, or commit or stash the work first." >&2
+    echo "Install it as it is with $remedy_install_as_is, or commit or stash the work first." >&2
   else
     echo "Could not update $src; git's message above says why." >&2
   fi
