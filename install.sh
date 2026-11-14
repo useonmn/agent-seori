@@ -143,10 +143,18 @@ elif local_work && update_waits; then
   say_self_note
   exit 1
 elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
-  # The states that land here: a detached HEAD, a branch with no upstream (a scratch branch), unresolved conflicts (an
-  # autostash a remedy left stopped), local work, or something only git can explain. Name the one it is instead of
-  # blaming local work by default. Each remedy is on a line of its own, as in the refusal, so only the command is pasted.
-  if ! git -C "$src" symbolic-ref -q HEAD >/dev/null; then
+  # The states that land here: unresolved conflicts (an autostash a remedy left stopped, or a rebase stopped mid-way,
+  # which also detaches HEAD, so it is checked first), a detached HEAD, a branch with no upstream (a scratch branch),
+  # local work, or something only git can explain. Name the one it is instead of blaming local work by default. Each
+  # remedy is on a line of its own, as in the refusal, so only the command is pasted.
+  if [ -n "$(git -C "$src" ls-files --unmerged)" ]; then
+    echo "Could not update $src: it has unresolved conflicts (listed below), so nothing was merged or installed." >&2
+    git -C "$src" status --short --branch --untracked-files=no >&2
+    echo "Resolve them and commit (a stopped autostash stays in \`git stash list\`; a stopped rebase is finished with" >&2
+    echo "\`git rebase --continue\` or undone with \`git rebase --abort\`), then install again:" >&2
+    echo "  $remedy_reinstall" >&2
+    say_self_note
+  elif ! git -C "$src" symbolic-ref -q HEAD >/dev/null; then
     echo "Could not update $src: HEAD is detached, so there is no branch to update." >&2
     echo "  switch to main and update it:    $(cat_words "git -C $(q "$src") switch main &&" "$remedy_reinstall")" >&2
     echo "  install this checkout as it is:  $remedy_install_as_is" >&2
@@ -155,12 +163,6 @@ elif ! git -C "$src" merge --ff-only --quiet '@{u}'; then
     echo "Could not update $src: its branch has no upstream to merge from (git's message above names the branch)." >&2
     echo "  set one:                         $(cat_words "git -C $(q "$src") branch --set-upstream-to=origin/main")" >&2
     echo "  install this checkout as it is:  $remedy_install_as_is" >&2
-    say_self_note
-  elif [ -n "$(git -C "$src" ls-files --unmerged)" ]; then
-    echo "Could not update $src: it has unresolved conflicts (listed below), so nothing was merged or installed." >&2
-    git -C "$src" status --short --branch --untracked-files=no >&2
-    echo "Resolve them and commit (a stopped autostash stays in \`git stash list\`), then install again:" >&2
-    echo "  $remedy_reinstall" >&2
     say_self_note
   elif local_work; then
     echo "Could not update $src: it has local work (listed below), so nothing was merged." >&2

@@ -266,6 +266,7 @@ describe("install.sh and a checkout you develop in", () => {
       { getent: { out: "u:x:1:1::/elsewhere:/bin/sh\n", code: 0 }, dscl: missing, carried: true },
       { getent: { out: `u:x:1:1::${home}:/bin/sh\n`, code: 0 }, dscl: missing, carried: false },
       { getent: missing, dscl: { out: "NFSHomeDirectory: /elsewhere\n", code: 0 }, carried: true },
+      { getent: missing, dscl: { out: "NFSHomeDirectory:\n /else where\n", code: 0 }, carried: true },
       { getent: missing, dscl: { out: `NFSHomeDirectory:\n ${home}\n`, code: 0 }, carried: false },
     ];
     for (const { getent, dscl, carried } of cases) {
@@ -391,6 +392,26 @@ describe("install.sh and a checkout you develop in", () => {
     expect(toMain).toStartWith("git -C ");
     expect(samePath(remedyScript(toMain), INSTALL)).toBe(true);
     expect(samePath(remedyScript(remedyCommand(r.err, "install this checkout as it is:")), INSTALL)).toBe(true);
+  });
+
+  // A rebase that stops on a conflict also detaches HEAD, so it must be named as the conflict it is: `switch main` fails
+  // mid-rebase, and the way out is to finish or abort the rebase.
+  test("a rebase stopped on a conflict: named as unresolved conflicts, with the rebase's own way out, not as a detached HEAD", () => {
+    const { root, upstream, dev, git } = checkout();
+    writeFileSync(join(dev, "tracked.txt"), "mine\n");
+    git(dev, "commit", "--quiet", "-am", "mine");
+    writeFileSync(join(upstream, "tracked.txt"), "two\n");
+    git(upstream, "commit", "--quiet", "-am", "two");
+    expect(Bun.spawnSync(["git", "-C", dev, "pull", "--quiet", "--rebase"], { env: hostEnv(), stdout: "pipe", stderr: "pipe" }).exitCode).not.toBe(0);
+    expect(git(dev, "ls-files", "--unmerged")).not.toBe("");
+
+    const r = install(dev, root);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("it has unresolved conflicts (listed below), so nothing was merged or installed");
+    expect(r.err).toContain("`git rebase --continue`");
+    expect(r.err).toContain("`git rebase --abort`");
+    expect(r.err).not.toContain("HEAD is detached");
+    expect(r.err).not.toContain("switch main");
   });
 
   test("an untracked file (a test log) is not local work: it fast-forwards and installs the checkout as it is", () => {
