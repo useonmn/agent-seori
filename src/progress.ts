@@ -49,7 +49,6 @@ export const PROGRESS_HEADER = "Progress (from the lane's last report): ";
 export const progressText = (report: string, stateRoot?: string, home?: string): string =>
   `${PROGRESS_HEADER}${scrubForOwner(report, home, stateRoot)}`;
 
-
 /**
  * Where a thread id (`<source>:<chat>:<message id>`) is answered: the lead channel row when it is there (it knows the
  * topic or thread the message came in), else the id itself split at its first two colons. Undefined: not that shape.
@@ -92,8 +91,8 @@ const detailOf = (e: unknown): string => {
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 };
 
-/** Which transport carried a post into the thread: dori's hook when it is set, else the configured messenger. */
-type Transport = { readonly via: "hooks.threadReply" } | { readonly via: "messenger"; readonly config: MessengerConfig };
+/** Which transport carries a post into the thread: dori's hook when it is set, else the configured messenger. */
+type Transport = "hooks.threadReply" | "messenger";
 
 /**
  * Duty: posts each due lane's newest report (see progressDue) into its thread and records it as `posted` with a
@@ -135,14 +134,14 @@ export async function progressTick(d: Deps): Promise<DutyEvent[]> {
   for (const { lane, report } of due) {
     const thread = lane.thread!;
     const text = progressText(report, d.store.root);
-    let transport: Transport;
+    let via: Transport;
     let uncertain: string | undefined;
     if (hook) {
-      transport = { via: "hooks.threadReply" };
+      via = "hooks.threadReply";
       const [cmd, ...rest] = substitute(hook, { key: lane.key, text, thread });
       try {
         const res = cmd === undefined ? { code: 127, stdout: "", stderr: "empty argv" } : await d.exec(cmd, rest);
-        // A hook that exits non-zero may or may not have sent: record nothing, so the next tick tries again.
+        // A hook that exits non-zero may have sent anyway, but nothing is recorded: the next tick tries the same report.
         if (res.code !== 0) {
           const why = (res.stderr || res.stdout).trim().split("\n")[0] || `exit ${res.code}`;
           events.push({ lane: lane.key, action: "post-failed", detail: `hooks.threadReply: ${why}` });
@@ -163,7 +162,7 @@ export async function progressTick(d: Deps): Promise<DutyEvent[]> {
         events.push({ lane: lane.key, action: "post-failed", detail: `messenger: no messenger configured for source ${where.source}` });
         continue;
       }
-      transport = { via: "messenger", config: found };
+      via = "messenger";
       try {
         await d.notify(found, where.target, text);
       } catch (e) {
@@ -180,13 +179,13 @@ export async function progressTick(d: Deps): Promise<DutyEvent[]> {
     fresh.log.push({
       at: now,
       kind: "posted",
-      text: uncertain === undefined ? `to ${thread} via ${transport.via}` : `to ${thread} via ${transport.via} (uncertain: ${uncertain})`,
+      text: uncertain === undefined ? `to ${thread} via ${via}` : `to ${thread} via ${via} (uncertain: ${uncertain})`,
     });
     d.store.saveLane(fresh);
     events.push({
       lane: lane.key,
       action: uncertain === undefined ? "posted" : "post-uncertain",
-      detail: uncertain === undefined ? `via ${transport.via}` : `via ${transport.via} (uncertain: ${uncertain})`,
+      detail: uncertain === undefined ? `via ${via}` : `via ${via} (uncertain: ${uncertain})`,
     });
   }
   return events;
