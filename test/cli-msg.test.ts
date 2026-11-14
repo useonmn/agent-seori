@@ -176,3 +176,16 @@ describe("seori msg", () => {
     expect(fake.sent()).toEqual([]);
   });
 });
+
+describe("seori msg thread", () => {
+  test("--title rides on --ack; thread takes a known status, --archive takes no value, and a messenger without threads is refused", async () => {
+    const { d, fake } = setup();
+    // The fake messenger opens no threads: the acknowledgement goes out as before, with no thread= part.
+    expect(await run(["msg", "send", "--reply-to", "fake:c1:1", "--ack", "--title", "fix login", "--text", "on it"], d)).toEqual({ code: 0, out: "SENT fake:c1:1 message=1" });
+    await expect(main(["msg", "send", "--reply-to", "fake:c1:2", "--title", "fix login", "--text", "on it"], d)).rejects.toThrow(/--title names the thread an acknowledgement opens; it needs --ack/);
+    await expect(main(["msg", "thread", "fake:c1:1", "--status", "busy"], d)).rejects.toThrow(/--status must be one of working, waiting, done, got "busy"/);
+    await expect(main(["msg", "thread", "fake:c1:1", "--archive", "--status", "done"], d)).rejects.toThrow(/fake has no threads seori can rename or archive/);
+    await expect(main(["msg", "thread", "fake:c1:1", "--name", "x"], d)).rejects.toThrow(/unknown flag --name for seori msg thread/);
+    expect(fake.sent().length).toBe(1);
+  });
+});

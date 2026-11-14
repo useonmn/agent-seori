@@ -79,6 +79,20 @@ export interface MessengerAdapter {
    * already in place, or eyes already gone, is no error. A refusal rejects; the caller logs it and carries on.
    */
   react(target: SendTarget, message: string, reaction: Reaction): Promise<void>;
+  /**
+   * Discord only: opens a thread named `name` on `message` (its id as in `target.replyTo`) in the server channel `chat`,
+   * a job's own thread, and resolves with the thread's id; undefined where no thread can be opened on it (a DM, a
+   * message already inside a thread). A message that already has a thread resolves with that thread, so a retry after
+   * an uncertain request opens no second one. Any other failure rejects.
+   */
+  openThread?(chat: string, message: string, name: string): Promise<string | undefined>;
+  /** Discord only: the current name of `thread`; rejects when `thread` is not a thread. */
+  threadName?(thread: string): Promise<string>;
+  /**
+   * Discord only: renames `thread` (when `name` is given) and archives it (`archived: true`) or keeps it open, reopening
+   * an archived one (`archived: false`). Idempotent.
+   */
+  editThread?(thread: string, edit: { readonly name?: string; readonly archived: boolean }): Promise<void>;
 }
 
 export type MessengerConfig = {
@@ -86,8 +100,9 @@ export type MessengerConfig = {
   /** The owner's sender id: their messages reach the lead as the owner's. */
   readonly owner: string;
   /**
-   * Also deliver people other than the owner (never bots), under the same addressing rule: a DM to the bot, a mention
-   * in a channel, or a reply in a thread the bot follows. Their messages reach the lead with their own sender id.
+   * Also deliver people other than the owner (never bots), under the addressing rule: a DM to the bot, a mention in a
+   * channel, or a reply in a thread the bot follows (Slack) or to the bot's message (Discord). Their messages reach the
+   * lead with their own sender id.
    */
   readonly others?: boolean;
   /**
@@ -95,6 +110,11 @@ export type MessengerConfig = {
    * delivered from a channel of one of these servers, or in a DM when they are a member of one of them.
    */
   readonly guilds?: readonly string[];
+  /**
+   * Discord only: the owner too needs a mention of the bot or a reply to it in a server channel, as `others` do. Unset,
+   * every message of the owner's in a server channel or thread the bot can read reaches the lead.
+   */
+  readonly ownerNeedsMention?: boolean;
   readonly options?: Readonly<Record<string, unknown>>;
 };
 
@@ -120,6 +140,10 @@ export function loadMessengers(root: string): MessengerConfig[] {
         throw new ConfigError(`${path}: messengers[${i}].guilds must be a non-empty array of Discord server ids as strings of digits, got ${JSON.stringify(c.guilds)}`);
       }
     }
+    if (c.ownerNeedsMention !== undefined) {
+      if (c.source !== "discord") throw new ConfigError(`${path}: messengers[${i}].ownerNeedsMention is only for discord`);
+      if (typeof c.ownerNeedsMention !== "boolean") throw new ConfigError(`${path}: messengers[${i}].ownerNeedsMention must be true or false, got ${JSON.stringify(c.ownerNeedsMention)}`);
+    }
     // Telegram: anyone can message a bot, and the adapter cannot see whether group privacy mode limits it to mentions.
     if (c.others === true && c.source === "telegram") throw new ConfigError(`${path}: messengers[${i}].others is not supported for telegram; only the owner is answered there`);
     // Discord: anyone may add a public bot to their server, so others are limited to servers the owner names.
@@ -131,6 +155,7 @@ export function loadMessengers(root: string): MessengerConfig[] {
       owner: c.owner,
       ...(c.others !== undefined ? { others: c.others } : {}),
       ...(c.guilds !== undefined ? { guilds: c.guilds } : {}),
+      ...(c.ownerNeedsMention !== undefined ? { ownerNeedsMention: c.ownerNeedsMention } : {}),
       ...(c.options ? { options: c.options } : {}),
     };
   });

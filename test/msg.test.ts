@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Channel, type MessengerRow } from "../src/channel.ts";
 import { Refusal } from "../src/harness.ts";
 import { SendUncertain, type MessengerAdapter, type MessengerConfig, type Reaction, type SendTarget } from "../src/messenger/adapter.ts";
-import { msgClose, msgList, msgSend, parseTo, type MsgDeps } from "../src/msg.ts";
+import { msgClose, msgEditReplyOf, msgList, msgSend, msgThread, parseTo, type MsgDeps } from "../src/msg.ts";
 import { noActions } from "./fake.ts";
 
 const T0 = 1_700_000_000_000;
@@ -317,5 +317,113 @@ describe("the check mark when a message is answered", () => {
     await msgClose(root, "watch:w1:1", "seen", d);
     expect(reacted).toEqual([{ source: "tg", target: { chat: "c5" }, message: "300", reaction: "answered" }]);
     await expect(msgSend(root, { to: parseTo("tg:c5"), text: "heads up", ack: true }, d)).rejects.toThrow("--ack");
+  });
+});
+
+/** setup() whose messengers can open, name and edit threads (Discord's), recording each call. */
+function withThreads() {
+  const s = setup();
+  const opened: { chat: string; message: string; name: string }[] = [];
+  const edits: { thread: string; edit: { name?: string; archived: boolean } }[] = [];
+  const msgEdits: { target: SendTarget; message: string; text: string }[] = [];
+  const names: Record<string, string> = {};
+  let open: "thread" | "none" | "error" = "thread";
+  const d: MsgDeps = {
+    ...s.d,
+    adapterFor: (c) => ({
+      ...s.d.adapterFor(c),
+      edit: async (target, message, text) => void msgEdits.push({ target, message, text }),
+      openThread: async (chat, message, name) => {
+        if (open === "error") throw new Error("50013 Missing Permissions");
+        opened.push({ chat, message, name });
+        return open === "thread" ? `T${message}` : undefined;
+      },
+      threadName: async (thread) => names[thread] ?? "",
+      editThread: async (thread, edit) => void edits.push({ thread, edit }),
+    }),
+  };
+  return { ...s, d, opened, edits, msgEdits, names, openWith: (m: typeof open) => (open = m) };
+}
+
+describe("job threads", () => {
+  test("the first --ack on a channel message opens its thread before the reply goes out; every later reply and edit goes there", async () => {
+    const { root, channel, sent, reacted, d, add, opened, msgEdits } = withThreads();
+    add("fake:c1:100");
+    add("fake:c1:101");
+    const r = await msgSend(root, { replyTo: ["fake:c1:100", "fake:c1:101"], text: "⏳ fix login · 0m", ack: true, title: "fix login" }, d);
+    expect(r).toEqual({ status: "SENT", messageId: "m1", ids: ["fake:c1:100", "fake:c1:101"], thread: "T100" });
+    expect(opened).toEqual([{ chat: "c1", message: "100", name: "🔄 fix login" }]);
+    expect(channel.ledger().slice(0, 3)).toEqual([
+      { id: "fake:c1:100", ev: "thread", at: T0 + 1000, thread: "T100", title: "fix login" },
+      { id: "fake:c1:101", ev: "thread", at: T0 + 1000, thread: "T100", title: "fix login" },
+      { id: "fake:c1:100", ev: "sending", at: T0 + 1000 },
+    ]);
+
+    await msgEditReplyOf(root, "fake:c1:100", "⏳ fix login · 5m", d);
+    await msgSend(root, { replyTo: ["fake:c1:100"], text: "Done: PR merged.", again: true }, d);
+    await msgSend(root, { replyTo: ["fake:c1:100"], text: "One more thing.", again: true, ack: true }, d);
+    expect(sent.map((x) => x.target)).toEqual([{ chat: "c1", thread: "T100" }, { chat: "c1", thread: "T100" }, { chat: "c1", thread: "T100" }]);
+    expect(msgEdits).toEqual([{ target: { chat: "c1", thread: "T100" }, message: "m1", text: "⏳ fix login · 5m" }]);
+    expect(opened.length).toBe(1);
+    // The check mark still goes on the request itself, in its channel.
+    expect(reacted).toEqual([{ source: "fake", target: { chat: "c1" }, message: "100", reaction: "answered" }]);
+  });
+
+  test("no thread for a message in a thread, where the messenger opens none, after a first reply, or when the open fails", async () => {
+    const { root, channel, sent, warned, d, add, opened, openWith } = withThreads();
+    add("fake:t5:200", { root: "fake:c1:t5", rootByOwner: true });
+    add("fake:d1:201");
+    add("fake:c1:202");
+    add("fake:c1:203");
+    await msgSend(root, { replyTo: ["fake:t5:200"], text: "on it", ack: true }, d);
+    openWith("none"); // a DM
+    await msgSend(root, { replyTo: ["fake:d1:201"], text: "on it\nmore below", ack: true }, d);
+    openWith("thread");
+    await msgSend(root, { replyTo: ["fake:c1:202"], text: "quick answer" }, d);
+    await msgSend(root, { replyTo: ["fake:c1:202"], text: "now a job", again: true, ack: true }, d);
+    openWith("error");
+    await msgSend(root, { replyTo: ["fake:c1:203"], text: "on it", ack: true }, d);
+    expect(opened).toEqual([{ chat: "d1", message: "201", name: "🔄 on it" }]);
+    expect(sent.map((x) => x.target)).toEqual([
+      { chat: "t5", replyTo: "200" },
+      { chat: "d1", replyTo: "201" },
+      { chat: "c1", replyTo: "202" },
+      { chat: "c1", replyTo: "202" },
+      { chat: "c1", replyTo: "203" },
+    ]);
+    expect(channel.ledger().some((e) => e.ev === "thread")).toBe(false);
+    expect(warned).toEqual(["seori: no thread opened for fake:c1:203; the acknowledgement goes where it was written: 50013 Missing Permissions"]);
+    await expect(msgSend(root, { replyTo: ["fake:c1:203"], text: "x", title: "t" }, d)).rejects.toThrow("--title names the thread an acknowledgement opens; it needs --ack");
+    // A messenger without threads keeps today's reply.
+    await msgSend(root, { replyTo: ["fake:c1:203"], text: "on it", ack: true, again: true }, setup().d);
+  });
+
+  test("msg thread renames with the status emoji and the recorded title, archives, and takes a thread the message was written in", async () => {
+    const { root, channel, d, add, edits, names } = withThreads();
+    add("fake:c1:100");
+    add("fake:t5:200", { root: "fake:c1:t5", rootByOwner: true });
+    add("fake:c1:300");
+    await msgSend(root, { replyTo: ["fake:c1:100"], text: "on it", ack: true, title: "fix login" }, d);
+
+    expect(await msgThread(root, "fake:c1:100", { status: "waiting" }, d)).toEqual({ thread: "T100", name: "⏸ fix login" });
+    expect(await msgThread(root, "fake:c1:100", { status: "done", title: "fix login flow", archive: true }, d)).toEqual({ thread: "T100", name: "✅ fix login flow" });
+    expect(channel.jobThread("fake:c1:100")).toEqual({ thread: "T100", title: "fix login flow" });
+    expect(await msgThread(root, "fake:c1:100", { archive: true }, d)).toEqual({ thread: "T100" });
+
+    // The owner's own thread: the title comes from its name, and a missing status keeps its emoji.
+    names["t5"] = "✅ deploy";
+    expect(await msgThread(root, "fake:t5:200", { status: "working" }, d)).toEqual({ thread: "t5", name: "🔄 deploy" });
+    expect(await msgThread(root, "fake:t5:200", { title: "deploy v2" }, d)).toEqual({ thread: "t5", name: "✅ deploy v2" });
+    expect(edits).toEqual([
+      { thread: "T100", edit: { name: "⏸ fix login", archived: false } },
+      { thread: "T100", edit: { name: "✅ fix login flow", archived: true } },
+      { thread: "T100", edit: { archived: true } },
+      { thread: "t5", edit: { name: "🔄 deploy", archived: false } },
+      { thread: "t5", edit: { name: "✅ deploy v2", archived: false } },
+    ]);
+
+    await expect(msgThread(root, "fake:c1:300", { status: "done" }, d)).rejects.toThrow("fake:c1:300 has no thread");
+    await expect(msgThread(root, "fake:c1:100", {}, d)).rejects.toThrow("give --status, --title or --archive");
+    await expect(msgThread(root, "fake:c1:100", { status: "done" }, setup().d)).rejects.toThrow("fake has no threads seori can rename or archive");
   });
 });

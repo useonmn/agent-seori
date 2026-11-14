@@ -41,4 +41,15 @@ describe("loadMessengers", () => {
     write({ source: "slack", owner: "U1", others: true, guilds: ["1"] });
     expect(() => loadMessengers(root)).toThrow("messengers[0].guilds is only for discord");
   });
+
+  test('"ownerNeedsMention" is optional, boolean and only for discord', () => {
+    const root = mkdtempSync(join(tmpdir(), "seori-messengers-"));
+    const write = (m: Record<string, unknown>) => writeFileSync(join(root, "messengers.json"), JSON.stringify({ messengers: [m] }));
+    write({ source: "discord", owner: "42", ownerNeedsMention: true });
+    expect(loadMessengers(root)).toEqual([{ source: "discord", owner: "42", ownerNeedsMention: true }]);
+    write({ source: "discord", owner: "42", ownerNeedsMention: "yes" });
+    expect(() => loadMessengers(root)).toThrow('messengers[0].ownerNeedsMention must be true or false, got "yes"');
+    write({ source: "slack", owner: "U1", ownerNeedsMention: false });
+    expect(() => loadMessengers(root)).toThrow("messengers[0].ownerNeedsMention is only for discord");
+  });
 });

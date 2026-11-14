@@ -109,6 +109,8 @@ export type ChannelView = { readonly withOthers?: boolean };
  * - send-uncertain: a reply may or may not have reached the messenger; never retried automatically.
  * - gave-up: MAX_DELIVERIES deliveries without a reply or close; the extension stops redelivering.
  * - alerted: duty told the human about this id (once per id and reason).
+ * - thread: seori opened the id's job thread (`seori msg send --ack`, Discord) or `seori msg thread` renamed it; the
+ *   newest one holds the thread and its title. Every later reply, edit and post about the id goes into that thread.
  */
 export type LedgerEvent =
   | { readonly id: string; readonly ev: "delivered"; readonly at: number; readonly attempt: number; readonly mode: "followUp" | "aside"; readonly session?: string }
@@ -119,7 +121,8 @@ export type LedgerEvent =
   | { readonly id: string; readonly ev: "closed"; readonly at: number; readonly why: string }
   | { readonly id: string; readonly ev: "send-uncertain"; readonly at: number; readonly detail: string }
   | { readonly id: string; readonly ev: "gave-up"; readonly at: number; readonly attempts: number }
-  | { readonly id: string; readonly ev: "alerted"; readonly at: number; readonly why: string };
+  | { readonly id: string; readonly ev: "alerted"; readonly at: number; readonly why: string }
+  | { readonly id: string; readonly ev: "thread"; readonly at: number; readonly thread: string; readonly title: string };
 
 export const MAX_DELIVERIES = 3;
 
@@ -256,6 +259,12 @@ export class Channel {
 
   ledger(): LedgerEvent[] {
     return readJsonl<LedgerEvent>(this.ledgerPath);
+  }
+
+  /** The id's job thread and its title (the newest `thread` event), or undefined when seori opened none for it. */
+  jobThread(id: string): { readonly thread: string; readonly title: string } | undefined {
+    const e = this.ledger().findLast((x) => x.id === id && x.ev === "thread");
+    return e?.ev === "thread" ? { thread: e.thread, title: e.title } : undefined;
   }
 
   /** One pass over the ledger grouped by id: the lead extension and duty call this every tick, for all history. */

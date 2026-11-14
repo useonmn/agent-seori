@@ -58,6 +58,13 @@ class MockDiscord {
   gatewayStatus = 200;
   historyStatus = 200;
   nextId = 900;
+  /** POST /channels/{id}/messages/{id}/threads bodies; `threadExists` answers 400 code 160004 (the message has a thread). */
+  threadPosts: { channel: string; message: string; body: Record<string, unknown> }[] = [];
+  threadExists = false;
+  /** PATCH /channels/{id} bodies. */
+  channelPatches: { channel: string; body: Record<string, unknown> }[] = [];
+  /** `<channel>/<id>` → what GET /channels/{channel}/messages/{id} answers (a thread's starter message); anything else 404. */
+  messages: Record<string, Msg> = {};
   /** A `hang` post answers only once this resolves (at the end of the test, after the adapter gave up). */
   readonly hung = Promise.withResolvers<void>();
 
@@ -142,6 +149,21 @@ class MockDiscord {
       const member = this.members[`${gm[1]}:${gm[2]}`];
       return member ? Response.json(member) : Response.json({ message: "Unknown Member", code: 10007 }, { status: 404 });
     }
+    if (ch && req.method === "PATCH") {
+      this.channelPatches.push({ channel: ch[1]!, body: (await req.json()) as Record<string, unknown> });
+      return Response.json({ id: ch[1] });
+    }
+    const th = /^\/channels\/([^/]+)\/messages\/([^/]+)\/threads$/.exec(path);
+    if (th && req.method === "POST") {
+      if (this.threadExists) return Response.json({ message: "A thread has already been created for this message", code: 160004 }, { status: 400 });
+      this.threadPosts.push({ channel: th[1]!, message: th[2]!, body: (await req.json()) as Record<string, unknown> });
+      return Response.json({ id: th[2], type: 11, parent_id: th[1] });
+    }
+    const one = /^\/channels\/([^/]+)\/messages\/([^/]+)$/.exec(path);
+    if (one && req.method === "GET") {
+      const found = this.messages[`${one[1]}/${one[2]}`];
+      return found ? Response.json(found) : Response.json({ message: "Unknown Message", code: 10008 }, { status: 404 });
+    }
     const m = /^\/channels\/([^/]+)\/messages$/.exec(path);
     if (m && req.method === "GET") {
       const after = BigInt(url.searchParams.get("after") ?? "0");
@@ -182,9 +204,14 @@ const mock = () => {
   return m;
 };
 
-function adapter(m: MockDiscord, root: string, extra: { sleeps?: number[]; now?: () => number; token?: string; options?: Record<string, unknown>; guilds?: string[] } = {}) {
+function adapter(
+  m: MockDiscord,
+  root: string,
+  extra: { sleeps?: number[]; now?: () => number; token?: string; options?: Record<string, unknown>; guilds?: string[]; ownerNeedsMention?: boolean } = {},
+) {
   const others = extra.guilds ? { others: true, guilds: extra.guilds } : {};
-  return new DiscordAdapter({ source: "discord", owner: OWNER, ...others, options: { apiBase: m.base, wsUrl: m.ws, timeoutMs: 200, ...extra.options } }, root, {
+  const mention = extra.ownerNeedsMention !== undefined ? { ownerNeedsMention: extra.ownerNeedsMention } : {};
+  return new DiscordAdapter({ source: "discord", owner: OWNER, ...others, ...mention, options: { apiBase: m.base, wsUrl: m.ws, timeoutMs: 200, ...extra.options } }, root, {
     env: { SEORI_DISCORD_TOKEN: extra.token ?? "T0K" },
     sleep: async (ms) => {
       extra.sleeps?.push(ms);
@@ -312,11 +339,10 @@ describe("DiscordAdapter receive", () => {
     expect(got[0]!.at).toBe(Date.parse("2026-11-07T00:00:05.000Z"));
   });
 
-  test("in a server channel only a mention of the bot or a reply to it is delivered, edits included; DMs need neither", async () => {
-    const m = mock();
+  test("in a server channel the owner needs no mention, edits included; with ownerNeedsMention only a mention of the bot or a reply to it is; DMs need neither", async () => {
     const g = (id: string, over: Partial<Msg> = {}) => msg(id, { guild_id: "G1", ...over });
     const edited = "2026-11-07T00:00:05.000Z";
-    m.afterReady = [
+    const events: [string, unknown][] = [
       ["MESSAGE_CREATE", g("501", { content: "chatter" })],
       ["MESSAGE_CREATE", g("502", { content: "<@BOT> hi", mentions: [{ id: "BOT" }] })],
       ["MESSAGE_CREATE", g("503", { type: 19, content: "on it?", referenced_message: { author: { id: "BOT" } } })],
@@ -325,13 +351,53 @@ describe("DiscordAdapter receive", () => {
       ["MESSAGE_UPDATE", g("502", { content: "<@BOT> hello", mentions: [{ id: "BOT" }], edited_timestamp: edited })],
       ["MESSAGE_CREATE", msg("505", { content: "in a DM" })],
     ];
-    const got = await collect(adapter(m, home()), 4);
+    const m = mock();
+    m.afterReady = [...events];
+    const got = await collect(adapter(m, home()), 7);
     expect(got.map((x) => [x.id, x.text])).toEqual([
+      ["discord:C1:501", "chatter"],
+      ["discord:C1:502", "<@BOT> hi"],
+      ["discord:C1:503", "on it?"],
+      ["discord:C1:504", "to myself"],
+      [`discord:C1:501:edit:${Date.parse(edited)}`, "(edited) still chatter"],
+      [`discord:C1:502:edit:${Date.parse(edited)}`, "(edited) <@BOT> hello"],
+      ["discord:C1:505", "in a DM"],
+    ]);
+
+    const strict = mock();
+    strict.afterReady = [...events];
+    const addressed = await collect(adapter(strict, home(), { ownerNeedsMention: true }), 4);
+    expect(addressed.map((x) => [x.id, x.text])).toEqual([
       ["discord:C1:502", "<@BOT> hi"],
       ["discord:C1:503", "on it?"],
       [`discord:C1:502:edit:${Date.parse(edited)}`, "(edited) <@BOT> hello"],
       ["discord:C1:505", "in a DM"],
     ]);
+  });
+
+  test("the owner needs no mention in a thread or a server channel, live and on catch-up; someone else's chatter is still dropped", async () => {
+    const m = mock();
+    const root = home();
+    CursorFile.for<DiscordCursor>(root, "discord").save({ channels: { C2: "1000", T1: "1000" } });
+    m.channelInfo = {
+      C2: { id: "C2", type: 0, guild_id: "G1" },
+      T1: { id: "T1", type: 11, guild_id: "G1", parent_id: "C2", owner_id: OWNER },
+    };
+    m.history["C2"] = [msg("1001", { channel_id: "C2", content: "while you were down" }), msg("1002", { channel_id: "C2", author: { id: "7" }, content: "chatter" })];
+    m.history["T1"] = [msg("1001", { channel_id: "T1", content: "in the thread too" })];
+    m.afterReady = [
+      ["MESSAGE_CREATE", msg("1101", { channel_id: "T1", guild_id: "G1", content: "live in the thread" })],
+      ["MESSAGE_CREATE", msg("1102", { channel_id: "C2", guild_id: "G1", author: { id: "7" }, content: "more chatter" })],
+      ["MESSAGE_CREATE", msg("1103", { channel_id: "C2", guild_id: "G1", content: "live in the channel" })],
+    ];
+    const got = await collect(adapter(m, root, { guilds: ["G1"] }), 4);
+    expect(got.map((x) => [x.id, x.from, x.root, x.text])).toEqual([
+      ["discord:C2:1001", OWNER, undefined, "while you were down"],
+      ["discord:T1:1001", OWNER, "discord:C2:T1", "in the thread too"],
+      ["discord:T1:1101", OWNER, "discord:C2:T1", "live in the thread"],
+      ["discord:C2:1103", OWNER, undefined, "live in the channel"],
+    ]);
+    expect(cursorOf(root)!.channels).toEqual({ C2: "1103", T1: "1101" });
   });
 
   test("catch-up skips a channel it may not see (kept) or that is gone (forgotten); the others are still caught up", async () => {
@@ -345,19 +411,19 @@ describe("DiscordAdapter receive", () => {
     expect(cursorOf(root)!.channels).toEqual({ C3: "1000", C1: "1001" });
   });
 
-  test("catch-up of a server channel delivers only what mentions the bot; a resumed session asks /users/@me who the bot is", async () => {
+  test("with ownerNeedsMention, catch-up of a server channel delivers only what mentions the bot; a resumed session asks /users/@me who the bot is", async () => {
     const m = mock();
     const root = home();
     CursorFile.for<DiscordCursor>(root, "discord").save({ channels: { C2: "1000" } });
     m.guildChannels.add("C2");
     m.history["C2"] = [msg("1001", { channel_id: "C2", content: "chatter" }), msg("1002", { channel_id: "C2", content: "<@BOT> look", mentions: [{ id: "BOT" }] })];
-    const got = await collect(adapter(m, root), 1);
+    const got = await collect(adapter(m, root, { ownerNeedsMention: true }), 1);
     expect(got.map((x) => x.id)).toEqual(["discord:C2:1002"]);
 
     // Restarted: the session resumes (no READY, so no bot id from it) and a live server mention still arrives.
     await until(() => m.closeCodes.length > 0);
     m.emit("MESSAGE_CREATE", msg("1003", { channel_id: "C2", guild_id: "G1", content: "<@BOT> again", mentions: [{ id: "BOT" }] }));
-    const again = await collect(adapter(m, root), 1);
+    const again = await collect(adapter(m, root, { ownerNeedsMention: true }), 1);
     expect(again.map((x) => x.id)).toEqual(["discord:C2:1003"]);
     expect(m.resumes.length).toBe(1);
   });
@@ -488,6 +554,24 @@ describe("DiscordAdapter receive", () => {
     ]);
     expect(m.channelCalls.filter((c) => c === "T1")).toEqual(["T1"]); // looked up once
     expect(m.channelCalls).not.toContain("D1");
+  });
+
+  test("a thread seori opened on the owner's message counts as the owner's; one it opened on someone else's does not", async () => {
+    const m = mock();
+    m.channelInfo = {
+      T1: { id: "T1", type: 11, guild_id: "G1", parent_id: "C2", owner_id: "BOT" },
+      T2: { id: "T2", type: 11, guild_id: "G1", parent_id: "C2", owner_id: "BOT" },
+    };
+    m.messages = { "C2/T1": msg("T1", { channel_id: "C2" }), "C2/T2": msg("T2", { channel_id: "C2", author: { id: "7" } }) };
+    m.afterReady = [
+      ["MESSAGE_CREATE", msg("1201", { channel_id: "T1", guild_id: "G1", content: "follow-up" })],
+      ["MESSAGE_CREATE", msg("1202", { channel_id: "T2", guild_id: "G1", content: "follow-up" })],
+    ];
+    const got = await collect(adapter(m, home()), 2);
+    expect(got.map((x) => [x.id, x.root, x.rootByOwner])).toEqual([
+      ["discord:T1:1201", "discord:C2:T1", true],
+      ["discord:T2:1202", "discord:C2:T2", undefined],
+    ]);
   });
 
   test("op 9 (session invalid) re-identifies, waiting at least 5s since the last identify", async () => {
@@ -701,6 +785,36 @@ describe("DiscordAdapter send and check", () => {
     const m = mock();
     expect(await adapter(m, home()).check()).toBe("@seori (id BOT)");
     await expect(adapter(m, home(), { token: "nope" }).check()).rejects.toThrow(/rejected the bot token/);
+  });
+
+  test("openThread opens a job thread on a server channel message, named within 100 characters, hiding after a week idle; none in a DM or a thread", async () => {
+    const m = mock();
+    m.guildChannels.add("C1");
+    m.channelInfo = { T9: { id: "T9", type: 11, guild_id: "G1", parent_id: "C1" } };
+    const a = adapter(m, home());
+    expect(await a.openThread("C1", "55", `🔄 ${"x".repeat(120)}`)).toBe("55");
+    expect(m.threadPosts).toEqual([{ channel: "C1", message: "55", body: { name: `🔄 ${"x".repeat(98)}`, auto_archive_duration: 10_080 } }]);
+    expect(await a.openThread("D1", "56", "🔄 dm")).toBeUndefined();
+    expect(await a.openThread("T9", "57", "🔄 in a thread")).toBeUndefined();
+    expect(m.threadPosts.length).toBe(1);
+    // The message already has a thread (an earlier request that may have gone through): that thread is the answer.
+    m.threadExists = true;
+    expect(await a.openThread("C1", "58", "🔄 again")).toBe("58");
+  });
+
+  test("threadName reads a thread's name and refuses any other channel; editThread renames, archives and reopens", async () => {
+    const m = mock();
+    m.guildChannels.add("C1");
+    m.channelInfo = { T9: { id: "T9", type: 11, guild_id: "G1", parent_id: "C1", name: "🔄 fix login" } };
+    const a = adapter(m, home());
+    expect(await a.threadName("T9")).toBe("🔄 fix login");
+    await expect(a.threadName("C1")).rejects.toThrow("channel C1 is not a thread");
+    await a.editThread("T9", { name: "✅ fix login", archived: true });
+    await a.editThread("T9", { archived: false });
+    expect(m.channelPatches).toEqual([
+      { channel: "T9", body: { name: "✅ fix login", archived: true } },
+      { channel: "T9", body: { archived: false } },
+    ]);
   });
 });
 

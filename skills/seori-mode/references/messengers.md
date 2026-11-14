@@ -1,6 +1,6 @@
 # Messengers
 
-seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. Only the owner's messages reach the lead, unless the owner turns on `others` (section 5); bots' messages, the bot's own included, never do. Outside DMs only a message that mentions the bot, or (Slack) a reply in a thread the bot is part of or (Discord) a reply to the bot's message, reaches the lead; plain channel chatter never does.
+seori talks to its owner through one bot on Telegram, Slack or Discord. Ask the owner which one and wait for the answer. Only the owner's messages reach the lead, unless the owner turns on `others` (section 5); bots' messages, the bot's own included, never do. Outside DMs only a message that mentions the bot, or (Slack) a reply in a thread the bot is part of or (Discord) a reply to the bot's message, reaches the lead; plain channel chatter never does. On Discord the owner is the exception: every message of theirs in a server channel or thread the bot can read reaches the lead without a mention. If they share that server with people they chat with, `"ownerNeedsMention": true` on the Discord messenger puts them under the mention rule too.
 
 Do every login and every click in the browser with the owner; never ask them to paste a password into this session.
 
@@ -60,7 +60,7 @@ seori is a Slack app with a bot token (an entry left from the removed user-token
 1. https://discord.com/developers/applications → New Application, with the chosen name.
 2. Bot → Reset Token → copy it. That is the secret. On the same page turn on MESSAGE CONTENT INTENT (without it seori reads DMs only, and only after removing that intent from `options.intents`).
 3. Bot → turn off Public Bot and save, so only the owner can add the bot to a server; `others` on Discord (section 5) is safe only with it off. If Discord refuses because a private application cannot have a default authorization link, set Installation → Install Link to None, save, and turn Public Bot off again.
-4. OAuth2 → URL Generator → scope `bot`, permissions Send Messages, Read Message History, Send Messages in Threads, Add Reactions, Manage Threads → open the URL and add the bot to a server the owner is in. Discord lets a user DM a bot only when they share a server. Add Reactions and Read Message History let seori put the eyes and check mark on messages in server channels.
+4. OAuth2 → URL Generator → scope `bot`, permissions Send Messages, Read Message History, Create Public Threads, Send Messages in Threads, Add Reactions, Manage Threads → open the URL and add the bot to a server the owner is in. Discord lets a user DM a bot only when they share a server. Add Reactions and Read Message History let seori put the eyes and check mark on messages in server channels; Create Public Threads and Send Messages in Threads let it open a thread per job, and Manage Threads lets it rename and archive threads it did not open.
 5. The owner DMs the bot once.
 
 ## 2. Write the secrets
@@ -116,7 +116,7 @@ After `seori up`, the daemon receives the owner's messages into the lead pane an
 
 ## 5. Answering other people (optional)
 
-By default seori answers only its owner. On Slack and Discord the owner can let it answer other people too, under the same rule (a DM to the bot, a mention in a channel, or a reply in the bot's Slack thread or to its Discord message): add `"others": true` to that messenger in `~/.seori/messengers.json`. Telegram refuses it, because anyone on Telegram can message a bot.
+By default seori answers only its owner. On Slack and Discord the owner can let it answer other people too, under the addressing rule (a DM to the bot, a mention in a channel, or a reply in the bot's Slack thread or to its Discord message; on Discord they always need it, even where the owner does not): add `"others": true` to that messenger in `~/.seori/messengers.json`. Telegram refuses it, because anyone on Telegram can message a bot.
 
 - Slack: `{ "messengers": [ { "source": "slack", "owner": "U012OWNER", "others": true } ] }`. That means full members of the bot's own workspace: guests are left out (checked with `users.info`, so the app needs the `users:read` scope; without it only the owner is answered), and Slack Connect users from other organizations never reach the lead.
 - Discord: anyone may add a public bot to a server of their own, so `others` needs `"guilds"`, the ids of the servers whose people may talk to seori, as strings; without it seori refuses messengers.json. `{ "messengers": [ { "source": "discord", "owner": "123456789012345678", "others": true, "guilds": ["987654321098765432"] } ] }`. Ask the owner which servers; they get an id with Discord settings → Advanced → Developer Mode on, then right-click the server → Copy Server ID. A non-owner is delivered from a channel or thread of one of those servers, or in a DM when they are a member of one of them who has passed its membership screening (seori asks Discord, and asks again after 10 minutes); webhooks never are. Check Public Bot is off (section 1, Discord step 3) before turning it on.

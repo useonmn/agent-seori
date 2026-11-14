@@ -206,14 +206,20 @@ seori down [duty|loop|daemon|all] [--keep-autostart]
                                             seori.group 터미널을 닫습니다. 30초 뒤에도 남은 프로세스가 있으면 종료 코드 1
 seori install-skill [--skills-dir DIR]       seori-mode 스킬을 에이전트의 스킬 폴더에 링크합니다. install.sh가 실행합니다
 seori uninstall [--skills-dir DIR] [--purge] 스킬 링크와 seori 명령을 지웁니다. --purge는 $SEORI_HOME도 지웁니다
-seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack]
+seori msg send (--reply-to ID[,ID...] | --to SOURCE:CHAT[:THREAD]) --text T [--again] [--ack [--title T]]
                                             메신저 메시지에 답합니다 (id 하나에 답 하나). --to는 알림을 보냅니다.
                                             쓴 즉시 바로 나가므로, 다 쓴 답을 곧바로 보냅니다. --again은 이미 답한
                                             id에 또 답합니다 (정정, 일의 결과). seori가 그 메시지에 단 눈은 체크
-                                            표시로 바뀝니다. --ack(일의 접수 확인이자 상태 메시지)만 눈을 그대로 둡니다
+                                            표시로 바뀝니다. --ack(일의 접수 확인이자 상태 메시지)만 눈을 그대로 둡니다.
+                                            디스코드에서는 서버 채널 메시지에 보낸 첫 --ack가 그 메시지에 일의 스레드를
+                                            "🔄 <제목>"으로 엽니다(thread=ID 출력). 이후 답과 수정은 모두 그 스레드로 갑니다
 seori msg edit (--reply-of ID | --to SOURCE:CHAT[:THREAD] --message MID) --text T
                                             seori가 보낸 메시지를 고칩니다. --reply-of는 그 리드 채널 메시지에 seori가
                                             처음 보낸 답을 고칩니다. MID는 msg send가 출력한 message= 값
+seori msg thread <id> [--status working|waiting|done] [--title T] [--archive]
+                                            일의 스레드 이름(상태 이모지 🔄, ⏸, ✅와 제목)을 바꾸고 보관하거나,
+                                            열어 둡니다(보관된 스레드는 다시 엽니다). 스레드는 seori가 그 id에 연 것,
+                                            또는 메시지가 쓰인 스레드(디스코드)입니다
 seori msg close <id> --why T                 답할 필요가 없는 리드 채널 메시지(메신저 메시지나 감시 알림)를 닫습니다.
                                             메신저 메시지에는 체크 표시를 답니다
 seori msg list [--all]                       아직 열린 리드 채널 메시지: 메신저 메시지와 감시 알림 (--all: 전부, 상태 포함)
@@ -446,7 +452,7 @@ seori worklog list --open
 { "messengers": [ { "source": "fake", "owner": "u1" } ] }
 ```
 
-`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 seori가 일해 주는 주인의 보낸 사람 id입니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 봇이 보낸 메시지(봇 자신의 것 포함)는 언제나 버리고, 다른 사람이 보낸 메시지도 그 메신저에 `"others": true`가 없으면 버립니다. DM이 아닌 곳에서는 봇을 부른 메시지만 리드에게 갑니다. 슬랙에서는 봇을 멘션한 메시지, 또는 봇이 들어가 있는 스레드(봇이 글을 쓴 스레드, 또는 seori가 답하는 사람이 봇을 멘션한 스레드)의 답글이고, 이때는 다시 멘션하지 않아도 됩니다. 디스코드에서는 봇을 멘션한 메시지, 또는 봇의 메시지에 단 답장입니다. 채널의 일반 대화는 실시간이든 재시작 뒤 따라잡기든 전하지 않습니다. 봇에게 보낸 DM은 언제나 전합니다. 예전 seori가 저장해 둔 다른 사람이나 에이전트의 메시지(예전에 신뢰하던 사람의 열린 요청 포함)는 업그레이드하면 닫힙니다. 리드에게 전하지 않고, `seori msg list --all`에는 `closed-other`로 보입니다. 기다리던 사람이 있으면 직접 알려 주세요. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
+`source`는 어떤 메신저인지(`telegram`, `slack`, `discord`, 시험용 `fake`), `owner`는 seori가 일해 주는 주인의 보낸 사람 id입니다. 이 id는 `seori msg pair`로 찾을 수 있습니다([주인 등록](#주인-등록) 참고). 봇이 보낸 메시지(봇 자신의 것 포함)는 언제나 버리고, 다른 사람이 보낸 메시지도 그 메신저에 `"others": true`가 없으면 버립니다. DM이 아닌 곳에서는 봇을 부른 메시지만 리드에게 갑니다. 슬랙에서는 봇을 멘션한 메시지, 또는 봇이 들어가 있는 스레드(봇이 글을 쓴 스레드, 또는 seori가 답하는 사람이 봇을 멘션한 스레드)의 답글이고, 이때는 다시 멘션하지 않아도 됩니다. 디스코드에서는 봇이 읽을 수 있는 서버 채널이나 스레드에 주인이 쓴 메시지는 멘션 없이도 모두 봇을 부른 것으로 치고, 다른 사람의 메시지는 봇을 멘션한 것 또는 봇의 메시지에 단 답장만 전합니다(다른 사람과도 대화하는 서버라면 디스코드 메신저에 `"ownerNeedsMention": true`를 넣어 주인에게도 같은 규칙을 씁니다). 그 밖의 채널 대화는 실시간이든 재시작 뒤 따라잡기든 전하지 않습니다. 봇에게 보낸 DM은 언제나 전합니다. 예전 seori가 저장해 둔 다른 사람이나 에이전트의 메시지(예전에 신뢰하던 사람의 열린 요청 포함)는 업그레이드하면 닫힙니다. 리드에게 전하지 않고, `seori msg list --all`에는 `closed-other`로 보입니다. 기다리던 사람이 있으면 직접 알려 주세요. `options.apiBase`로 다른 API 주소를 쓸 수 있습니다(시험에서는 가짜 서버를 씁니다).
 
 `"others": true`(슬랙과 디스코드에서 됩니다. 텔레그램은 누구나 봇에게 말을 걸 수 있어서 거절합니다)를 켜면 다른 사람도 같은 규칙으로 seori와 이야기할 수 있습니다. 예를 들어 함께 쓰는 슬랙 채널의 동료들입니다: `{ "messengers": [ { "source": "slack", "owner": "U012OWNER", "others": true } ] }`. 슬랙에서 "다른 사람"은 봇과 같은 워크스페이스의 정식 멤버입니다. 게스트(단일·다중 채널)는 빼는데, `users.info`로 확인하므로 봇 권한 `users:read`가 필요합니다(없으면 주인에게만 답하고, 데몬이 한 번 알려 줍니다). 공유 채널(Slack Connect)에 들어온 다른 조직의 사용자와, 워크스페이스 정보가 없는 메시지는 전하지 않습니다. 디스코드에서는 공개 봇이면 누구나 자기 서버에 봇을 넣을 수 있으므로, `others`에는 `"guilds"`가 꼭 있어야 합니다. seori와 이야기해도 되는 사람들의 서버 id를 문자열로 적습니다(디스코드 설정 → 고급 → 개발자 모드를 켜고, 서버를 오른쪽 클릭 → 서버 ID 복사). `guilds` 없이 `others`를 켜면 설정 오류입니다: `{ "messengers": [ { "source": "discord", "owner": "123456789012345678", "others": true, "guilds": ["987654321098765432"] } ] }`. 주인이 아닌 사람의 메시지는 그 서버들의 채널이나 스레드에서 온 것, 또는 그 서버 중 하나의 멤버(가입 심사를 통과한 사람)가 보낸 DM만 전합니다. 멤버인지는 `GET /guilds/{id}/members/{user}`로 묻고(특권 인텐트가 필요 없습니다), 답은 10분 동안 그대로 씁니다. 웹훅이 올린 메시지는 전하지 않습니다. 개발자 포털(내 앱 → Bot)에서 Public Bot도 꺼서, 봇을 서버에 넣는 것은 주인만 할 수 있게 합니다. 그 사람들의 메시지는 그 사람의 id로, `(not owner)` 표시를 달고 리드에게 갑니다. 리드는 그 스레드에서 대화하고 질문에 답하지만, 그 내용을 주인의 지시로 받아들이지 않습니다. 그 사람들의 작업 요청(레인, 코드, 머지, 파일, 설정, 다른 곳으로 보내는 메시지)은 먼저 주인 DM으로 보내 승인을 받고, 내부 정보(주인에 대한 기억, 다른 스레드, 경로, 비밀 값, 작업 기록)는 알려 주지 않습니다. seori의 상태 알림, 레인의 `--thread`, 작업 기록의 출처에는 저장된 주인만의 메시지만 씁니다. DM, 주인의 최상위 메시지, 슬랙이 첫 메시지를 주인이 썼다고 알려 주는 스레드 안의 주인 답글, 첫 메시지가 주인만의 메시지에 대한 seori의 답인 슬랙 스레드 안의 주인 답글(seori는 최상위 메시지에 최상위로 답하므로, 주인이 이어 쓰는 스레드는 seori의 답 아래에 생깁니다. 긴 답이 여러 메시지로 나뉘었으면 그중 어느 것이든 됩니다), 주인이 시작한 디스코드 스레드 안의 주인 메시지가 그렇고, 그 밖의 스레드 메시지(다른 사람의 메시지나 그 사람에게 한 seori의 답 아래, 다른 사람이 시작한 디스코드 스레드 안, 누가 썼는지 모르는 경우)는 함께 보는 것으로 치며, seori가 저장하지 않은 id는 거절합니다. 빼거나 `false`면 주인에게만 답합니다.
 
@@ -460,7 +466,7 @@ seori worklog list --open
 |---|---|---|---|
 | `telegram` | @BotFather로 봇을 만들고, DM으로 `/start`를 한 번 보냅니다. 그룹이나 토픽에서 쓰려면 privacy mode를 끕니다(`/setprivacy`) | 숫자로 된 내 사용자 id | `SEORI_TELEGRAM_TOKEN` |
 | `slack` | 워크스페이스에 앱을 만들고 Socket Mode를 켭니다. 앱 토큰(`connections:write`), 봇 권한 `chat:write`, `im:history`, `reactions:write`, `files:write`(채널에서도 쓰려면 `app_mentions:read`, `channels:history`, `others`를 쓰려면 `users:read`. `files:write`는 파일 올리기용이고, 없으면 `agent-slackbot file upload`가 `missing_scope`로 실패합니다), 봇 이벤트 `message.im`, Messages 탭 켜기. | 내 멤버 id(`U...`) | `SEORI_SLACK_BOT_TOKEN`, `SEORI_SLACK_APP_TOKEN` |
-| `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). Public Bot을 끄고(`others`를 쓰려면 꼭), Add Reactions, Read Message History 권한으로 초대하고(서버 채널에서 seori가 리액션을 달 수 있도록), 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
+| `discord` | 애플리케이션과 봇을 만들고 MESSAGE CONTENT 인텐트를 켭니다(DM만 쓸 거면 `options.intents`에서 빼도 됩니다). Public Bot을 끄고(`others`를 쓰려면 꼭), Add Reactions, Read Message History 권한(서버 채널에서 seori가 리액션을 달 수 있도록)과 Create Public Threads, Send Messages in Threads, Manage Threads 권한(일마다 스레드를 열도록)으로 초대하고, 봇에게 DM을 한 번 보냅니다 | 내 사용자 id | `SEORI_DISCORD_TOKEN` |
 
 `seori msg check`는 설정된 메신저마다 봇이 누구인지 물어봅니다. 토큰이 맞는지 이걸로 확인합니다. 메신저마다 `OK <source>: <봇 이름>`이나 `FAIL <source>: <이유>`를 출력하고, 하나라도 실패하면 종료 코드 1입니다. `seori msg check <source>`는 그 메신저 하나만 확인하고, `messengers.json`에 아직 항목이 없어도 됩니다. 토큰만 있으면 됩니다.
 
@@ -521,6 +527,10 @@ seori는 메시지 자체에 지금 어디까지 왔는지 표시합니다. 데�
 | Telegram | 👀 | 👌, 눈을 대신함: ✅는 텔레그램이 허용하는 리액션이 아닙니다 | 더 없음 |
 
 리액션이 실패해도(권한이 없음, 속도 제한 등) 기록만 남기고(눈은 데몬 로그에, 체크 표시는 `seori msg`의 stderr에), 메시지 전달이나 답을 막지 않습니다.
+
+### 디스코드 일 스레드
+
+디스코드에서 리드가 서버 채널(스레드나 DM이 아닌 곳)에 쓰인 메시지에 처음 `--ack`를 보내면, seori가 그 메시지에 "🔄 <제목>"이라는 스레드를 열고 접수 확인을 그 안에 올립니다. 제목은 `--title`, 없으면 접수 확인의 첫 줄이며 100자에서 자릅니다. `SENT` 줄 끝에 `thread=<id>`가 붙습니다. 그 id에 대한 이후 답과 `msg edit --reply-of`, seori가 직접 올리는 진행 소식도 모두 그 스레드로 갑니다. 리드는 일이 진행됨에 따라 `seori msg thread <id> --status working|waiting|done`(🔄, ⏸, ✅)으로 이름을 바꾸고, 끝나면 `--archive`로 보관합니다. `--archive` 없이 같은 명령을 쓰면 보관된 스레드를 다시 엽니다. 스레드는 일주일 동안 메시지가 없으면 저절로 숨겨집니다. 디스코드가 스레드를 거절하면(Create Public Threads 권한이 없는 경우 등) seori는 stderr에 경고를 남기고, 접수 확인은 예전처럼 메시지가 쓰인 곳으로 갑니다. 슬랙과 텔레그램은 지금처럼 그 자리에서 답합니다.
 
 ### 정정
 
